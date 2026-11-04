@@ -1,0 +1,31 @@
+{
+  "app": "rust-course",
+  "version": 1,
+  "exported": "2026-11-04",
+  "state": {
+    "days": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "done": {},
+    "ex": {},
+    "hint": {},
+    "log": {},
+    "lvf": 0,
+    "migA": "2026-11-04",
+    "migP": 1,
+    "minutes": 60,
+    "notes": {},
+    "path": "FAP",
+    "peek": {},
+    "rev": {},
+    "startDate": "2026-11-04",
+    "time": "19:00",
+    "track": "F",
+    "ts": 1793796378163
+  },
+  "code": {}
+}

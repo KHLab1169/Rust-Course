@@ -1,0 +1,1820 @@
+- id: a5
+  n: A05
+  t: Traits and generics in depth
+  lv: 4
+  goal: Design generic APIs with the right bounds and associated types, use the standard conversion and comparison traits, and encode rules in types with PhantomData and const generics.
+  res: |
+    The Rust Reference, traits | https://doc.rust-lang.org/reference/items/traits.html
+    Rust API Guidelines | https://rust-lang.github.io/api-guidelines/
+    std::convert | https://doc.rust-lang.org/std/convert/
+  items:
+    - id: A5.1
+      t: Bounds, associated types and impl blocks
+      min: 60
+      learn: Accept anything iterable with IntoIterator, associated types such as Iterator::Item in bounds, where clauses with associated type constraints, and inherent versus trait impl blocks.
+      example:
+        title: Generic over anything iterable
+        code: |
+          use std::collections::{BTreeSet, HashMap};
+          use std::hash::Hash;
+
+          /// Counts occurrences of each item from any iterable source.
+          fn frequencies<I>(items: I) -> HashMap<I::Item, usize>
+          where
+              I: IntoIterator,
+              I::Item: Hash + Eq,
+          {
+              let mut m = HashMap::new();
+              for it in items {
+                  *m.entry(it).or_insert(0) += 1;
+              }
+              m
+          }
+
+          fn total<I>(items: I) -> f64
+          where
+              I: IntoIterator,
+              I::Item: Into<f64>,
+          {
+              items.into_iter().map(Into::into).sum()
+          }
+
+          fn main() {
+              let words = frequencies("a b a c b a".split(' '));
+              let chars = frequencies("hello".chars());
+              let set: BTreeSet<u8> = [3, 1, 2].into();
+              println!("{} {} {}", words["a"], chars[&'l'], frequencies(&set).len());
+              println!("{} {}", total(vec![1u8, 2, 3]), total([0.5f32, 0.25]));
+          }
+        output: |
+          3 2 3
+          6 0.75
+        note: Taking IntoIterator instead of &[T] lets callers pass vectors, arrays, sets, iterators or references to any of them. I::Item refers to the associated type, and bounds on it go in the where clause.
+      ex:
+        - t: A generic average
+          p: Write fn average<I>(items I) -> Option<f64> for any IntoIterator whose items convert into f64, returning None for an empty input. Call it with a Vec<u32>, an array of f32 and an iterator chain.
+          check: test
+          hints:
+            - "Bounds: I: IntoIterator, I::Item: Into<f64>."
+            - Keep a running sum and count in one pass.
+            - u32 implements Into<f64>; u64 does not, because it could lose precision.
+          solution: |
+            fn average<I>(items: I) -> Option<f64>
+            where
+                I: IntoIterator,
+                I::Item: Into<f64>,
+            {
+                let (sum, n) = items.into_iter().fold((0.0, 0usize), |(s, n), x| (s + x.into(), n + 1));
+                if n == 0 { None } else { Some(sum / n as f64) }
+            }
+
+            fn main() {
+                println!("{:?}", average(vec![1u32, 2, 3, 4]));
+                println!("{:?}", average([2.5f32, 3.5]));
+                println!("{:?}", average((1..=10u8).filter(|n| n % 2 == 0)));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn empty_and_values() {
+                    assert_eq!(average(Vec::<u32>::new()), None);
+                    assert_eq!(average([1u16, 3]), Some(2.0));
+                }
+            }
+          explain: The standard library only implements Into<f64> for conversions that cannot lose precision, so the compiler stops average(vec![u64]) instead of silently rounding. Use as f64 explicitly when you accept that risk.
+        - t: Your own trait with an associated type
+          p: "Define trait Repository { type Item; type Id; fn get(&self, id: &Self::Id) -> Option<&Self::Item>; fn add(&mut self, item: Self::Item) -> Self::Id; } and implement it for an in-memory UserRepo with u32 ids. Write a generic fn add_all<R: Repository>(repo: &mut R, items: Vec<R::Item>) -> Vec<R::Id>."
+          check: test
+          hints:
+            - The implementation sets type Item = User; type Id = u32;
+            - Store users in a HashMap<u32, User> and keep a next_id counter.
+            - add_all maps each item through repo.add.
+          solution: |
+            use std::collections::HashMap;
+
+            trait Repository {
+                type Item;
+                type Id;
+                fn get(&self, id: &Self::Id) -> Option<&Self::Item>;
+                fn add(&mut self, item: Self::Item) -> Self::Id;
+            }
+
+            #[derive(Debug, PartialEq)]
+            struct User { name: String }
+
+            #[derive(Default)]
+            struct UserRepo { users: HashMap<u32, User>, next_id: u32 }
+
+            impl Repository for UserRepo {
+                type Item = User;
+                type Id = u32;
+                fn get(&self, id: &u32) -> Option<&User> {
+                    self.users.get(id)
+                }
+                fn add(&mut self, item: User) -> u32 {
+                    self.next_id += 1;
+                    self.users.insert(self.next_id, item);
+                    self.next_id
+                }
+            }
+
+            fn add_all<R: Repository>(repo: &mut R, items: Vec<R::Item>) -> Vec<R::Id> {
+                items.into_iter().map(|i| repo.add(i)).collect()
+            }
+
+            fn main() {
+                let mut repo = UserRepo::default();
+                let ids = add_all(&mut repo, vec![User { name: "Ada".into() }, User { name: "Linus".into() }]);
+                println!("{ids:?} {:?}", repo.get(&ids[1]));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn stores() {
+                    let mut r = UserRepo::default();
+                    let id = r.add(User { name: "x".into() });
+                    assert_eq!(r.get(&id).unwrap().name, "x");
+                    assert!(r.get(&99).is_none());
+                }
+            }
+          explain: Associated types say each repository has exactly one item and id type, so callers write R::Item instead of threading extra generic parameters everywhere. A database-backed repository could implement the same trait, and tests could use the in-memory one.
+    - id: A5.2
+      t: Conversion and comparison traits
+      min: 60
+      learn: From and Into, TryFrom for fallible conversions, AsRef for flexible parameters, Default, FromStr for parse, and deriving or implementing PartialEq, Eq, PartialOrd, Ord and Hash correctly.
+      example:
+        title: A Version type that plays well with std
+        code: |
+          use std::cmp::Ordering;
+          use std::str::FromStr;
+
+          #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+          struct Version { major: u32, minor: u32, patch: u32 }
+
+          impl FromStr for Version {
+              type Err = String;
+              fn from_str(s: &str) -> Result<Self, Self::Err> {
+                  let parts: Vec<&str> = s.trim_start_matches('v').split('.').collect();
+                  let [a, b, c] = parts.as_slice() else { return Err(format!("expected X.Y.Z, got {s}")) };
+                  let n = |x: &str| x.parse::<u32>().map_err(|e| format!("{x}: {e}"));
+                  Ok(Version { major: n(a)?, minor: n(b)?, patch: n(c)? })
+              }
+          }
+
+          impl Ord for Version {
+              fn cmp(&self, o: &Self) -> Ordering {
+                  (self.major, self.minor, self.patch).cmp(&(o.major, o.minor, o.patch))
+              }
+          }
+          impl PartialOrd for Version {
+              fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) }
+          }
+
+          impl From<(u32, u32, u32)> for Version {
+              fn from((major, minor, patch): (u32, u32, u32)) -> Self { Version { major, minor, patch } }
+          }
+
+          fn main() {
+              let mut vs: Vec<Version> = ["1.10.0", "v1.2.3", "0.9.12"].iter().map(|s| s.parse().unwrap()).collect();
+              vs.sort();
+              println!("{vs:?}");
+              let v: Version = (2, 0, 0).into();
+              println!("{} {:?}", v > vs[2], "1.x".parse::<Version>());
+              println!("{:?}", Version::default());
+          }
+        output: |
+          [Version { major: 0, minor: 9, patch: 12 }, Version { major: 1, minor: 2, patch: 3 }, Version { major: 1, minor: 10, patch: 0 }]
+          true Err("expected X.Y.Z, got 1.x")
+          Version { major: 0, minor: 0, patch: 0 }
+        note: Implementing FromStr makes .parse() work, From gives you .into() for free, and Ord makes sort, max and BTreeMap keys work. Comparing tuples gives correct numeric ordering (1.10 after 1.2), which string comparison would get wrong. Ord, PartialOrd, Eq and Hash must all agree.
+      ex:
+        - t: TryFrom for a validated type
+          p: Implement TryFrom<u8> for a Weekday enum (1 = Monday ... 7 = Sunday) with a descriptive error, plus From<Weekday> for u8. Test round trips and an invalid value.
+          check: test
+          hints:
+            - "impl TryFrom<u8> for Weekday { type Error = String; fn try_from(n: u8) -> Result<Self, Self::Error> }"
+            - Implementing TryFrom gives you u8::try_into() for free.
+            - For the reverse direction, cast the enum with as u8 after giving variants explicit values.
+          solution: |
+            use std::convert::TryFrom;
+
+            #[derive(Debug, Clone, Copy, PartialEq)]
+            #[repr(u8)]
+            enum Weekday { Mon = 1, Tue, Wed, Thu, Fri, Sat, Sun }
+
+            impl TryFrom<u8> for Weekday {
+                type Error = String;
+                fn try_from(n: u8) -> Result<Self, Self::Error> {
+                    use Weekday::*;
+                    Ok(match n {
+                        1 => Mon, 2 => Tue, 3 => Wed, 4 => Thu, 5 => Fri, 6 => Sat, 7 => Sun,
+                        _ => return Err(format!("{n} is not a weekday number (1-7)")),
+                    })
+                }
+            }
+
+            impl From<Weekday> for u8 {
+                fn from(d: Weekday) -> u8 { d as u8 }
+            }
+
+            fn main() {
+                let d: Result<Weekday, _> = 5u8.try_into();
+                println!("{d:?} {:?}", Weekday::try_from(9));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn round_trip() {
+                    for n in 1..=7u8 {
+                        let d = Weekday::try_from(n).unwrap();
+                        assert_eq!(u8::from(d), n);
+                    }
+                    assert!(Weekday::try_from(0).is_err());
+                }
+            }
+          explain: TryFrom is the standard way to say "this conversion can fail", and implementing it unlocks try_into everywhere. Never implement From for a conversion that can fail; From is a promise of success.
+        - t: AsRef for flexible inputs
+          p: 'Write fn count_lines<P AsRef<Path>>(path P) -> std::io::Result<usize> and show it accepting a &str, a: String and a PathBuf.'
+          check: test
+          hints:
+            - "use std::path::{Path, PathBuf};"
+            - Inside, call fs::read_to_string(path.as_ref()).
+            - std's own fs functions are written exactly like this.
+          solution: |
+            use std::fs;
+            use std::io;
+            use std::path::{Path, PathBuf};
+
+            fn count_lines<P: AsRef<Path>>(path: P) -> io::Result<usize> {
+                Ok(fs::read_to_string(path.as_ref())?.lines().count())
+            }
+
+            fn main() -> io::Result<()> {
+                fs::write("lines.txt", "a\nb\nc\n")?;
+                let s = String::from("lines.txt");
+                let p = PathBuf::from("lines.txt");
+                println!("{} {} {}", count_lines("lines.txt")?, count_lines(&s)?, count_lines(&p)?);
+                fs::remove_file("lines.txt")?;
+                Ok(())
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn accepts_pathbuf() {
+                    let p = std::env::temp_dir().join("asref_lines_test.txt");
+                    std::fs::write(&p, "1\n2\n").unwrap();
+                    assert_eq!(count_lines(&p).unwrap(), 2);
+                }
+            }
+          explain: AsRef<Path> is implemented for str, String, Path, PathBuf, OsStr and more, so one signature accepts them all without forcing the caller to convert.
+    - id: A5.3
+      t: Type-level programming
+      min: 60
+      learn: Zero-sized marker types with PhantomData, the typestate pattern for compile-time state checks, const generics for sizes in types, and sealed traits.
+      example:
+        title: Typestate and const generics
+        code: |
+          use std::marker::PhantomData;
+
+          struct Open;
+          struct Closed;
+
+          struct Connection<State> {
+              addr: String,
+              _state: PhantomData<State>,     // zero bytes, compile-time only
+          }
+
+          impl Connection<Closed> {
+              fn new(addr: &str) -> Self { Connection { addr: addr.into(), _state: PhantomData } }
+              fn open(self) -> Connection<Open> { Connection { addr: self.addr, _state: PhantomData } }
+          }
+
+          impl Connection<Open> {
+              fn send(&self, msg: &str) -> String { format!("sent {msg:?} to {}", self.addr) }
+              fn close(self) -> Connection<Closed> { Connection { addr: self.addr, _state: PhantomData } }
+          }
+
+          #[derive(Debug)]
+          struct Matrix<const R: usize, const C: usize>([[i32; C]; R]);
+
+          impl<const R: usize, const C: usize> Matrix<R, C> {
+              fn transpose(&self) -> Matrix<C, R> {
+                  let mut out = [[0; R]; C];
+                  for r in 0..R { for c in 0..C { out[c][r] = self.0[r][c]; } }
+                  Matrix(out)
+              }
+          }
+
+          fn main() {
+              let conn = Connection::new("db:5432").open();
+              println!("{}", conn.send("SELECT 1"));
+              let _closed = conn.close();
+              // _closed.send("x"); // error: no method `send` for Connection<Closed>
+              let m = Matrix([[1, 2, 3], [4, 5, 6]]);
+              println!("{:?}", m.transpose());
+              println!("size of Connection<Open>: {}", std::mem::size_of::<Connection<Open>>());
+          }
+        output: |
+          sent "SELECT 1" to db:5432
+          Matrix([[1, 4], [2, 5], [3, 6]])
+          size of Connection<Open>: 24
+        note: PhantomData lets a type carry a state parameter without storing anything, so the state check costs nothing at run time. Const generics put numbers in types, so a 2x3 matrix and a 3x2 matrix are different types and a mismatched multiplication fails to compile.
+      ex:
+        - t: A typestate request builder
+          p: Build an HttpRequest builder where url() must be called before send() can exist, using NoUrl and HasUrl marker types. Header calls are allowed in both states.
+          check: test
+          hints:
+            - "struct RequestBuilder<S> { url: Option<String>, headers: Vec<(String, String)>, _s: PhantomData<S> }"
+            - Implement header for every S with impl<S> RequestBuilder<S>.
+            - send exists only in impl RequestBuilder<HasUrl>.
+          solution: |
+            use std::marker::PhantomData;
+
+            struct NoUrl;
+            struct HasUrl;
+
+            struct RequestBuilder<S> {
+                url: Option<String>,
+                headers: Vec<(String, String)>,
+                _s: PhantomData<S>,
+            }
+
+            impl RequestBuilder<NoUrl> {
+                fn new() -> Self {
+                    RequestBuilder { url: None, headers: vec![], _s: PhantomData }
+                }
+                fn url(self, u: &str) -> RequestBuilder<HasUrl> {
+                    RequestBuilder { url: Some(u.into()), headers: self.headers, _s: PhantomData }
+                }
+            }
+
+            impl<S> RequestBuilder<S> {
+                fn header(mut self, k: &str, v: &str) -> Self {
+                    self.headers.push((k.into(), v.into()));
+                    self
+                }
+            }
+
+            impl RequestBuilder<HasUrl> {
+                fn send(&self) -> String {
+                    format!("GET {} with {} headers", self.url.as_ref().unwrap(), self.headers.len())
+                }
+            }
+
+            fn main() {
+                let r = RequestBuilder::new().header("Accept", "json").url("https://example.com").header("X-Test", "1");
+                println!("{}", r.send());
+                // RequestBuilder::new().send(); // error: no method named `send` found
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn builds() {
+                    assert_eq!(RequestBuilder::new().url("u").send(), "GET u with 0 headers");
+                }
+            }
+          explain: The unwrap inside send is safe because the type guarantees url was set. Typestate builders are common in Rust HTTP, database and embedded libraries.
+        - t: Fixed-size vectors with const generics
+          p: 'Write struct Vector<const N usize>([f64; N]) with dot(&self, other: &Self) -> f64 and implement Add for it. Show that adding a Vector<2> to a Vector<3> does not compile.'
+          check: test
+          hints:
+            - "impl<const N: usize> std::ops::Add for Vector<N> { type Output = Self; ... }"
+            - Use std::array::from_fn(|i| self.0[i] + rhs.0[i]) to build the result.
+            - dot sums the products of matching elements.
+          solution: |
+            use std::ops::Add;
+
+            #[derive(Debug, Clone, Copy, PartialEq)]
+            struct Vector<const N: usize>([f64; N]);
+
+            impl<const N: usize> Vector<N> {
+                fn dot(&self, o: &Self) -> f64 {
+                    self.0.iter().zip(o.0.iter()).map(|(a, b)| a * b).sum()
+                }
+            }
+
+            impl<const N: usize> Add for Vector<N> {
+                type Output = Self;
+                fn add(self, rhs: Self) -> Self {
+                    Vector(std::array::from_fn(|i| self.0[i] + rhs.0[i]))
+                }
+            }
+
+            fn main() {
+                let a = Vector([1.0, 2.0, 3.0]);
+                let b = Vector([4.0, 5.0, 6.0]);
+                println!("{:?} dot {}", a + b, a.dot(&b));
+                // let c = Vector([1.0, 2.0]) + a; // error: expected `Vector<2>`, found `Vector<3>`
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn math() {
+                    assert_eq!(Vector([1.0, 2.0]) + Vector([3.0, 4.0]), Vector([4.0, 6.0]));
+                    assert_eq!(Vector([1.0, 0.0]).dot(&Vector([0.0, 1.0])), 0.0);
+                }
+            }
+          explain: The dimension check happens at compile time, with no run-time length test at all. Graphics and linear-algebra crates such as glam and nalgebra use this to make dimension bugs impossible.
+  quiz:
+    - q: Why accept I IntoIterator instead of &[T]?
+      o: |
+        Callers can pass vectors, arrays, sets, ranges, iterators or references
+        It is required for generics
+        Slices cannot be iterated
+        It avoids all allocations automatically
+      a: 0
+      x: IntoIterator is the most flexible input.
+    - q: What do you get for free by implementing FromStr?
+      o: |
+        The str::parse method for your type
+        Display
+        Serialization
+        Hashing
+      a: 0
+      x: '"1.2.3".parse::<Version>() calls your from_str.'
+    - q: When should you implement TryFrom rather than From?
+      o: |
+        When the conversion can fail
+        When the conversion is expensive
+        When converting to a String
+        Never
+      a: 0
+      x: From promises the conversion always succeeds.
+    - q: What does PhantomData<State> cost at run time?
+      o: |
+        Nothing; it is zero-sized
+        One pointer
+        One byte
+        A heap allocation
+      a: 0
+      x: It exists only for the type checker.
+      pool: exam
+    - q: Which must agree with each other when you implement them by hand?
+      type: multi
+      o: |
+        PartialEq and Eq
+        Eq and Hash
+        Ord and PartialOrd
+        Debug and Display
+      a: [0, 1, 2]
+      x: Debug and Display are independent formats.
+      pool: exam
+    - q: What does const generics make possible?
+      o: |
+        Values such as array lengths as part of a type
+        Constant functions only
+        Generic constants in traits only
+        Runtime-sized arrays on the stack
+      a: 0
+      x: Matrix<2, 3> and Matrix<3, 2> are distinct types.
+      pool: exam
+  recap:
+    summary:
+      - Use IntoIterator and associated types to write APIs that accept many kinds of input.
+      - Associated types give each implementation exactly one related type, keeping signatures short.
+      - From, TryFrom, FromStr, AsRef and Default integrate your types with the standard library.
+      - Ord, PartialOrd, Eq and Hash must agree; tuple comparisons give correct field-by-field ordering.
+      - PhantomData typestate and const generics move rule checks to compile time at no run-time cost.
+    functions: |
+      I: IntoIterator, I::Item: Bound || Generic over anything iterable.
+      trait T { type Item; } || An associated type.
+      impl FromStr for T || Enable .parse().
+      impl TryFrom<X> for T || A fallible conversion.
+      P: AsRef<Path> || Accept many path-like types.
+      PhantomData<S> || A zero-sized marker for typestate.
+      struct M<const N: usize> || A const generic parameter.
+    next: A06 covers modules, dependencies, features and documentation the way professional crates do it.
+
+- id: a6
+  n: A06
+  t: Crates, Cargo and documentation
+  lv: 3
+  goal: Organise a crate for others, manage dependencies and features deliberately, and write documentation that is tested and easy to navigate.
+  res: |
+    The Cargo Book, features | https://doc.rust-lang.org/cargo/reference/features.html
+    The Cargo Book, specifying dependencies | https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html
+    The rustdoc book | https://doc.rust-lang.org/rustdoc/
+  items:
+    - id: A6.1
+      t: Code organisation and visibility
+      min: 45
+      learn: Visibility levels pub, pub(crate) and pub(super), a prelude module, organising a crate by feature rather than by type, and keeping the public API small.
+      example:
+        title: Visibility levels in one crate
+        code: |
+          mod billing {
+              pub struct Invoice { pub id: u32, pub(crate) total_cents: u64 }
+
+              pub(crate) fn tax(cents: u64) -> u64 { cents * 15 / 100 }   // whole crate only
+
+              pub mod format {
+                  pub fn money(cents: u64) -> String { format!("${}.{:02}", cents / 100, cents % 100) }
+                  pub(super) fn internal_code(id: u32) -> String { format!("INV-{id:05}") } // parent only
+              }
+
+              impl Invoice {
+                  pub fn label(&self) -> String {
+                      format!("{} {}", format::internal_code(self.id), format::money(self.total_cents + tax(self.total_cents)))
+                  }
+              }
+          }
+
+          pub mod prelude {                     // one import for the common items
+              pub use crate::billing::format::money;
+              pub use crate::billing::Invoice;
+          }
+
+          use prelude::*;
+
+          fn main() {
+              let inv = Invoice { id: 42, total_cents: 10_000 };
+              println!("{} / {}", inv.label(), money(250));
+          }
+        output: |
+          INV-00042 $115.00 / $2.50
+        note: pub(crate) shares an item inside your crate without making it part of the public API, which keeps you free to change it later. A prelude module re-exports the handful of items most users need. Every pub item is a promise you must keep across versions.
+      ex:
+        - t: Shrink a public API
+          p: Take the billing example and decide, for each item, whether it should be pub, pub(crate) or private if billing were a published library. Write the reasoning as comments and adjust the code.
+          hints:
+            - Ask whether an outside user needs the item to do their job.
+            - Fields that must stay consistent with each other should be private, with methods.
+            - Items only tests need can be private; unit tests in the same module can see them.
+          solution: |
+            mod billing {
+                pub struct Invoice {
+                    id: u32,          // private: set only through new()
+                    total_cents: u64, // private: invariants (non-negative, tax rules) live here
+                }
+
+                fn tax(cents: u64) -> u64 { cents * 15 / 100 } // private: a policy detail
+
+                impl Invoice {
+                    pub fn new(id: u32, total_cents: u64) -> Self { Invoice { id, total_cents } }
+                    pub fn id(&self) -> u32 { self.id }
+                    pub fn label(&self) -> String {
+                        format!("INV-{:05} {}", self.id, money(self.total_cents + tax(self.total_cents)))
+                    }
+                }
+
+                pub fn money(cents: u64) -> String { // pub: useful to every caller
+                    format!("${}.{:02}", cents / 100, cents % 100)
+                }
+            }
+
+            fn main() {
+                let inv = billing::Invoice::new(7, 999);
+                println!("{} {}", inv.id(), inv.label());
+            }
+          explain: A smaller API is easier to document, test and keep stable. You can always make something public later, but making a public item private is a breaking change.
+        - t: Organise by feature
+          p: Sketch the src/ layout for a todo application with users, tasks and notifications, first organised by type (models, services, handlers) and then by feature (users, tasks, notifications). Note one advantage of each.
+          lang: text
+          check: none
+          hints:
+            - By type puts all structs together, all services together, and so on.
+            - By feature puts everything about tasks in one module.
+            - Think about how many files a typical change touches.
+          solution: |
+            By type:                     By feature:
+            src/                         src/
+              models/{user,task,note}.rs   users/{mod,model,service,handler}.rs
+              services/{user,task,...}.rs  tasks/{mod,model,service,handler}.rs
+              handlers/{user,task,...}.rs  notifications/{mod,model,service}.rs
+              lib.rs                       lib.rs
+
+            By type: easy to find "all the handlers"; fine for small crates.
+            By feature: a change to tasks touches one folder, and pub(crate)
+            can keep each feature's internals private from the others.
+          explain: Most growing Rust codebases drift toward organising by feature, because module privacy then matches the boundaries of the domain.
+    - id: A6.2
+      t: Dependencies and features
+      min: 45
+      learn: Semantic version requirements, cargo update and cargo tree, dev-dependencies and optional dependencies, defining your own features, and checking for vulnerabilities with cargo audit.
+      example:
+        title: A Cargo.toml with features
+        lang: toml
+        check: none
+        code: |
+          [package]
+          name = "reportgen"
+          version = "0.3.0"
+          edition = "2024"
+          rust-version = "1.85"           # minimum supported Rust version
+
+          [dependencies]
+          serde = { version = "1", features = ["derive"] }   # "1" means >=1.0.0, <2.0.0
+          serde_json = { version = "1", optional = true }    # only with the json feature
+          chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+          [dev-dependencies]
+          proptest = "1"                  # tests and benchmarks only
+
+          [features]
+          default = ["json"]
+          json = ["dep:serde_json"]
+          csv = []
+
+          # In code:  #[cfg(feature = "json")] pub mod json;
+          # $ cargo tree -e features      # who enabled what
+          # $ cargo build --no-default-features --features csv
+          # $ cargo install cargo-audit && cargo audit
+        note: A version like "1" accepts any compatible release, and Cargo.lock pins the exact one; cargo update moves within the allowed range. Features must be additive, enabling one should never break another, because Cargo unifies features across the whole dependency graph.
+      ex:
+        - t: Add an optional feature
+          p: Add a "colors" feature to a small CLI that, when enabled, prints errors in red using the owo-colors crate as an optional dependency, and falls back to plain text otherwise. Show the build commands for both.
+          lang: text
+          check: none
+          hints:
+            - "owo-colors = { version = \"4\", optional = true } and colors = [\"dep:owo-colors\"]."
+            - 'Write two versions of one function, one with #[cfg(feature = "colors")] and one with #[cfg(not(feature = "colors"))].'
+            - cargo run --features colors turns it on.
+          solution: |
+            # Cargo.toml
+            [dependencies]
+            owo-colors = { version = "4", optional = true }
+
+            [features]
+            colors = ["dep:owo-colors"]
+
+            // src/main.rs
+            #[cfg(feature = "colors")]
+            fn error_line(msg: &str) -> String {
+                use owo_colors::OwoColorize;
+                format!("{}", msg.red())
+            }
+
+            #[cfg(not(feature = "colors"))]
+            fn error_line(msg: &str) -> String {
+                format!("error: {msg}")
+            }
+
+            fn main() {
+                eprintln!("{}", error_line("file not found"));
+            }
+
+            // cargo run                    -> plain text
+            // cargo run --features colors  -> red text
+          explain: Optional dependencies keep the default build small and fast to compile. Test both configurations in CI, since code behind a feature flag is easy to break unnoticed.
+        - t: Audit and inspect
+          p: In one of your projects with dependencies, run cargo tree, cargo tree -d (duplicates) and cargo audit. Write down the deepest dependency chain and any advisory reported.
+          lang: bash
+          check: none
+          hints:
+            - cargo tree -i some_crate shows who depends on some_crate.
+            - Duplicates appear when two crates need incompatible versions of a third.
+            - cargo audit checks Cargo.lock against the RustSec advisory database.
+          solution: |
+            $ cargo tree | head
+            guess v0.1.0
+            └── rand v0.8.5
+                ├── libc v0.2.x
+                ├── rand_chacha v0.3.1
+                │   ├── ppv-lite86 v0.2.x
+                │   └── rand_core v0.6.4
+                └── rand_core v0.6.4
+            $ cargo tree -d
+            (nothing printed: no duplicate versions)
+            $ cargo audit
+            Scanning Cargo.lock for vulnerabilities (12 crate dependencies)
+            (no advisories found)
+          explain: Knowing your dependency tree is part of shipping software responsibly. cargo audit (and cargo deny for licences and policies) are standard steps in a Rust CI pipeline.
+    - id: A6.3
+      t: Documentation with rustdoc
+      min: 45
+      learn: 'Intra-doc links, doc tests that use the ? operator, hidden setup lines, documenting errors and panics, #![warn(missing_docs)], and README examples tested as doc tests.'
+      example:
+        title: Doc tests with ? and hidden lines
+        check: test
+        code: |
+          #![warn(missing_docs)]
+          //! Tools for parsing durations such as `"1h30m"`.
+
+          /// Parses a duration like `"1h30m"` or `"45s"` into seconds.
+          ///
+          /// See also [`format_secs`] for the reverse direction.
+          ///
+          /// # Errors
+          ///
+          /// Returns an error message if a number is missing or a unit is unknown.
+          ///
+          /// # Examples
+          ///
+          /// ```
+          /// # fn main() -> Result<(), String> {
+          /// # use durations::parse_secs;
+          /// assert_eq!(parse_secs("1h30m")?, 5400);
+          /// assert!(parse_secs("10x").is_err());
+          /// # Ok(())
+          /// # }
+          /// ```
+          pub fn parse_secs(s: &str) -> Result<u64, String> {
+              let mut total = 0;
+              let mut num = String::new();
+              for c in s.chars() {
+                  if c.is_ascii_digit() {
+                      num.push(c);
+                      continue;
+                  }
+                  let n: u64 = num.parse().map_err(|_| format!("missing number before {c}"))?;
+                  num.clear();
+                  total += n * match c {
+                      'h' => 3600,
+                      'm' => 60,
+                      's' => 1,
+                      _ => return Err(format!("unknown unit {c}")),
+                  };
+              }
+              Ok(total)
+          }
+
+          /// Formats seconds as `"XhYmZs"`, the inverse of [`parse_secs`].
+          pub fn format_secs(secs: u64) -> String {
+              format!("{}h{}m{}s", secs / 3600, secs % 3600 / 60, secs % 60)
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              #[test]
+              fn round_trip() {
+                  assert_eq!(parse_secs(&format_secs(3725)).unwrap(), 3725);
+              }
+          }
+        note: 'Lines starting with # inside a doc example run but are hidden in the rendered docs, which lets examples use ? without clutter. [`format_secs`] becomes a clickable link that rustdoc checks. missing_docs warns about every undocumented public item.'
+      ex:
+        - t: Document a module properly
+          p: Add crate docs, item docs with Examples and Errors sections, and intra-doc links to your textstats or durations crate. Run cargo doc --open and cargo test --doc, and fix every missing_docs warning.
+          lang: text
+          check: none
+          hints:
+            - 'Put #![warn(missing_docs)] at the top of lib.rs.'
+            - Link items with [`name`] or [`Type::method`].
+            - cargo test --doc runs only the documentation tests.
+          solution: |
+            //! # textstats
+            //! Word, line and character statistics for text.
+            #![warn(missing_docs)]
+
+            /// Counts words separated by whitespace.
+            ///
+            /// For characters instead of words, see [`char_count`].
+            ///
+            /// ```
+            /// assert_eq!(textstats::word_count("one two"), 2);
+            /// ```
+            pub fn word_count(s: &str) -> usize { s.split_whitespace().count() }
+
+            /// Counts Unicode scalar values (what Rust calls `char`s).
+            ///
+            /// ```
+            /// assert_eq!(textstats::char_count("naïve"), 5);
+            /// ```
+            pub fn char_count(s: &str) -> usize { s.chars().count() }
+          explain: Docs with tested examples are the first thing people look at on docs.rs, and broken intra-doc links show up as warnings, so docs stay correct as the code changes.
+        - t: Test the README
+          p: 'Include your README.md in the crate docs with #![doc = include_str!("../README.md")] so the README''s Rust code blocks run as doc tests.'
+          lang: text
+          check: none
+          hints:
+            - Put the attribute at the top of lib.rs.
+            - Code blocks marked ```rust in the README become doc tests.
+            - Mark blocks that should not run with ```text or ```ignore.
+          solution: |
+            // src/lib.rs
+            #![doc = include_str!("../README.md")]
+
+            // README.md
+            // # textstats
+            // ```rust
+            // let n = textstats::word_count("hello brave world");
+            // assert_eq!(n, 3);
+            // ```
+
+            // $ cargo test --doc
+            // test src/lib.rs - (line 1) ... ok
+          explain: README examples are what most people copy first. Testing them means the very first impression of your crate is code that actually compiles.
+  quiz:
+    - q: What does pub(crate) mean?
+      o: |
+        Visible anywhere inside this crate, but not to other crates
+        Visible to the parent module only
+        Public to everyone
+        Visible in tests only
+      a: 0
+      x: pub(super) would mean the parent module only.
+    - q: What does the version requirement "1.4" accept in Cargo?
+      o: |
+        Any 1.x release at or above 1.4.0
+        Exactly 1.4.0
+        Any version
+        Only 1.4.x
+      a: 0
+      x: Cargo uses caret requirements by default.
+    - q: Why must Cargo features be additive?
+      o: |
+        Cargo unifies features across the dependency graph, so enabling one must not break others
+        Features are compiled in alphabetical order
+        Only one feature can be enabled at a time
+        They are not; features can remove code freely
+      a: 0
+      x: Two dependencies may each turn on different features of the same crate.
+    - q: 'What does a line starting with # do inside a doc test?'
+      o: |
+        It runs but is hidden from the rendered documentation
+        It is a comment and does not run
+        It marks the test as ignored
+        It makes the test fail
+      a: 0
+      x: Useful for setup and fn main wrappers.
+      pool: exam
+    - q: Which tools help keep dependencies safe?
+      type: multi
+      o: |
+        cargo audit
+        cargo tree
+        cargo deny
+        cargo fmt
+      a: [0, 1, 2]
+      x: cargo fmt only formats code.
+      pool: exam
+    - q: Where do test-only dependencies go?
+      o: |
+        "[dev-dependencies]"
+        "[dependencies] with test = true"
+        "[build-dependencies]"
+        A separate Cargo.toml
+      a: 0
+      x: They are not compiled into the normal build.
+      pool: exam
+  recap:
+    summary:
+      - Keep the public API small; use pub(crate) and pub(super) for internal sharing and a prelude for convenience.
+      - Version requirements accept compatible releases; Cargo.lock pins them; cargo update moves within the range.
+      - Optional dependencies and additive features keep builds lean; test every feature combination you support.
+      - cargo tree and cargo audit show and check what you depend on.
+      - Doc comments with tested examples, intra-doc links and missing_docs make documentation reliable.
+    functions: |
+      pub(crate) / pub(super) || Restricted visibility.
+      [dev-dependencies] || Dependencies for tests and benches.
+      optional = true / "dep:name" || An optional dependency behind a feature.
+      #[cfg(feature = "x")] || Compile code only when a feature is on.
+      cargo tree / cargo audit || Inspect and check dependencies.
+      [`Item`] || An intra-doc link.
+      #![warn(missing_docs)] || Warn about undocumented public items.
+    next: A07 goes deep on concurrency, from scoped threads to atomics and data parallelism.
+
+- id: a7
+  n: A07
+  t: Concurrency and parallelism
+  lv: 4
+  goal: Choose between channels, locks and atomics, avoid contention and deadlocks, and parallelise CPU-bound work with rayon.
+  res: |
+    Rust Atomics and Locks (free online) | https://marabos.nl/atomics/
+    std::sync | https://doc.rust-lang.org/std/sync/
+    rayon | https://docs.rs/rayon
+  items:
+    - id: A7.1
+      t: RwLock, Condvar and lazy statics
+      min: 60
+      learn: Read-heavy sharing with RwLock, waiting for a condition with Condvar, one-time initialisation with OnceLock and LazyLock, and keeping lock scopes short.
+      example:
+        title: A shared cache and a lazily built table
+        code: |
+          use std::collections::HashMap;
+          use std::sync::{Arc, LazyLock, RwLock};
+          use std::thread;
+
+          static UNITS: LazyLock<HashMap<&'static str, u64>> = LazyLock::new(|| {
+              HashMap::from([("KB", 1 << 10), ("MB", 1 << 20), ("GB", 1 << 30)]) // built on first use
+          });
+
+          fn main() {
+              let cache: Arc<RwLock<HashMap<String, u64>>> = Arc::new(RwLock::new(HashMap::new()));
+              cache.write().unwrap().insert("limit".into(), 5 * UNITS["MB"]);
+
+              let readers: Vec<_> = (0..4).map(|i| {
+                  let cache = Arc::clone(&cache);
+                  thread::spawn(move || {
+                      let guard = cache.read().unwrap();          // many readers at once
+                      format!("reader {i} sees {:?}", guard.get("limit"))
+                  })
+              }).collect();
+              for r in readers { println!("{}", r.join().unwrap()); }
+          }
+        output: |
+          reader 0 sees Some(5242880)
+          reader 1 sees Some(5242880)
+          reader 2 sees Some(5242880)
+          reader 3 sees Some(5242880)
+        note: RwLock lets many threads read at once but gives a writer exclusive access, which suits caches and configuration that are read far more often than written. LazyLock (stable since 1.80) replaces the older lazy_static and once_cell crates for global tables.
+      ex:
+        - t: A job board with Condvar
+          p: Build a simple job board where worker threads wait on a Condvar until a job is posted to a shared Mutex<VecDeque<String>>, then take it. Post five jobs from main, then a "stop" message for each worker.
+          check: build
+          hints:
+            - "Share Arc<(Mutex<VecDeque<String>>, Condvar)>."
+            - "In the worker: let mut q = lock.lock().unwrap(); while q.is_empty() { q = cvar.wait(q).unwrap(); }"
+            - After pushing, call cvar.notify_one().
+          solution: |
+            use std::collections::VecDeque;
+            use std::sync::{Arc, Condvar, Mutex};
+            use std::thread;
+
+            fn main() {
+                let board = Arc::new((Mutex::new(VecDeque::<String>::new()), Condvar::new()));
+                let workers: Vec<_> = (0..2)
+                    .map(|id| {
+                        let board = Arc::clone(&board);
+                        thread::spawn(move || {
+                            let (lock, cvar) = &*board;
+                            loop {
+                                let job = {
+                                    let mut q = lock.lock().unwrap();
+                                    while q.is_empty() {
+                                        q = cvar.wait(q).unwrap(); // releases the lock while waiting
+                                    }
+                                    q.pop_front().unwrap()
+                                };
+                                if job == "stop" {
+                                    break;
+                                }
+                                println!("worker {id} did {job}");
+                            }
+                        })
+                    })
+                    .collect();
+
+                let (lock, cvar) = &*board;
+                for j in (1..=5).map(|n| format!("job {n}")).chain(["stop".into(), "stop".into()]) {
+                    lock.lock().unwrap().push_back(j);
+                    cvar.notify_one();
+                }
+                for w in workers {
+                    w.join().unwrap();
+                }
+            }
+          explain: The while loop around wait guards against spurious wakeups, which Condvar allows. In practice a channel is simpler for this job; Condvar is the right tool when threads wait for a condition on shared state rather than for messages.
+        - t: Read-mostly configuration
+          p: Store a Config in Arc<RwLock<Config>>. Spawn three reader threads that read it in a loop and one writer that updates a field once. Make sure no reader holds the lock while printing.
+          check: build
+          hints:
+            - Clone the needed value out of the guard, then drop the guard before printing.
+            - "let level = { cfg.read().unwrap().log_level.clone() };"
+            - The writer uses cfg.write().unwrap().log_level = ...
+          solution: |
+            use std::sync::{Arc, RwLock};
+            use std::thread;
+            use std::time::Duration;
+
+            struct Config {
+                log_level: String,
+            }
+
+            fn main() {
+                let cfg = Arc::new(RwLock::new(Config { log_level: "info".into() }));
+                let readers: Vec<_> = (0..3)
+                    .map(|i| {
+                        let cfg = Arc::clone(&cfg);
+                        thread::spawn(move || {
+                            for _ in 0..3 {
+                                let level = cfg.read().unwrap().log_level.clone(); // guard dropped here
+                                println!("reader {i}: {level}");
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                        })
+                    })
+                    .collect();
+                thread::sleep(Duration::from_millis(15));
+                cfg.write().unwrap().log_level = "debug".into();
+                for r in readers {
+                    r.join().unwrap();
+                }
+            }
+          explain: The guard is a temporary that ends with the statement, so the lock is released before the slow println. Holding locks during I/O is a common cause of contention that only shows up under load.
+    - id: A7.2
+      t: Atomics and memory ordering
+      min: 60
+      learn: Atomic integers and booleans, fetch_add and compare_exchange, what Relaxed, Acquire, Release and SeqCst orderings guarantee, and a stop flag pattern.
+      example:
+        title: Counters and a stop flag
+        code: |
+          use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+          use std::sync::Arc;
+          use std::thread;
+          use std::time::Duration;
+
+          fn main() {
+              let requests = Arc::new(AtomicU64::new(0));
+              let stop = Arc::new(AtomicBool::new(false));
+
+              let workers: Vec<_> = (0..4).map(|_| {
+                  let (requests, stop) = (Arc::clone(&requests), Arc::clone(&stop));
+                  thread::spawn(move || {
+                      while !stop.load(Ordering::Acquire) {
+                          requests.fetch_add(1, Ordering::Relaxed);   // just a count: Relaxed is enough
+                          thread::sleep(Duration::from_millis(1));
+                      }
+                  })
+              }).collect();
+
+              thread::sleep(Duration::from_millis(50));
+              stop.store(true, Ordering::Release);                    // publish the stop request
+              for w in workers { w.join().unwrap(); }
+              println!("handled some requests: {}", requests.load(Ordering::Relaxed) > 0);
+
+              let max = AtomicU64::new(10);
+              let _ = max.fetch_max(42, Ordering::Relaxed);
+              let swapped = max.compare_exchange(42, 7, Ordering::AcqRel, Ordering::Acquire);
+              println!("{swapped:?} now {}", max.load(Ordering::Relaxed));
+          }
+        output: |
+          handled some requests: true
+          Ok(42) now 7
+        note: Atomics change a value without a lock. Relaxed only guarantees the operation itself is atomic, fine for counters. A Release store paired with an Acquire load also makes every write before the store visible after the load, which is what flags guarding data need. SeqCst is the simplest choice when in doubt.
+      ex:
+        - t: A lock-free ID generator
+          p: Write a struct IdGen { next AtomicU64 } with fn next(&self) -> u64, share it across eight threads that each take 1,000 ids, and prove that all 8,000 ids are unique.
+          check: test
+          hints:
+            - fetch_add(1, Ordering::Relaxed) returns the previous value.
+            - Use thread::scope so threads can borrow the generator.
+            - Collect into a HashSet and check its length.
+          solution: |
+            use std::collections::HashSet;
+            use std::sync::atomic::{AtomicU64, Ordering};
+            use std::thread;
+
+            struct IdGen {
+                next: AtomicU64,
+            }
+
+            impl IdGen {
+                fn next(&self) -> u64 {
+                    self.next.fetch_add(1, Ordering::Relaxed)
+                }
+            }
+
+            fn generate(threads: usize, per: usize) -> Vec<u64> {
+                let g = IdGen { next: AtomicU64::new(1) };
+                thread::scope(|s| {
+                    let hs: Vec<_> = (0..threads).map(|_| s.spawn(|| (0..per).map(|_| g.next()).collect::<Vec<_>>())).collect();
+                    hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+                })
+            }
+
+            fn main() {
+                let ids = generate(8, 1000);
+                let unique: HashSet<_> = ids.iter().collect();
+                println!("{} ids, {} unique", ids.len(), unique.len());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn all_unique() {
+                    let ids = generate(8, 1000);
+                    let set: HashSet<_> = ids.iter().collect();
+                    assert_eq!(set.len(), 8000);
+                }
+            }
+          explain: fetch_add is a single indivisible step, so no two threads can ever receive the same number, and there is no lock to contend on. Relaxed suffices because the ids do not guard any other data.
+        - t: compare_exchange for a one-time winner
+          p: Several threads race to claim a prize stored in an AtomicU32 that starts at 0 (unclaimed). Use compare_exchange so exactly one thread succeeds and records its id; every other thread sees who won.
+          check: test
+          hints:
+            - "prize.compare_exchange(0, my_id, Ordering::AcqRel, Ordering::Acquire)"
+            - Ok means this thread won; Err(current) tells you the winner.
+            - Count the Ok results across threads; it must be exactly one.
+          solution: |
+            use std::sync::atomic::{AtomicU32, Ordering};
+            use std::thread;
+
+            fn race(threads: u32) -> (u32, usize) {
+                let prize = AtomicU32::new(0);
+                let wins = thread::scope(|s| {
+                    let hs: Vec<_> = (1..=threads)
+                        .map(|id| {
+                            let prize = &prize;
+                            s.spawn(move || prize.compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire).is_ok())
+                        })
+                        .collect();
+                    hs.into_iter().map(|h| h.join().unwrap()).filter(|&won| won).count()
+                });
+                (prize.load(Ordering::Acquire), wins)
+            }
+
+            fn main() {
+                let (winner, wins) = race(16);
+                println!("thread {winner} won ({wins} winner)");
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn exactly_one() {
+                    let (winner, wins) = race(32);
+                    assert_eq!(wins, 1);
+                    assert!((1..=32).contains(&winner));
+                }
+            }
+          explain: compare_exchange only writes if the current value is what you expect, atomically, which is the building block of lock-free algorithms. Exactly-once claims like this appear in job schedulers and leader election.
+    - id: A7.3
+      t: Data parallelism with rayon
+      min: 45
+      learn: Turn iterator chains into parallel ones with par_iter, parallel sorting, reductions, when parallelism helps and when overhead dominates, and Amdahl's law.
+      example:
+        title: par_iter in one line
+        deps: ['rayon = "1"']
+        code: |
+          use rayon::prelude::*;
+          use std::time::Instant;
+
+          fn is_prime(n: u64) -> bool {
+              n >= 2 && (2..).take_while(|d| d * d <= n).all(|d| n % d != 0)
+          }
+
+          fn main() {
+              let t = Instant::now();
+              let seq = (1..2_000_000u64).filter(|&n| is_prime(n)).count();
+              let t_seq = t.elapsed();
+              let t = Instant::now();
+              let par = (1..2_000_000u64).into_par_iter().filter(|&n| is_prime(n)).count();
+              let t_par = t.elapsed();
+              println!("{seq} primes sequential in {t_seq:?}, {par} parallel in {t_par:?}");
+              println!("threads available: {}", rayon::current_num_threads());
+
+              let mut v: Vec<u32> = (0..1_000_000).rev().collect();
+              v.par_sort_unstable();
+              println!("sorted: {}", v.windows(2).all(|w| w[0] <= w[1]));
+          }
+        output: |
+          148933 primes sequential in 1.2s, 148933 parallel in 160ms
+          threads available: 8
+          sorted: true
+        note: Changing iter to par_iter (or into_par_iter) splits the work across a thread pool sized to your CPU, and the borrow checker still guarantees there are no data races. Exact times depend on your machine. Parallelism pays off for CPU-heavy work on many items; for tiny workloads the coordination overhead can make it slower.
+      ex:
+        - t: Parallel word frequencies
+          p: Count word frequencies across many documents in parallel with rayon, using fold to build one HashMap per thread and reduce to merge them.
+          deps: ['rayon = "1"']
+          check: test
+          hints:
+            - docs.par_iter().fold(HashMap::new, |mut m, doc| { ...; m })
+            - .reduce(HashMap::new, |mut a, b| { merge b into a; a })
+            - Compare the result with a sequential version in a test.
+          solution: |
+            use rayon::prelude::*;
+            use std::collections::HashMap;
+
+            fn word_freq(docs: &[String]) -> HashMap<String, usize> {
+                docs.par_iter()
+                    .fold(HashMap::new, |mut m: HashMap<String, usize>, doc| {
+                        for w in doc.split_whitespace() {
+                            *m.entry(w.to_lowercase()).or_insert(0) += 1;
+                        }
+                        m
+                    })
+                    .reduce(HashMap::new, |mut a, b| {
+                        for (k, v) in b {
+                            *a.entry(k).or_insert(0) += v;
+                        }
+                        a
+                    })
+            }
+
+            fn main() {
+                let docs: Vec<String> = (0..10_000).map(|i| format!("Rust is fast and rust is safe {}", i % 7)).collect();
+                let f = word_freq(&docs);
+                println!("rust: {}, safe: {}", f["rust"], f["safe"]);
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn matches_sequential() {
+                    let docs = vec!["a b a".to_string(), "b c".to_string()];
+                    let f = word_freq(&docs);
+                    assert_eq!((f["a"], f["b"], f["c"]), (2, 2, 1));
+                }
+            }
+          explain: Each thread fills its own map with no locking, and the maps are merged at the end. This map-reduce shape scales far better than sharing one Mutex<HashMap>.
+        - t: When parallel is slower
+          p: Time summing 1,000 small numbers with iter().sum() and par_iter().sum() in a release build, then 100 million. Explain the result using the idea of overhead and Amdahl's law.
+          deps: ['rayon = "1"']
+          check: build
+          hints:
+            - Use std::hint::black_box around inputs so nothing is computed at compile time.
+            - Run each measurement a few times; the first run includes thread-pool start-up.
+            - Amdahl's law says the serial part of a job limits the possible speed-up.
+          solution: |
+            use rayon::prelude::*;
+            use std::hint::black_box;
+            use std::time::Instant;
+
+            fn time(label: &str, n: u64) {
+                let v: Vec<u64> = (0..n).collect();
+                let t = Instant::now();
+                let a: u64 = black_box(&v).iter().sum();
+                let seq = t.elapsed();
+                let t = Instant::now();
+                let b: u64 = black_box(&v).par_iter().sum();
+                let par = t.elapsed();
+                assert_eq!(a, b);
+                println!("{label}: sequential {seq:?}, parallel {par:?}");
+            }
+
+            fn main() {
+                rayon::current_num_threads(); // start the pool before timing
+                time("1 thousand", 1_000);
+                time("100 million", 100_000_000);
+            }
+          explain: For 1,000 numbers, splitting work across threads costs more than the addition itself, so parallel is slower. For 100 million it wins, though memory bandwidth limits the gain. Always measure; never assume parallel is faster.
+  quiz:
+    - q: When is RwLock a better choice than Mutex?
+      o: |
+        When reads are far more frequent than writes
+        When writes are frequent
+        Always
+        When the data is a single integer
+      a: 0
+      x: For a single integer an atomic is usually better.
+    - q: Which ordering is enough for a simple statistics counter?
+      o: |
+        Relaxed
+        SeqCst only
+        Acquire only
+        None; counters need a Mutex
+      a: 0
+      x: Relaxed still makes each increment atomic.
+    - q: Why is Condvar::wait called in a while loop?
+      o: |
+        Wakeups can be spurious, so the condition must be rechecked
+        wait only works once
+        To avoid deadlocks with RwLock
+        It is not; a single call is enough
+      a: 0
+      x: The loop rechecks the shared state after every wakeup.
+    - q: What does compare_exchange(0, id, ...) do?
+      o: |
+        Writes id only if the current value is 0, atomically, and reports what it found
+        Always writes id
+        Swaps two atomics
+        Waits until the value becomes 0
+      a: 0
+      x: Ok means it wrote; Err carries the current value.
+      pool: exam
+    - q: Which are true about rayon's par_iter?
+      type: multi
+      o: |
+        It splits work across a thread pool
+        The borrow checker still prevents data races
+        It is always faster than iter
+        fold plus reduce avoids sharing one locked collection
+      a: [0, 1, 3]
+      x: Small workloads can be slower in parallel.
+      pool: exam
+    - q: What replaces lazy_static and once_cell for global, lazily initialised values in modern std?
+      o: |
+        std::sync::LazyLock and OnceLock
+        static mut
+        thread_local! only
+        const fn
+      a: 0
+      x: LazyLock was stabilised in Rust 1.80.
+      pool: exam
+  recap:
+    summary:
+      - RwLock suits read-heavy shared data; Condvar lets threads wait for a condition; LazyLock and OnceLock initialise globals once.
+      - Copy values out of guards and release locks before slow work such as I/O.
+      - Atomics change single values without locks; Relaxed for counters, Acquire/Release to publish data, SeqCst when unsure.
+      - compare_exchange is the building block for lock-free claims and updates.
+      - rayon parallelises iterator chains safely; measure, because small workloads can get slower.
+    functions: |
+      RwLock::read() / write() || Shared or exclusive access.
+      cvar.wait(guard) / notify_one() || Wait for and signal a condition.
+      LazyLock::new(|| ...) || A value initialised on first use.
+      AtomicU64::fetch_add(1, Relaxed) || Lock-free increment.
+      compare_exchange(old, new, ..) || Write only if the value is old.
+      v.par_iter() / into_par_iter() || A parallel iterator (rayon).
+      .fold(init, f).reduce(init, merge) || Per-thread accumulation, then merge.
+    next: A08 covers the async ecosystem in depth with Tokio.
+
+- id: a8
+  n: A08
+  t: Async Rust with Tokio
+  lv: 4
+  goal: Structure async applications with Tokio, write network servers and clients, share state and limit concurrency, and shut down cleanly.
+  res: |
+    Tokio tutorial | https://tokio.rs/tokio/tutorial
+    tokio docs | https://docs.rs/tokio
+    async-std | https://docs.rs/async-std
+    smol | https://docs.rs/smol
+  items:
+    - id: A8.1
+      t: Tasks, JoinSet and blocking work
+      min: 60
+      learn: Spawn and manage many tasks with JoinSet, run blocking or CPU-heavy work with spawn_blocking, the multi-threaded and current-thread runtimes, and how async-std and smol compare.
+      example:
+        title: A JoinSet of fetches and a blocking hash
+        deps: ['tokio = { version = "1", features = ["full"] }']
+        code: |
+          use std::time::Duration;
+          use tokio::task::JoinSet;
+
+          async fn fetch(id: u32) -> (u32, usize) {
+              tokio::time::sleep(Duration::from_millis(10 * (5 - id as u64))).await;
+              (id, id as usize * 100)
+          }
+
+          fn expensive_checksum(data: &[u8]) -> u64 {
+              data.iter().fold(0u64, |h, &b| h.wrapping_mul(31).wrapping_add(b as u64))
+          }
+
+          #[tokio::main]
+          async fn main() {
+              let mut set = JoinSet::new();
+              for id in 1..=4 {
+                  set.spawn(fetch(id));
+              }
+              while let Some(res) = set.join_next().await {   // results in completion order
+                  let (id, size) = res.unwrap();
+                  println!("fetched {id}: {size} bytes");
+              }
+
+              let data = vec![7u8; 1_000_000];
+              let sum = tokio::task::spawn_blocking(move || expensive_checksum(&data)).await.unwrap();
+              println!("checksum computed off the async threads: {}", sum != 0);
+          }
+        output: |
+          fetched 4: 400 bytes
+          fetched 3: 300 bytes
+          fetched 2: 200 bytes
+          fetched 1: 100 bytes
+          checksum computed off the async threads: true
+        note: JoinSet owns a group of tasks, hands back results as they finish, and aborts the rest when dropped. spawn_blocking moves blocking or CPU-heavy work to a separate thread pool so it cannot freeze the async workers. async-std and smol offer similar APIs; Tokio is the most widely used runtime, especially for networking.
+      ex:
+        - t: Bounded fan-out
+          p: Process 50 jobs with a JoinSet, but never run more than 5 at once. Each job sleeps a little and returns its id squared; collect all results.
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          check: test
+          hints:
+            - Spawn until set.len() reaches 5, then await join_next before spawning more.
+            - After the loop, drain the remaining tasks.
+            - Track the peak number of running tasks to prove the limit.
+          solution: |
+            use std::time::Duration;
+            use tokio::task::JoinSet;
+
+            async fn run_bounded(jobs: u64, limit: usize) -> (Vec<u64>, usize) {
+                let mut set = JoinSet::new();
+                let mut results = Vec::new();
+                let mut peak = 0;
+                for id in 0..jobs {
+                    while set.len() >= limit {
+                        results.push(set.join_next().await.unwrap().unwrap());
+                    }
+                    set.spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                        id * id
+                    });
+                    peak = peak.max(set.len());
+                }
+                while let Some(r) = set.join_next().await {
+                    results.push(r.unwrap());
+                }
+                results.sort();
+                (results, peak)
+            }
+
+            #[tokio::main]
+            async fn main() {
+                let (r, peak) = run_bounded(50, 5).await;
+                println!("{} results, peak concurrency {peak}", r.len());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[tokio::test]
+                async fn respects_limit() {
+                    let (r, peak) = run_bounded(20, 3).await;
+                    assert_eq!(r.len(), 20);
+                    assert!(peak <= 3);
+                    assert_eq!(r[19], 19 * 19);
+                }
+            }
+          explain: 'Bounding concurrency protects the services you call and your own memory. #[tokio::test] gives each test its own runtime.'
+        - t: Keep the runtime responsive
+          p: Show the difference between computing a slow hash inside an async task and inside spawn_blocking by running a ticker task that prints every 10 ms on a current-thread runtime.
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          check: build
+          hints:
+            - "#[tokio::main(flavor = \"current_thread\")] makes the effect easy to see."
+            - The ticker uses tokio::time::interval.
+            - With the slow work inline, the ticker stops printing until it finishes.
+          solution: |
+            use std::time::{Duration, Instant};
+
+            fn slow_work() -> u64 {
+                let start = Instant::now();
+                let mut x = 0u64;
+                while start.elapsed() < Duration::from_millis(100) {
+                    x = x.wrapping_add(1);
+                }
+                x
+            }
+
+            #[tokio::main(flavor = "current_thread")]
+            async fn main() {
+                let ticker = tokio::spawn(async {
+                    let mut tick = tokio::time::interval(Duration::from_millis(10));
+                    for i in 0..15 {
+                        tick.tick().await;
+                        println!("tick {i}");
+                    }
+                });
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                println!("-- blocking inline (ticks freeze) --");
+                slow_work();
+                println!("-- spawn_blocking (ticks continue) --");
+                tokio::task::spawn_blocking(slow_work).await.unwrap();
+                ticker.await.unwrap();
+            }
+          explain: On the current-thread runtime there is only one worker, so inline slow work stops every other task. Multi-threaded runtimes hide the problem until all workers are blocked, which is why the habit of using spawn_blocking matters.
+    - id: A8.2
+      t: Async networking
+      min: 75
+      learn: A TCP echo server with TcpListener and one task per connection, a client with TcpStream, splitting streams into reader and writer halves, framing lines with BufReader, and timeouts.
+      example:
+        title: A line-based echo server and client in one program
+        deps: ['tokio = { version = "1", features = ["full"] }']
+        code: |
+          use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+          use tokio::net::{TcpListener, TcpStream};
+
+          async fn handle(stream: TcpStream) -> std::io::Result<()> {
+              let (read, mut write) = stream.into_split();
+              let mut lines = BufReader::new(read).lines();
+              while let Some(line) = lines.next_line().await? {
+                  write.write_all(format!("echo: {}\n", line.to_uppercase()).as_bytes()).await?;
+              }
+              Ok(())
+          }
+
+          #[tokio::main]
+          async fn main() -> std::io::Result<()> {
+              let listener = TcpListener::bind("127.0.0.1:0").await?;   // port 0: pick a free port
+              let addr = listener.local_addr()?;
+              tokio::spawn(async move {
+                  loop {
+                      let (stream, _) = listener.accept().await.unwrap();
+                      tokio::spawn(handle(stream));                     // one task per connection
+                  }
+              });
+
+              let mut client = TcpStream::connect(addr).await?;
+              client.write_all(b"hello\nrust\n").await?;
+              client.shutdown().await?;                                 // no more data from us
+              let mut reply = String::new();
+              tokio::io::AsyncReadExt::read_to_string(&mut client, &mut reply).await?;
+              print!("{reply}");
+              Ok(())
+          }
+        output: |
+          echo: HELLO
+          echo: RUST
+        note: Each connection gets its own lightweight task, so a server can hold thousands of connections on a few threads. into_split gives independent read and write halves. Binding to port 0 lets the OS pick a free port, which is handy in tests.
+      ex:
+        - t: A tiny key-value server
+          p: "Extend the echo server into a key-value server with commands SET key value, GET key and DEL key, storing data in an Arc<Mutex<HashMap<String, String>>> shared by all connections. Test it with a client in the same program."
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          check: test
+          hints:
+            - Parse each line with split_whitespace and a match on a slice pattern.
+            - A std::sync::Mutex is fine here because the lock is never held across an await.
+            - Reply with OK, the value, or NOT_FOUND.
+          solution: |
+            use std::collections::HashMap;
+            use std::sync::{Arc, Mutex};
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            use tokio::net::{TcpListener, TcpStream};
+
+            type Db = Arc<Mutex<HashMap<String, String>>>;
+
+            fn execute(db: &Db, line: &str) -> String {
+                let words: Vec<&str> = line.split_whitespace().collect();
+                let mut map = db.lock().unwrap();
+                match words.as_slice() {
+                    ["SET", k, v] => {
+                        map.insert(k.to_string(), v.to_string());
+                        "OK".into()
+                    }
+                    ["GET", k] => map.get(*k).cloned().unwrap_or_else(|| "NOT_FOUND".into()),
+                    ["DEL", k] => if map.remove(*k).is_some() { "OK".into() } else { "NOT_FOUND".into() },
+                    _ => "ERR unknown command".into(),
+                }
+            }
+
+            async fn handle(stream: TcpStream, db: Db) -> std::io::Result<()> {
+                let (r, mut w) = stream.into_split();
+                let mut lines = BufReader::new(r).lines();
+                while let Some(line) = lines.next_line().await? {
+                    let reply = execute(&db, &line); // lock released before the await below
+                    w.write_all(format!("{reply}\n").as_bytes()).await?;
+                }
+                Ok(())
+            }
+
+            async fn start() -> std::io::Result<std::net::SocketAddr> {
+                let listener = TcpListener::bind("127.0.0.1:0").await?;
+                let addr = listener.local_addr()?;
+                let db: Db = Arc::new(Mutex::new(HashMap::new()));
+                tokio::spawn(async move {
+                    while let Ok((s, _)) = listener.accept().await {
+                        tokio::spawn(handle(s, Arc::clone(&db)));
+                    }
+                });
+                Ok(addr)
+            }
+
+            async fn send(addr: std::net::SocketAddr, cmds: &str) -> std::io::Result<String> {
+                let mut c = TcpStream::connect(addr).await?;
+                c.write_all(cmds.as_bytes()).await?;
+                c.shutdown().await?;
+                let mut out = String::new();
+                tokio::io::AsyncReadExt::read_to_string(&mut c, &mut out).await?;
+                Ok(out)
+            }
+
+            #[tokio::main]
+            async fn main() -> std::io::Result<()> {
+                let addr = start().await?;
+                print!("{}", send(addr, "SET lang rust\nGET lang\nDEL lang\nGET lang\n").await?);
+                Ok(())
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[tokio::test]
+                async fn shared_between_connections() {
+                    let addr = start().await.unwrap();
+                    send(addr, "SET a 1\n").await.unwrap();
+                    assert_eq!(send(addr, "GET a\n").await.unwrap(), "1\n");
+                }
+            }
+          explain: Keeping the command logic in a plain execute function makes it testable without sockets. Using std's Mutex in async code is fine as long as the guard is never held across an .await; otherwise use tokio::sync::Mutex.
+        - t: Time out slow clients
+          p: Add a 5-second idle timeout to the echo server's handle function, so a client that sends nothing for 5 seconds is disconnected with a goodbye message.
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          check: build
+          hints:
+            - Wrap lines.next_line() in tokio::time::timeout(Duration::from_secs(5), ...).
+            - Err(_) from timeout means the client was idle too long.
+            - Write the goodbye message, then return.
+          solution: |
+            use std::time::Duration;
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            use tokio::net::{TcpListener, TcpStream};
+            use tokio::time::timeout;
+
+            async fn handle(stream: TcpStream) -> std::io::Result<()> {
+                let (r, mut w) = stream.into_split();
+                let mut lines = BufReader::new(r).lines();
+                loop {
+                    match timeout(Duration::from_secs(5), lines.next_line()).await {
+                        Ok(Ok(Some(line))) => w.write_all(format!("echo: {line}\n").as_bytes()).await?,
+                        Ok(Ok(None)) => return Ok(()),  // client closed the connection
+                        Ok(Err(e)) => return Err(e),
+                        Err(_) => {
+                            w.write_all(b"idle for 5s, goodbye\n").await?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+
+            #[tokio::main]
+            async fn main() -> std::io::Result<()> {
+                let listener = TcpListener::bind("127.0.0.1:7000").await?;
+                println!("try: nc 127.0.0.1 7000");
+                loop {
+                    let (s, _) = listener.accept().await?;
+                    tokio::spawn(handle(s));
+                }
+            }
+          explain: Without timeouts, idle or malicious clients can hold connections open forever and exhaust resources. Matching all four outcomes makes every way the read can end explicit.
+    - id: A8.3
+      t: Shared state, rate limits and graceful shutdown
+      min: 60
+      learn: tokio::sync Mutex and RwLock versus std's, Semaphore for rate limiting, broadcast and watch channels, and shutting down on Ctrl+C with a shutdown signal shared by every task.
+      example:
+        title: A semaphore and a shutdown signal
+        deps: ['tokio = { version = "1", features = ["full"] }']
+        code: |
+          use std::sync::Arc;
+          use std::time::Duration;
+          use tokio::sync::{watch, Semaphore};
+
+          #[tokio::main]
+          async fn main() {
+              let permits = Arc::new(Semaphore::new(2));          // at most two calls in flight
+              let (shutdown_tx, shutdown_rx) = watch::channel(false);
+              let mut handles = Vec::new();
+
+              for id in 0..4 {
+                  let permits = Arc::clone(&permits);
+                  let mut stop = shutdown_rx.clone();
+                  handles.push(tokio::spawn(async move {
+                      let mut done = 0;
+                      loop {
+                          tokio::select! {
+                              _ = stop.changed() => break,         // shutdown requested
+                              permit = permits.acquire() => {
+                                  let _permit = permit.unwrap();   // released when dropped
+                                  tokio::time::sleep(Duration::from_millis(20)).await;
+                                  done += 1;
+                              }
+                          }
+                      }
+                      (id, done)
+                  }));
+              }
+
+              tokio::time::sleep(Duration::from_millis(110)).await; // in a real app: tokio::signal::ctrl_c().await
+              shutdown_tx.send(true).unwrap();
+              let mut total = 0;
+              for h in handles { total += h.await.unwrap().1; }
+              println!("finished cleanly after about {total} calls (at most 2 at a time)");
+          }
+        output: |
+          finished cleanly after about 10 calls (at most 2 at a time)
+        note: A Semaphore hands out a fixed number of permits, a simple and robust rate limiter. A watch channel broadcasts the latest value to every receiver, ideal for a shutdown flag; select! lets each task react immediately. In a server, replace the sleep with tokio::signal::ctrl_c().await. The exact call count varies slightly from run to run.
+      ex:
+        - t: Rate-limited crawler skeleton
+          p: Simulate fetching 20 URLs where the remote server allows at most 3 concurrent requests, using a Semaphore and JoinSet, and record the maximum concurrency observed with an AtomicUsize.
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          check: test
+          hints:
+            - Acquire with permits.clone().acquire_owned().await so the permit can move into the task.
+            - Increment an AtomicUsize when a fetch starts, decrement when it ends, and update a max with fetch_max.
+            - Assert the max is at most 3.
+          solution: |
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            use std::sync::Arc;
+            use std::time::Duration;
+            use tokio::sync::Semaphore;
+            use tokio::task::JoinSet;
+
+            async fn crawl(urls: usize, limit: usize) -> usize {
+                let permits = Arc::new(Semaphore::new(limit));
+                let current = Arc::new(AtomicUsize::new(0));
+                let max = Arc::new(AtomicUsize::new(0));
+                let mut set = JoinSet::new();
+                for _ in 0..urls {
+                    let permit = permits.clone().acquire_owned().await.unwrap();
+                    let (current, max) = (Arc::clone(&current), Arc::clone(&max));
+                    set.spawn(async move {
+                        let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+                        max.fetch_max(now, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                        current.fetch_sub(1, Ordering::SeqCst);
+                        drop(permit);
+                    });
+                }
+                while set.join_next().await.is_some() {}
+                max.load(Ordering::SeqCst)
+            }
+
+            #[tokio::main]
+            async fn main() {
+                println!("peak concurrency {}", crawl(20, 3).await);
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[tokio::test]
+                async fn never_exceeds() {
+                    assert!(crawl(30, 3).await <= 3);
+                }
+            }
+          explain: acquire_owned returns a permit that is not tied to a borrow of the semaphore, so it can be moved into a spawned task and released when the task ends. Measuring peak concurrency is a direct way to test the limiter.
+        - t: Broadcast events to subscribers
+          p: Use tokio::sync::broadcast to send "deploy started", "deploy finished" events to three subscriber tasks that each print what they receive, and explain what happens to a subscriber that falls behind.
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          hints:
+            - "let (tx, _) = broadcast::channel(16); let mut rx = tx.subscribe();"
+            - Subscribe before sending, or the early messages are missed.
+            - A slow receiver gets RecvError::Lagged(n) when it misses n messages.
+          solution: |
+            use tokio::sync::broadcast;
+
+            #[tokio::main]
+            async fn main() {
+                let (tx, _) = broadcast::channel::<String>(16);
+                let mut subs = Vec::new();
+                for name in ["slack", "email", "dashboard"] {
+                    let mut rx = tx.subscribe();
+                    subs.push(tokio::spawn(async move {
+                        let mut got = Vec::new();
+                        while let Ok(ev) = rx.recv().await {
+                            got.push(ev);
+                        }
+                        println!("{name} received {got:?}");
+                    }));
+                }
+                for ev in ["deploy started", "deploy finished"] {
+                    tx.send(ev.to_string()).unwrap();
+                }
+                drop(tx); // closing the channel ends every subscriber's loop
+                for s in subs {
+                    s.await.unwrap();
+                }
+            }
+          explain: Every subscriber gets its own copy of each message. The channel keeps only the last 16; a receiver that falls further behind gets Lagged and skips ahead rather than slowing everyone down.
+  quiz:
+    - q: What does JoinSet::join_next return results in?
+      o: |
+        The order in which tasks finish
+        The order in which they were spawned
+        Random order
+        Reverse spawn order
+      a: 0
+      x: That makes it ideal for processing results as soon as they are ready.
+    - q: Where should CPU-heavy or blocking code run in a Tokio application?
+      o: |
+        In tokio::task::spawn_blocking (or a dedicated thread)
+        Directly inside async functions
+        In a select! branch
+        In tokio::spawn with a sleep
+      a: 0
+      x: Blocking the async workers stalls every task.
+    - q: When is std::sync::Mutex acceptable in async code?
+      o: |
+        When the guard is never held across an .await
+        Never
+        Always
+        Only on the current-thread runtime
+      a: 0
+      x: Otherwise use tokio::sync::Mutex.
+    - q: What does a Semaphore with 3 permits enforce?
+      o: |
+        At most three holders at a time
+        Exactly three tasks in total
+        Three retries
+        A three-second timeout
+      a: 0
+      x: Permits are returned when dropped.
+      pool: exam
+    - q: Which channel suits a shutdown flag that many tasks watch?
+      o: |
+        tokio::sync::watch
+        std::sync::mpsc
+        tokio::sync::oneshot with many receivers
+        A Vec of bools
+      a: 0
+      x: watch broadcasts the latest value to every receiver.
+      pool: exam
+    - q: Which are reasons to add timeouts to a network server?
+      type: multi
+      o: |
+        Idle clients would otherwise hold resources forever
+        Slow or malicious clients could exhaust connections
+        Timeouts make the server faster for normal clients
+        They give predictable failure behaviour
+      a: [0, 1, 3]
+      x: Timeouts limit damage; they do not speed up healthy requests.
+      pool: exam
+  recap:
+    summary:
+      - JoinSet manages groups of tasks and yields results as they finish; bound concurrency by awaiting before spawning more.
+      - spawn_blocking keeps CPU-heavy and blocking work off the async worker threads.
+      - Tokio's TcpListener and TcpStream, into_split and BufReader lines build servers with one task per connection.
+      - Use std's Mutex only when no await happens while locked; otherwise tokio::sync::Mutex.
+      - Semaphore limits concurrency; broadcast fans events out; watch carries a shutdown flag to every task.
+    functions: |
+      JoinSet::spawn / join_next || Manage a group of tasks.
+      tokio::task::spawn_blocking(f) || Run blocking work on a separate pool.
+      TcpListener::bind / accept || Accept async connections.
+      stream.into_split() || Separate read and write halves.
+      BufReader::new(r).lines().next_line() || Read lines asynchronously.
+      Semaphore::new(n) / acquire_owned() || Limit concurrency.
+      broadcast::channel / watch::channel || Fan-out events; share latest state.
+      tokio::signal::ctrl_c() || Wait for Ctrl+C.
+    next: A09 explores macros and metaprogramming.

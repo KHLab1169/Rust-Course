@@ -1,0 +1,2409 @@
+- id: c12
+  n: "12"
+  book: 12
+  t: "An I/O project: minigrep"
+  lv: 3
+  goal: Build minigrep, a small grep that searches files for a word, with clean error handling, tests, an environment variable option and proper use of standard error.
+  res: |
+    Chapter 12 in the book | https://doc.rust-lang.org/book/ch12-00-an-io-project.html
+    std::env | https://doc.rust-lang.org/std/env/
+    std::fs | https://doc.rust-lang.org/std/fs/
+  items:
+    - id: "12.1"
+      t: Arguments and reading a file
+      min: 45
+      kind: project
+      learn: Read command-line arguments with std::env::args, collect them into a Vec, and read a whole file with fs::read_to_string.
+      example:
+        title: The first version of minigrep
+        check: build
+        code: |
+          use std::env;
+          use std::fs;
+
+          fn main() {
+              let args: Vec<String> = env::args().collect();
+              // args[0] is the program's own path
+              let query = &args[1];
+              let file_path = &args[2];
+
+              println!("Searching for {query} in {file_path}");
+              let contents = fs::read_to_string(file_path)
+                  .expect("Should have been able to read the file");
+              println!("With text:\n{contents}");
+          }
+        output: |
+          $ cargo run -- the poem.txt
+          Searching for the in poem.txt
+          With text:
+          I'm nobody! Who are you?
+          ...
+        note: Arguments after -- go to your program instead of to cargo. Indexing args panics if the user gives too few arguments, which this first version does not handle yet; the next lesson fixes that properly.
+      ex:
+        - t: Create minigrep
+          p: Create the minigrep project, save a poem.txt with a few lines next to Cargo.toml, and get the first version running with cargo run -- frog poem.txt.
+          check: build
+          hints:
+            - cargo new minigrep, then put poem.txt in the project folder, not in src.
+            - "Collect the arguments with let args: Vec<String> = env::args().collect();"
+            - Paths are relative to the folder you run cargo from.
+          solution: |
+            use std::env;
+            use std::fs;
+
+            fn main() {
+                let args: Vec<String> = env::args().collect();
+                let query = &args[1];
+                let file_path = &args[2];
+                println!("Searching for {query} in {file_path}");
+                let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
+                println!("With text:\n{contents}");
+            }
+          explain: env::args panics if an argument is not valid Unicode; env::args_os exists for that rare case. For a learning project args is fine.
+        - t: Count lines and words
+          p: Extend the first version to also print how many lines and words the file has, before printing the text.
+          check: build
+          hints:
+            - contents.lines().count() counts lines.
+            - contents.split_whitespace().count() counts words.
+            - Print both with one println!.
+          solution: |
+            use std::env;
+            use std::fs;
+
+            fn main() {
+                let args: Vec<String> = env::args().collect();
+                let file_path = &args[2];
+                let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
+                println!(
+                    "{} lines, {} words",
+                    contents.lines().count(),
+                    contents.split_whitespace().count()
+                );
+                println!("{contents}");
+            }
+          explain: lines() handles both \n and \r\n endings, so the count is right on Windows files too.
+    - id: "12.2"
+      t: Refactoring for modularity and errors
+      min: 75
+      kind: project
+      learn: Move argument parsing into a Config struct with a build function that returns Result, move the logic into run returning Result<(), Box<dyn Error>>, and move both into lib.rs so main stays tiny.
+      example:
+        title: Config, run and a thin main
+        check: build
+        code: |
+          // src/lib.rs (shown in one file here)
+          use std::error::Error;
+          use std::fs;
+
+          pub struct Config {
+              pub query: String,
+              pub file_path: String,
+          }
+
+          impl Config {
+              pub fn build(args: &[String]) -> Result<Config, &'static str> {
+                  if args.len() < 3 {
+                      return Err("not enough arguments");
+                  }
+                  Ok(Config { query: args[1].clone(), file_path: args[2].clone() })
+              }
+          }
+
+          pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
+              let contents = fs::read_to_string(&config.file_path)?;
+              for line in contents.lines() {
+                  if line.contains(&config.query) {
+                      println!("{line}");
+                  }
+              }
+              Ok(())
+          }
+
+          // src/main.rs
+          fn main() {
+              let args: Vec<String> = std::env::args().collect();
+              let config = Config::build(&args).unwrap_or_else(|err| {
+                  println!("Problem parsing arguments: {err}");
+                  std::process::exit(1);
+              });
+              if let Err(e) = run(config) {
+                  println!("Application error: {e}");
+                  std::process::exit(1);
+              }
+          }
+        note: main now only wires things together, so everything worth testing sits in the library. unwrap_or_else takes a closure that runs on the error, a feature Chapter 13 explains. process::exit(1) ends the program with a non-zero status so scripts can tell it failed.
+      ex:
+        - t: Do the refactor
+          p: Split your minigrep into src/lib.rs (Config, build, run) and src/main.rs. Running it with one argument must print "Problem parsing arguments not enough arguments" and exit with status 1.
+          lang: text
+          check: none
+          hints:
+            - main.rs needs use minigrep::Config; or calls through minigrep::.
+            - After running, echo $? (or $LASTEXITCODE on PowerShell) shows the exit status.
+            - The clone calls in build are fine; Chapter 13 removes them with iterators.
+          solution: |
+            // src/main.rs
+            use std::{env, process};
+            use minigrep::Config;
+
+            fn main() {
+                let args: Vec<String> = env::args().collect();
+                let config = Config::build(&args).unwrap_or_else(|err| {
+                    println!("Problem parsing arguments: {err}");
+                    process::exit(1);
+                });
+                if let Err(e) = minigrep::run(config) {
+                    println!("Application error: {e}");
+                    process::exit(1);
+                }
+            }
+
+            // src/lib.rs holds Config, Config::build and run exactly as in the example.
+            // $ cargo run -- onlyone
+            // Problem parsing arguments: not enough arguments
+            // $ echo $?
+            // 1
+          explain: The book calls this pattern separation of concerns. It is the same reason test teams prefer thin UI layers over business logic, the logic can be exercised without the interface.
+        - t: A missing file
+          p: Run your refactored minigrep with a file that does not exist and confirm the error comes from run through the ? operator. Change the message so it names the missing file.
+          check: test
+          hints:
+            - The io::Error message is "No such file or directory (os error 2)" or similar.
+            - "You can wrap it: fs::read_to_string(&config.file_path).map_err(|e| format!(\"{}: {e}\", config.file_path))?"
+            - A String converts into Box<dyn Error> automatically.
+          solution: |
+            use std::error::Error;
+            use std::fs;
+
+            pub struct Config {
+                pub query: String,
+                pub file_path: String,
+            }
+
+            pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
+                let contents = fs::read_to_string(&config.file_path)
+                    .map_err(|e| format!("cannot read {}: {e}", config.file_path))?;
+                for line in contents.lines().filter(|l| l.contains(&config.query)) {
+                    println!("{line}");
+                }
+                Ok(())
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn names_the_file() {
+                    let cfg = Config { query: "x".into(), file_path: "no_such_file.txt".into() };
+                    let err = run(cfg).unwrap_err().to_string();
+                    assert!(err.contains("no_such_file.txt"), "got: {err}");
+                }
+            }
+          explain: map_err changes the error before ? passes it on, so you can add context such as the file name. Track 2 introduces the anyhow crate, which does this with .context("...").
+    - id: "12.3"
+      t: Test-driven search
+      min: 60
+      kind: project
+      learn: Write a failing test first, then a search function that returns matching lines, and see why it needs a lifetime annotation.
+      example:
+        title: search, test first
+        check: test
+        code: |
+          pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+              let mut results = Vec::new();
+              for line in contents.lines() {
+                  if line.contains(query) {
+                      results.push(line);
+                  }
+              }
+              results
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              #[test]
+              fn one_result() {
+                  let query = "duct";
+                  let contents = "\
+          Rust:
+          safe, fast, productive.
+          Pick three.";
+                  assert_eq!(vec!["safe, fast, productive."], search(query, contents));
+              }
+          }
+        note: The returned slices point into contents, not query, so contents and the result share 'a. The backslash after the opening quote stops the string from starting with a newline.
+      ex:
+        - t: Count matches
+          p: 'Add pub fn count<''a>(query: &str, contents: &''a str) -> usize and a test for it, writing the test before the function.'
+          check: test
+          hints:
+            - Write the test first and watch it fail to compile, then add the function.
+            - You can reuse search and call .len() on the result.
+            - Or count directly with contents.lines().filter(|l| l.contains(query)).count().
+          solution: |
+            pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+                contents.lines().filter(|l| l.contains(query)).collect()
+            }
+
+            pub fn count(query: &str, contents: &str) -> usize {
+                search(query, contents).len()
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn counts_matching_lines() {
+                    let text = "a cat\na dog\nanother cat";
+                    assert_eq!(count("cat", text), 2);
+                    assert_eq!(count("bird", text), 0);
+                }
+            }
+          explain: count returns a number, not a reference, so it needs no lifetime at all. Test-driven development makes you decide what the function should return before you think about how.
+        - t: Line numbers
+          p: 'Write search_numbered(query: &str, contents: &''a str) -> Vec<(usize, &''a str)> that returns the 1-based line number with each match, test-first, and print results as "3 line text".'
+          check: test
+          hints:
+            - contents.lines().enumerate() gives (index, line) pairs starting at 0.
+            - Add 1 to the index for human line numbers.
+            - Keep the same 'a on contents and the returned slices.
+          solution: |
+            pub fn search_numbered<'a>(query: &str, contents: &'a str) -> Vec<(usize, &'a str)> {
+                contents
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, line)| line.contains(query))
+                    .map(|(i, line)| (i + 1, line))
+                    .collect()
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn numbers_from_one() {
+                    let text = "one\ntwo\nthree two";
+                    assert_eq!(search_numbered("two", text), vec![(2, "two"), (3, "three two")]);
+                }
+            }
+          explain: This is grep -n. Iterator chains like this are Chapter 13's topic; if they feel new, write it with a for loop and a counter first, then compare.
+    - id: "12.4"
+      t: Environment variables and standard error
+      min: 60
+      kind: project
+      learn: Add a case-insensitive search controlled by the IGNORE_CASE environment variable, and print errors with eprintln! so they go to standard error.
+      example:
+        title: Case-insensitive search and eprintln!
+        check: test
+        code: |
+          pub fn search_case_insensitive<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+              let query = query.to_lowercase();
+              let mut results = Vec::new();
+              for line in contents.lines() {
+                  if line.to_lowercase().contains(&query) {
+                      results.push(line);
+                  }
+              }
+              results
+          }
+
+          pub fn ignore_case_from_env() -> bool {
+              std::env::var("IGNORE_CASE").is_ok()   // set to anything means on
+          }
+
+          fn main() {
+              if ignore_case_from_env() {
+                  eprintln!("(case-insensitive mode)");   // goes to stderr
+              }
+              for line in search_case_insensitive("rUsT", "Rust:\nTrust me.\nno") {
+                  println!("{line}");
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              #[test]
+              fn case_insensitive() {
+                  assert_eq!(vec!["Rust:", "Trust me."], search_case_insensitive("rUsT", "Rust:\nTrust me.\nno"));
+              }
+          }
+        output: |
+          Rust:
+          Trust me.
+        note: Run it with IGNORE_CASE=1 cargo run -- to poem.txt on macOS and Linux, or set $Env:IGNORE_CASE=1 first in PowerShell. Errors printed with eprintln! still show in the terminal when you redirect results to a file with > output.txt, which is exactly what users expect.
+      ex:
+        - t: Wire up IGNORE_CASE
+          p: Add an ignore_case bool to Config, fill it from the environment in build, and choose between search and search_case_insensitive in run. Switch every error message in main to eprintln!.
+          check: build
+          hints:
+            - In build, add ignore_case env::var("IGNORE_CASE").is_ok() to the struct literal.
+            - "In run: let results = if config.ignore_case { search_case_insensitive(...) } else { search(...) };"
+            - Test with cargo run -- to poem.txt > output.txt and make sure errors still appear on screen.
+          solution: |
+            use std::env;
+            use std::error::Error;
+            use std::fs;
+            use std::process;
+
+            pub struct Config {
+                pub query: String,
+                pub file_path: String,
+                pub ignore_case: bool,
+            }
+
+            impl Config {
+                pub fn build(args: &[String]) -> Result<Config, &'static str> {
+                    if args.len() < 3 {
+                        return Err("not enough arguments");
+                    }
+                    Ok(Config {
+                        query: args[1].clone(),
+                        file_path: args[2].clone(),
+                        ignore_case: env::var("IGNORE_CASE").is_ok(),
+                    })
+                }
+            }
+
+            pub fn search<'a>(q: &str, c: &'a str) -> Vec<&'a str> {
+                c.lines().filter(|l| l.contains(q)).collect()
+            }
+
+            pub fn search_case_insensitive<'a>(q: &str, c: &'a str) -> Vec<&'a str> {
+                let q = q.to_lowercase();
+                c.lines().filter(|l| l.to_lowercase().contains(&q)).collect()
+            }
+
+            pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
+                let contents = fs::read_to_string(&config.file_path)?;
+                let results = if config.ignore_case {
+                    search_case_insensitive(&config.query, &contents)
+                } else {
+                    search(&config.query, &contents)
+                };
+                for line in results {
+                    println!("{line}");
+                }
+                Ok(())
+            }
+
+            fn main() {
+                let args: Vec<String> = env::args().collect();
+                let config = Config::build(&args).unwrap_or_else(|err| {
+                    eprintln!("Problem parsing arguments: {err}");
+                    process::exit(1);
+                });
+                if let Err(e) = run(config) {
+                    eprintln!("Application error: {e}");
+                    process::exit(1);
+                }
+            }
+          explain: Reading the environment in build keeps run pure and testable; tests can construct a Config with ignore_case set either way without touching real environment variables, which would be shared between parallel tests.
+        - t: A flag beats the variable
+          p: Let a --ignore-case (or -i) argument anywhere on the command line turn on case-insensitive search too, and add tests for build that check both the flag and its absence.
+          check: test
+          hints:
+            - Separate flags from the positional arguments first, args.iter().filter(|a| a.starts_with('-')).
+            - The remaining two positional arguments are the query and the path.
+            - "Pass the environment value in as a parameter so tests do not depend on the real environment: build(args, env_ignore: bool)."
+          solution: |
+            pub struct Config {
+                pub query: String,
+                pub file_path: String,
+                pub ignore_case: bool,
+            }
+
+            impl Config {
+                pub fn build(args: &[String], env_ignore: bool) -> Result<Config, &'static str> {
+                    let flag = args.iter().skip(1).any(|a| a == "-i" || a == "--ignore-case");
+                    let positional: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with('-')).collect();
+                    if positional.len() < 2 {
+                        return Err("usage: minigrep [-i] QUERY FILE");
+                    }
+                    Ok(Config {
+                        query: positional[0].clone(),
+                        file_path: positional[1].clone(),
+                        ignore_case: flag || env_ignore,
+                    })
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                fn args(v: &[&str]) -> Vec<String> {
+                    v.iter().map(|s| s.to_string()).collect()
+                }
+                #[test]
+                fn flag_turns_it_on() {
+                    let c = Config::build(&args(&["mg", "-i", "to", "poem.txt"]), false).unwrap();
+                    assert!(c.ignore_case);
+                    assert_eq!(c.query, "to");
+                }
+                #[test]
+                fn off_by_default() {
+                    let c = Config::build(&args(&["mg", "to", "poem.txt"]), false).unwrap();
+                    assert!(!c.ignore_case);
+                }
+                #[test]
+                fn needs_two_positional() {
+                    assert!(Config::build(&args(&["mg", "-i", "to"]), false).is_err());
+                }
+            }
+          explain: Passing the environment in as a parameter (dependency injection) is what makes build testable. Real tools use the clap crate for argument parsing, covered in Track 2.
+  recap:
+    summary:
+      - env::args().collect() reads arguments; args[0] is the program path; cargo run -- passes the rest.
+      - fs::read_to_string reads a whole file and returns a Result.
+      - Keep main thin; put parsing in Config::build returning Result and logic in run returning Result<(), Box<dyn Error>>.
+      - Logic in lib.rs can be tested; write the test first, then the code.
+      - Functions returning slices of an input need a lifetime tying the output to that input.
+      - env::var reads environment variables; eprintln! writes to standard error so errors are not mixed with output.
+    functions: |
+      env::args().collect::<Vec<String>>() || Read command-line arguments.
+      fs::read_to_string(path) || Read a file into a String.
+      process::exit(1) || Stop with a failure exit status.
+      r.unwrap_or_else(|e| ...) || Handle an error with a closure.
+      env::var("NAME").is_ok() || Check whether an environment variable is set.
+      eprintln!("...") || Print to standard error.
+      s.to_lowercase() || Lowercase copy for case-insensitive comparisons.
+    explore:
+      - Add a -c flag that prints only the number of matching lines, like grep -c.
+      - Search every file in a folder with std::fs::read_dir.
+    repo: minigrep
+    cv:
+      - Built a grep-style command-line search tool in Rust with test-driven development, case-insensitive mode and proper stderr error reporting.
+    next: Chapter 13 introduces closures and iterators, and uses them to make minigrep shorter and faster.
+
+- id: c13
+  n: "13"
+  book: 13
+  t: Iterators and closures
+  lv: 3
+  goal: Write closures that capture their environment, understand the Fn traits, and process data with iterator adaptors instead of manual loops.
+  res: |
+    Chapter 13 in the book | https://doc.rust-lang.org/book/ch13-00-functional-features.html
+    std::iter::Iterator | https://doc.rust-lang.org/std/iter/trait.Iterator.html
+  items:
+    - id: "13.1"
+      t: Closures
+      min: 60
+      learn: Closure syntax and type inference, capturing by reference, by mutable reference or by move, the FnOnce, FnMut and Fn traits, and passing closures to functions like sort_by_key.
+      example:
+        title: Closures that capture
+        code: |
+          #[derive(Debug)]
+          struct Rectangle { width: u32, height: u32 }
+
+          fn apply<F: Fn(i32) -> i32>(f: F, x: i32) -> i32 { f(x) }
+
+          fn main() {
+              let offset = 10;
+              let add_offset = |x| x + offset;               // borrows offset
+              println!("{}", apply(add_offset, 5));
+
+              let mut list = vec![1, 2, 3];
+              let mut push_four = || list.push(4);          // borrows list mutably: FnMut
+              push_four();
+              println!("{list:?}");
+
+              let name = String::from("thread data");
+              let consume = move || name;                   // moves name in; returns it: FnOnce
+              println!("{}", consume());
+
+              let mut rects = vec![
+                  Rectangle { width: 10, height: 1 },
+                  Rectangle { width: 3, height: 5 },
+              ];
+              let mut calls = 0;
+              rects.sort_by_key(|r| { calls += 1; r.width });
+              println!("{rects:?} after {calls} key calls");
+          }
+        output: |
+          15
+          [1, 2, 3, 4]
+          thread data
+          [Rectangle { width: 3, height: 5 }, Rectangle { width: 10, height: 1 }] after 2 key calls
+        note: The compiler picks the least demanding way to capture each variable. Fn closures only read, FnMut closures change what they captured, and FnOnce closures may move a captured value out, so they can only be called once. move forces ownership into the closure, which threads need.
+      ex:
+        - t: A counter factory
+          p: Write make_counter() -> impl FnMut() -> u32 that returns a closure counting 1, 2, 3 each time it is called.
+          check: test
+          hints:
+            - Create let mut count = 0; inside make_counter.
+            - Return move || { count += 1; count }.
+            - The caller must store the closure in a mut variable to call it.
+          solution: |
+            fn make_counter() -> impl FnMut() -> u32 {
+                let mut count = 0;
+                move || {
+                    count += 1;
+                    count
+                }
+            }
+
+            fn main() {
+                let mut next = make_counter();
+                println!("{} {} {}", next(), next(), next());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn independent_counters() {
+                    let mut a = make_counter();
+                    let mut b = make_counter();
+                    a();
+                    a();
+                    assert_eq!(a(), 3);
+                    assert_eq!(b(), 1);
+                }
+            }
+          explain: Without move, the closure would borrow count, which dies when make_counter returns. With move, each closure owns its own count, which is why two counters are independent.
+        - t: Retry with a closure
+          p: 'Write retry<T, E>(times: u32, mut op: impl FnMut() -> Result<T, E>) -> Result<T, E> that calls op until it succeeds or the attempts run out. Test it with a closure that fails twice before succeeding.'
+          check: test
+          hints:
+            - Loop for attempt in 1..=times, return Ok(v) as soon as op() succeeds.
+            - Keep the last error and return it at the end.
+            - In the test, capture a mutable counter in the closure to fail the first two calls.
+          solution: |
+            fn retry<T, E>(times: u32, mut op: impl FnMut() -> Result<T, E>) -> Result<T, E> {
+                let mut last = op();
+                for _ in 1..times {
+                    if last.is_ok() {
+                        break;
+                    }
+                    last = op();
+                }
+                last
+            }
+
+            fn main() {
+                let mut calls = 0;
+                let r: Result<&str, &str> = retry(5, || {
+                    calls += 1;
+                    if calls < 3 { Err("not yet") } else { Ok("done") }
+                });
+                println!("{r:?} after {calls} calls");
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn gives_up() {
+                    let mut n = 0;
+                    let r: Result<(), u32> = retry(3, || { n += 1; Err(n) });
+                    assert_eq!(r, Err(3));
+                }
+            }
+          explain: The closure needs FnMut because it changes calls. This retry helper is the core of flaky-network handling in real tools; production versions add a delay between attempts.
+    - id: "13.2"
+      t: Iterators
+      min: 75
+      learn: The Iterator trait and next, iter, iter_mut and into_iter, consuming adaptors like sum and collect, iterator adaptors like map, filter, zip and enumerate, laziness, and implementing Iterator for your own type.
+      example:
+        title: Iterator chains and a custom iterator
+        code: |
+          #[derive(PartialEq, Debug)]
+          struct Shoe { size: u32, style: String }
+
+          fn shoes_in_size(shoes: Vec<Shoe>, size: u32) -> Vec<Shoe> {
+              shoes.into_iter().filter(|s| s.size == size).collect()
+          }
+
+          struct Countdown(u32);
+          impl Iterator for Countdown {
+              type Item = u32;
+              fn next(&mut self) -> Option<u32> {
+                  if self.0 == 0 { None } else { self.0 -= 1; Some(self.0 + 1) }
+              }
+          }
+
+          fn main() {
+              let v = vec![1, 2, 3];
+              let doubled: Vec<i32> = v.iter().map(|x| x * 2).collect();
+              let total: i32 = v.iter().sum();
+              println!("{doubled:?} {total}");
+
+              let shoes = vec![
+                  Shoe { size: 10, style: "sneaker".into() },
+                  Shoe { size: 13, style: "sandal".into() },
+                  Shoe { size: 10, style: "boot".into() },
+              ];
+              println!("{:?}", shoes_in_size(shoes, 10));
+
+              let pairs: Vec<(char, u32)> = "abc".chars().zip(Countdown(3)).collect();
+              println!("{pairs:?}");
+              let evens: u32 = (1..=10).filter(|n| n % 2 == 0).map(|n| n * n).sum();
+              println!("sum of even squares = {evens}");
+          }
+        output: |
+          [2, 4, 6] 6
+          [Shoe { size: 10, style: "sneaker" }, Shoe { size: 10, style: "boot" }]
+          [('a', 3), ('b', 2), ('c', 1)]
+          sum of even squares = 220
+        note: Adaptors like map and filter do nothing until a consuming method such as collect, sum or a for loop pulls values through them. iter borrows items, iter_mut borrows them mutably, and into_iter takes ownership. Implementing next is all it takes to get dozens of adaptor methods for free.
+      ex:
+        - t: Rewrite loops as chains
+          p: "Rewrite three loops as iterator chains: the sum of squares of odd numbers below 100, the longest word in a sentence, and a Vec of the lengths of each word."
+          check: test
+          hints:
+            - (1..100).filter(|n| n % 2 == 1).map(|n| n * n).sum::<u32>()
+            - split_whitespace().max_by_key(|w| w.len()) finds the longest word.
+            - map(|w| w.len()).collect::<Vec<_>>() gives the lengths.
+          solution: |
+            fn sum_odd_squares() -> u32 {
+                (1..100).filter(|n| n % 2 == 1).map(|n| n * n).sum()
+            }
+
+            fn longest_word(s: &str) -> Option<&str> {
+                s.split_whitespace().max_by_key(|w| w.len())
+            }
+
+            fn word_lengths(s: &str) -> Vec<usize> {
+                s.split_whitespace().map(|w| w.len()).collect()
+            }
+
+            fn main() {
+                let s = "iterators make loops declarative";
+                println!("{} {:?} {:?}", sum_odd_squares(), longest_word(s), word_lengths(s));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn chains() {
+                    assert_eq!(sum_odd_squares(), 166650);
+                    assert_eq!(longest_word("a bbb cc"), Some("bbb"));
+                    assert_eq!(word_lengths("a bbb cc"), vec![1, 3, 2]);
+                }
+            }
+          explain: max_by_key returns the last maximum when there is a tie. Chains read as a description of what you want, which makes them easier to review than index-based loops.
+        - t: A Fibonacci iterator
+          p: Implement Iterator for a Fib struct so Fib::new().take(10).collect::<Vec<u64>>() gives the first ten Fibonacci numbers. Then find the first Fibonacci number over one million with find.
+          check: test
+          hints:
+            - Store the current pair (a, b) in the struct.
+            - next returns Some(a) and moves the pair forward to (b, a + b).
+            - "Fib::new().find(|&n| n > 1_000_000)"
+          solution: |
+            struct Fib {
+                a: u64,
+                b: u64,
+            }
+
+            impl Fib {
+                fn new() -> Self {
+                    Fib { a: 0, b: 1 }
+                }
+            }
+
+            impl Iterator for Fib {
+                type Item = u64;
+                fn next(&mut self) -> Option<u64> {
+                    let out = self.a;
+                    self.a = self.b;
+                    self.b += out;
+                    Some(out)
+                }
+            }
+
+            fn main() {
+                println!("{:?}", Fib::new().take(10).collect::<Vec<_>>());
+                println!("{:?}", Fib::new().find(|&n| n > 1_000_000));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn first_ten() {
+                    assert_eq!(Fib::new().take(10).collect::<Vec<_>>(), vec![0, 1, 1, 2, 3, 5, 8, 13, 21, 34]);
+                    assert_eq!(Fib::new().find(|&n| n > 1_000_000), Some(1346269));
+                }
+            }
+          explain: This iterator never ends on its own, which is fine because it is lazy; take and find decide when to stop. That is something a function returning a Vec could never do.
+    - id: "13.3"
+      t: Improving minigrep and iterator performance
+      min: 45
+      learn: Take ownership of the argument iterator in Config::build instead of cloning, rewrite search as a filter chain, and why iterators compile to the same machine code as loops.
+      example:
+        title: minigrep with iterators
+        check: test
+        code: |
+          pub struct Config {
+              pub query: String,
+              pub file_path: String,
+          }
+
+          impl Config {
+              pub fn build(mut args: impl Iterator<Item = String>) -> Result<Config, &'static str> {
+                  args.next(); // skip the program name
+                  let query = match args.next() {
+                      Some(arg) => arg,
+                      None => return Err("Didn't get a query string"),
+                  };
+                  let file_path = args.next().ok_or("Didn't get a file path")?;
+                  Ok(Config { query, file_path })
+              }
+          }
+
+          pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+              contents.lines().filter(|line| line.contains(query)).collect()
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              #[test]
+              fn build_from_iterator() {
+                  let args = ["mg", "to", "poem.txt"].into_iter().map(String::from);
+                  let c = Config::build(args).unwrap();
+                  assert_eq!((c.query.as_str(), c.file_path.as_str()), ("to", "poem.txt"));
+              }
+          }
+        note: main now calls Config::build(env::args()) directly. Taking the iterator by value means the Strings move into Config, so the clone calls are gone. The book's benchmark shows the iterator version as fast as the loop; this is what "zero-cost abstraction" means.
+      ex:
+        - t: Update your minigrep
+          p: Apply both changes to your minigrep project, run cargo clippy, and fix anything it suggests.
+          lang: text
+          check: none
+          hints:
+            - In main, replace the collect with Config::build(env::args()).
+            - search and search_case_insensitive become one line each.
+            - rustup component add clippy if cargo clippy is missing.
+          solution: |
+            // src/main.rs
+            let config = Config::build(env::args()).unwrap_or_else(|err| {
+                eprintln!("Problem parsing arguments: {err}");
+                process::exit(1);
+            });
+
+            // src/lib.rs
+            pub fn search_case_insensitive<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+                let query = query.to_lowercase();
+                contents
+                    .lines()
+                    .filter(|line| line.to_lowercase().contains(&query))
+                    .collect()
+            }
+          explain: Clippy is the official linter and catches hundreds of common slips, such as needless clones or a manual loop that could be an iterator. Running it regularly is a quick way to learn idiomatic Rust.
+        - t: Measure it yourself
+          p: Time search on a large text (repeat a paragraph 100,000 times) in a release build, once with the loop version and once with the iterator version, using std::time::Instant.
+          check: build
+          hints:
+            - "let big = \"some text with words\\n\".repeat(100_000);"
+            - "let t = std::time::Instant::now(); ...; println!(\"{:?}\", t.elapsed());"
+            - Always run timing code with cargo run --release.
+          solution: |
+            use std::time::Instant;
+
+            fn search_loop<'a>(q: &str, c: &'a str) -> Vec<&'a str> {
+                let mut out = Vec::new();
+                for line in c.lines() {
+                    if line.contains(q) {
+                        out.push(line);
+                    }
+                }
+                out
+            }
+
+            fn search_iter<'a>(q: &str, c: &'a str) -> Vec<&'a str> {
+                c.lines().filter(|l| l.contains(q)).collect()
+            }
+
+            fn main() {
+                let big = "the quick brown fox\njumps over the lazy dog\n".repeat(100_000);
+                let t = Instant::now();
+                let a = search_loop("lazy", &big).len();
+                println!("loop: {a} matches in {:?}", t.elapsed());
+                let t = Instant::now();
+                let b = search_iter("lazy", &big).len();
+                println!("iter: {b} matches in {:?}", t.elapsed());
+            }
+          explain: The two times should be close, and either can win from run to run. For serious measurements use the criterion crate (Track 2, A10), which repeats runs and reports statistics, much like a proper performance test.
+  quiz:
+    - q: Which closure trait does a closure implement if it moves a captured value out when called?
+      o: |
+        FnOnce only
+        Fn
+        FnMut
+        All three
+      a: 0
+      x: Moving a value out can only happen once.
+    - q: What does this print?
+      code: |
+        let v = vec![1, 2, 3];
+        let it = v.iter().map(|x| { println!("saw {x}"); x * 2 });
+        println!("done");
+      o: |
+        Only done
+        saw 1, saw 2, saw 3, then done
+        done, then saw 1, saw 2, saw 3
+        Nothing; it does not compile
+      a: 0
+      x: Iterator adaptors are lazy; nothing consumes it.
+    - q: What is the difference between iter() and into_iter() on a Vec?
+      o: |
+        iter borrows the items; into_iter takes ownership of them
+        There is no difference
+        into_iter is faster but unsafe
+        iter returns a Vec
+      a: 0
+      x: into_iter consumes the vector.
+    - q: What does the move keyword do on a closure?
+      o: |
+        Forces the closure to take ownership of the values it captures
+        Makes the closure run on another thread
+        Moves the closure into a Box
+        Prevents the closure from capturing anything
+      a: 0
+      x: Ownership is needed when the closure outlives the current scope.
+    - q: What is the value?
+      code: |
+        (1..=4).map(|x| x * x).filter(|x| x % 2 == 0).sum::<i32>()
+      o: |
+        "20"
+        "30"
+        "10"
+        "16"
+      a: 0
+      x: The squares are 1, 4, 9, 16; the even ones are 4 and 16.
+      pool: exam
+    - q: Which do you need to implement to make your type an Iterator?
+      o: |
+        The associated type Item and the next method
+        map and filter
+        IntoIterator only
+        A for loop
+      a: 0
+      x: Every other method has a default built on next.
+      pool: exam
+    - q: Which are consuming adaptors (they use up the iterator)?
+      type: multi
+      o: |
+        sum
+        collect
+        map
+        count
+      a: [0, 1, 3]
+      x: map is an iterator adaptor that produces another lazy iterator.
+      pool: exam
+  recap:
+    summary:
+      - Closures are anonymous functions that can capture variables; types are usually inferred.
+      - They implement Fn, FnMut or FnOnce depending on whether they read, change or move out what they capture.
+      - move gives a closure ownership of its captures, needed when it outlives the current scope.
+      - Iterators produce values with next; adaptors such as map and filter are lazy until consumed.
+      - Implement Iterator (type Item and next) to get every adaptor for free.
+      - Iterator chains compile to code as fast as hand-written loops.
+    functions: |
+      |x| x + 1 || A closure.
+      move || ... || A closure that owns what it captures.
+      impl Fn(i32) -> i32 || Accept or return a closure.
+      .iter() / .iter_mut() / .into_iter() || Borrow, mutably borrow or consume items.
+      .map(f) / .filter(p) / .enumerate() / .zip(other) || Common adaptors.
+      .collect::<Vec<_>>() / .sum() / .count() || Consume an iterator.
+      .find(p) / .max_by_key(f) / .take(n) || Search, pick the largest, limit.
+    next: Chapter 14 looks at Cargo in more depth, release profiles, publishing, documentation and workspaces.
+
+- id: c14
+  n: "14"
+  book: 14
+  t: More about Cargo and crates.io
+  lv: 3
+  goal: Tune release builds, document and publish a crate, organise several crates in a workspace, and install and extend Cargo.
+  res: |
+    Chapter 14 in the book | https://doc.rust-lang.org/book/ch14-00-more-about-cargo.html
+    The Cargo Book, profiles | https://doc.rust-lang.org/cargo/reference/profiles.html
+    The rustdoc book | https://doc.rust-lang.org/rustdoc/
+  items:
+    - id: "14.1"
+      t: Release profiles and documentation comments
+      min: 60
+      learn: The dev and release profiles and opt-level, doc comments with three slashes, sections like Examples, Panics and Errors, documentation tests, and crate-level docs with //!.
+      example:
+        title: A documented function with a doc test
+        check: test
+        code: |
+          //! # my_math
+          //!
+          //! A collection of utilities to make maths easier.
+
+          /// Adds one to the number given.
+          ///
+          /// # Examples
+          ///
+          /// ```
+          /// let answer = my_math::add_one(5);
+          /// assert_eq!(6, answer);
+          /// ```
+          ///
+          /// # Panics
+          ///
+          /// Panics if `x` is `i32::MAX`, because the result would overflow.
+          pub fn add_one(x: i32) -> i32 {
+              x.checked_add(1).expect("add_one overflowed")
+          }
+
+          #[cfg(test)]
+          mod tests {
+              #[test]
+              fn adds() {
+                  assert_eq!(super::add_one(1), 2);
+              }
+          }
+        note: cargo doc --open builds HTML documentation from these comments. The code in the Examples block runs as a test with cargo test, so the documentation can never quietly go out of date. In Cargo.toml, a [profile.release] section can change settings such as opt-level, lto or panic.
+      ex:
+        - t: Document your library
+          p: Add doc comments with an Examples section to the public functions of your textstats crate from Chapter 11, plus a crate-level //! comment. Run cargo test and cargo doc --open.
+          lang: text
+          check: none
+          hints:
+            - Put //! lines at the very top of src/lib.rs.
+            - Doc tests refer to the crate by name, textstats::word_count.
+            - cargo test prints a separate Doc-tests section at the end.
+          solution: |
+            //! Simple text statistics: word and character counts.
+
+            /// Counts words separated by any whitespace.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// assert_eq!(textstats::word_count("a  b\nc"), 3);
+            /// ```
+            pub fn word_count(s: &str) -> usize {
+                s.split_whitespace().count()
+            }
+
+            /// Counts Unicode characters (not bytes).
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// assert_eq!(textstats::char_count("café"), 4);
+            /// ```
+            pub fn char_count(s: &str) -> usize {
+                s.chars().count()
+            }
+          explain: Good docs show one realistic example per function and mention when it panics or returns an error. Because examples are tested, they double as a regression suite for your public API.
+        - t: Tune a release profile
+          p: Add a [profile.release] section that sets lto = true, codegen-units = 1 and panic = "abort". Compare the release binary size of the guessing game before and after.
+          lang: toml
+          check: none
+          hints:
+            - These lines go in Cargo.toml, not in a .rs file.
+            - Run cargo build --release before and after and compare target/release sizes.
+            - Add strip = true as well to remove debug symbols.
+          solution: |
+            [profile.release]
+            lto = true          # link-time optimisation across crates
+            codegen-units = 1   # slower to compile, better optimised
+            panic = "abort"     # no unwinding code
+            strip = true        # remove symbols from the binary
+          explain: These settings usually shrink the program and can speed it up, at the cost of longer compile times. They matter most for tools you hand out to other people.
+    - id: "14.2"
+      t: Publishing a crate
+      min: 45
+      learn: Re-export a convenient public API with pub use, add the metadata crates.io requires, publish with cargo publish, and deprecate a version with cargo yank.
+      example:
+        title: Metadata for crates.io
+        lang: toml
+        check: none
+        code: |
+          [package]
+          name = "textstats-kev"            # names on crates.io are first come, first served
+          version = "0.1.0"
+          edition = "2024"
+          description = "Word and character counts for text."
+          license = "MIT OR Apache-2.0"
+          repository = "https://github.com/KHLab1169/textstats"
+          readme = "README.md"
+          keywords = ["text", "statistics"]
+
+          # $ cargo login          (paste the API token from crates.io)
+          # $ cargo publish --dry-run
+          # $ cargo publish
+          # $ cargo yank --vers 0.1.0   (stop new projects from depending on it)
+        note: Publishing is permanent; a version can be yanked but never deleted or overwritten. Always run cargo publish --dry-run first. Use semantic versioning so users know whether an upgrade can break them.
+      ex:
+        - t: Flatten the public API
+          p: Inside a single file, create a crate layout with mod kinds { pub enum PrimaryColor { Red, Yellow, Blue } } and mod utils { pub fn mix(...) }, then re-export both at the top so users write PrimaryColor and mix directly.
+          hints:
+            - Write pub use kinds::PrimaryColor; and pub use utils::mix; at the top level.
+            - "mix can take two PrimaryColor values and return a &'static str such as \"green\"."
+            - Call mix from main through the re-exported names.
+          solution: |
+            pub use kinds::PrimaryColor;
+            pub use utils::mix;
+
+            pub mod kinds {
+                #[derive(Debug, Clone, Copy, PartialEq)]
+                pub enum PrimaryColor {
+                    Red,
+                    Yellow,
+                    Blue,
+                }
+            }
+
+            pub mod utils {
+                use crate::kinds::PrimaryColor;
+
+                pub fn mix(a: PrimaryColor, b: PrimaryColor) -> &'static str {
+                    use PrimaryColor::*;
+                    match (a, b) {
+                        (Red, Yellow) | (Yellow, Red) => "orange",
+                        (Yellow, Blue) | (Blue, Yellow) => "green",
+                        (Red, Blue) | (Blue, Red) => "purple",
+                        _ => "the same colour",
+                    }
+                }
+            }
+
+            fn main() {
+                println!("{}", mix(PrimaryColor::Blue, PrimaryColor::Yellow));
+            }
+          explain: The internal modules stay organised for you, while users see a flat, simple API, and cargo doc shows the re-exports on the front page.
+        - t: Dry-run a publish
+          p: Fill in the metadata for your textstats crate and run cargo publish --dry-run (no account needed). Fix every warning it prints.
+          lang: bash
+          check: none
+          hints:
+            - Missing description and license are the usual warnings.
+            - The dry run packages the crate into target/package so you can inspect it.
+            - cargo package --list shows exactly which files would be uploaded.
+          solution: |
+            $ cargo package --list
+            Cargo.toml
+            Cargo.toml.orig
+            README.md
+            src/lib.rs
+            tests/api.rs
+            $ cargo publish --dry-run
+               Packaging textstats-kev v0.1.0
+               Verifying textstats-kev v0.1.0
+               Uploading textstats-kev v0.1.0
+            warning: aborting upload due to dry run
+          explain: The verify step builds the packaged crate from scratch, which catches files you forgot to commit. Use exclude in Cargo.toml to keep test data or large assets out of the package.
+    - id: "14.3"
+      t: Workspaces, cargo install and custom commands
+      min: 45
+      learn: Group related crates in a workspace with one Cargo.lock and target folder, depend on sibling crates by path, install binaries with cargo install, and how cargo-something becomes cargo something.
+      example:
+        title: A workspace with an app and a library
+        lang: text
+        check: none
+        code: |
+          add/
+          ├── Cargo.toml          [workspace]
+          │                       resolver = "3"
+          │                       members = ["adder", "add_one"]
+          ├── adder/              (binary)  Cargo.toml: [dependencies] add_one = { path = "../add_one" }
+          │   └── src/main.rs     fn main() { println!("{}", add_one::add_one(10)); }
+          └── add_one/            (library)
+              └── src/lib.rs      pub fn add_one(x: i32) -> i32 { x + 1 }
+
+          $ cargo run -p adder          # build and run one member
+          $ cargo test -p add_one       # test one member
+          $ cargo install ripgrep       # install a binary from crates.io into ~/.cargo/bin
+        note: All members share one lock file, so they always agree on dependency versions, and one target folder, so shared dependencies compile once. Any program on your PATH named cargo-xyz can be run as cargo xyz, which is how tools like cargo-watch and cargo-edit work.
+      ex:
+        - t: Build a workspace
+          p: Create a workspace with a library crate textstats and a binary crate wc-cli that prints word and character counts of a file using the library.
+          lang: text
+          check: none
+          hints:
+            - Create the top Cargo.toml by hand with [workspace] and members.
+            - Run cargo new wc-cli and cargo new textstats --lib inside the folder.
+            - "wc-cli's Cargo.toml needs textstats = { path = \"../textstats\" }."
+          solution: |
+            # Cargo.toml (workspace root)
+            [workspace]
+            resolver = "3"
+            members = ["textstats", "wc-cli"]
+
+            # wc-cli/Cargo.toml
+            [dependencies]
+            textstats = { path = "../textstats" }
+
+            // wc-cli/src/main.rs
+            fn main() {
+                let path = std::env::args().nth(1).expect("usage: wc-cli FILE");
+                let text = std::fs::read_to_string(&path).expect("cannot read file");
+                println!("{} words, {} chars", textstats::word_count(&text), textstats::char_count(&text));
+            }
+
+            # $ cargo run -p wc-cli -- poem.txt
+          explain: Workspaces are how larger Rust projects such as web services split into an API crate, a core library and tooling, while still building with one command.
+        - t: Install a tool
+          p: Install a well-known tool with cargo install (for example ripgrep or cargo-watch), find where the binary went, and use it once. Note what it does in your notes.
+          lang: bash
+          check: none
+          hints:
+            - Installed binaries go to ~/.cargo/bin (on Windows %USERPROFILE%\.cargo\bin).
+            - cargo install --list shows what you have installed.
+            - cargo watch -x test re-runs your tests whenever you save a file.
+          solution: |
+            $ cargo install ripgrep
+            $ which rg            # ~/.cargo/bin/rg
+            $ rg "fn main" src    # search your code, very fast
+            $ cargo install --list
+            ripgrep v14.x.x:
+                rg
+          explain: cargo install builds from source in release mode, so it takes a minute, but the result is a native program. Many everyday developer tools are distributed this way.
+  quiz:
+    - q: What does the code inside an Examples block in a /// comment do during cargo test?
+      o: |
+        It runs as a documentation test
+        Nothing; it is only documentation
+        It replaces the unit tests
+        It is compiled but never run
+      a: 0
+      x: Doc tests keep examples correct.
+    - q: Which comment style documents the crate or module that contains it?
+      o: |
+        //!
+        ///
+        /* */
+        "#!"
+      a: 0
+      x: //! documents the enclosing item, usually at the top of lib.rs.
+    - q: Can you delete a version you published to crates.io?
+      o: |
+        No; you can only yank it so new projects cannot depend on it
+        Yes, with cargo delete
+        Yes, within 24 hours
+        Only with an admin request
+      a: 0
+      x: Publishing is permanent so existing builds never break.
+    - q: What do all crates in a workspace share?
+      type: multi
+      o: |
+        One Cargo.lock
+        One target folder
+        One version number
+        One src folder
+      a: [0, 1]
+      x: Each member keeps its own Cargo.toml and version.
+      pool: exam
+    - q: How does cargo find a custom command like cargo watch?
+      o: |
+        It runs a program named cargo-watch found on the PATH
+        It must be listed in Cargo.toml
+        It downloads it automatically
+        Custom commands are not possible
+      a: 0
+      x: Any cargo-xyz binary on the PATH becomes cargo xyz.
+      pool: exam
+    - q: Which profile does cargo build use by default?
+      o: |
+        dev
+        release
+        test
+        bench
+      a: 0
+      x: Add --release for the release profile.
+      pool: exam
+  recap:
+    summary:
+      - Profiles configure builds; dev is the default and release enables optimisations; tune them in Cargo.toml.
+      - /// documents the next item, //! the enclosing crate or module; cargo doc builds HTML and examples run as tests.
+      - pub use flattens your public API without changing the internal layout.
+      - Publishing needs metadata, is permanent, and versions can only be yanked.
+      - Workspaces share one lock file and target folder; members depend on each other by path.
+      - cargo install installs binaries; cargo-xyz programs extend cargo with new subcommands.
+    functions: |
+      [profile.release] opt-level = 3 || Configure the release build.
+      /// # Examples || Document an item with a tested example.
+      cargo doc --open || Build and open documentation.
+      cargo publish --dry-run || Check a crate is ready to publish.
+      cargo yank --vers 1.0.1 || Stop new use of a published version.
+      [workspace] members = [...] || Group crates in a workspace.
+      cargo run -p name || Run one member of a workspace.
+      cargo install name || Install a binary crate.
+    next: Chapter 15 introduces smart pointers, Box, Rc and RefCell, and the traits that make them work.
+
+- id: c15
+  n: "15"
+  book: 15
+  t: Smart pointers
+  lv: 4
+  goal: Use Box, Rc and RefCell for heap data, shared ownership and interior mutability, understand Deref and Drop, and avoid reference cycles with Weak.
+  res: |
+    Chapter 15 in the book | https://doc.rust-lang.org/book/ch15-00-smart-pointers.html
+    std::rc | https://doc.rust-lang.org/std/rc/
+    std::cell | https://doc.rust-lang.org/std/cell/
+  items:
+    - id: "15.1"
+      t: Box and recursive types
+      min: 45
+      learn: Put data on the heap with Box, why recursive types such as a cons list need indirection, and when Box is the right choice.
+      example:
+        title: A cons list with Box
+        code: |
+          #[derive(Debug)]
+          enum List {
+              Cons(i32, Box<List>),
+              Nil,
+          }
+
+          use List::{Cons, Nil};
+
+          fn sum(list: &List) -> i32 {
+              match list {
+                  Cons(v, rest) => v + sum(rest),
+                  Nil => 0,
+              }
+          }
+
+          fn main() {
+              let b = Box::new(5);
+              println!("b = {b}");
+              let list = Cons(1, Box::new(Cons(2, Box::new(Cons(3, Box::new(Nil))))));
+              println!("{list:?} sums to {}", sum(&list));
+          }
+        output: |
+          b = 5
+          Cons(1, Cons(2, Cons(3, Nil))) sums to 6
+        note: Without Box, List would contain a List directly, so its size would be infinite and the compiler would refuse it. A Box is a pointer of known size, so the enum's size becomes fixed. Box is also how you move a large value cheaply or store a trait object.
+      ex:
+        - t: A binary tree
+          p: 'Define enum Tree { Leaf, Node(Box<Tree>, i32, Box<Tree>) } with insert(self, v: i32) -> Tree for a binary search tree, plus contains and an in-order to_vec.'
+          check: test
+          hints:
+            - insert matches self; inserting into a Leaf makes a Node with two Leaf children.
+            - Smaller values go left, larger or equal go right.
+            - to_vec visits left, then the value, then right.
+          solution: |
+            #[derive(Debug)]
+            enum Tree {
+                Leaf,
+                Node(Box<Tree>, i32, Box<Tree>),
+            }
+
+            impl Tree {
+                fn insert(self, v: i32) -> Tree {
+                    match self {
+                        Tree::Leaf => Tree::Node(Box::new(Tree::Leaf), v, Box::new(Tree::Leaf)),
+                        Tree::Node(l, x, r) => {
+                            if v < x {
+                                Tree::Node(Box::new(l.insert(v)), x, r)
+                            } else {
+                                Tree::Node(l, x, Box::new(r.insert(v)))
+                            }
+                        }
+                    }
+                }
+                fn contains(&self, v: i32) -> bool {
+                    match self {
+                        Tree::Leaf => false,
+                        Tree::Node(l, x, r) => v == *x || if v < *x { l.contains(v) } else { r.contains(v) },
+                    }
+                }
+                fn to_vec(&self) -> Vec<i32> {
+                    match self {
+                        Tree::Leaf => vec![],
+                        Tree::Node(l, x, r) => {
+                            let mut out = l.to_vec();
+                            out.push(*x);
+                            out.extend(r.to_vec());
+                            out
+                        }
+                    }
+                }
+            }
+
+            fn main() {
+                let t = [5, 2, 8, 1, 9].into_iter().fold(Tree::Leaf, |t, v| t.insert(v));
+                println!("{:?} has 8: {}", t.to_vec(), t.contains(8));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn sorted() {
+                    let t = [3, 1, 2].into_iter().fold(Tree::Leaf, |t, v| t.insert(v));
+                    assert_eq!(t.to_vec(), vec![1, 2, 3]);
+                    assert!(!t.contains(7));
+                }
+            }
+          explain: l.insert(v) works on a Box<Tree> because of Deref, covered next; it calls Tree::insert on the boxed value. Taking self by value avoids any need for mutable references inside the tree.
+        - t: Box a large value
+          p: Create a struct holding a [u8; 1_000_000] buffer, and show with std::mem::size_of that a Box of it is only pointer-sized. Move the Box into a function and back.
+          hints:
+            - "std::mem::size_of::<Big>() is one million; size_of::<Box<Big>>() is 8 on 64-bit."
+            - "Box::new(Big { data: [0; 1_000_000] }) may use the stack briefly; vec![0u8; 1_000_000].into_boxed_slice() avoids that."
+            - Moving a Box moves only the pointer.
+          solution: |
+            use std::mem::size_of;
+
+            struct Big {
+                data: Box<[u8]>,
+            }
+
+            fn touch(mut b: Box<Big>) -> Box<Big> {
+                b.data[0] = 42;
+                b // moving a Box copies only a pointer
+            }
+
+            fn main() {
+                println!("array: {} bytes", size_of::<[u8; 1_000_000]>());
+                println!("Box<[u8; 1_000_000]>: {} bytes", size_of::<Box<[u8; 1_000_000]>>());
+                let b = Box::new(Big { data: vec![0u8; 1_000_000].into_boxed_slice() });
+                let b = touch(b);
+                println!("first byte {}, len {}", b.data[0], b.data.len());
+            }
+          explain: Boxing big values keeps moves cheap and avoids stack overflows, since the stack is usually only a few megabytes. A Box<[u8]> slice is two words (pointer and length) and lives entirely on the heap.
+    - id: "15.2"
+      t: Deref and Drop
+      min: 60
+      learn: Implement Deref so a type behaves like a reference, deref coercion in function calls, implement Drop for cleanup, and drop a value early with std::mem::drop.
+      example:
+        title: MyBox and a custom Drop
+        code: |
+          use std::ops::Deref;
+
+          struct MyBox<T>(T);
+
+          impl<T> MyBox<T> {
+              fn new(x: T) -> MyBox<T> { MyBox(x) }
+          }
+
+          impl<T> Deref for MyBox<T> {
+              type Target = T;
+              fn deref(&self) -> &T { &self.0 }
+          }
+
+          struct Connection { name: String }
+          impl Drop for Connection {
+              fn drop(&mut self) { println!("closing {}", self.name); }
+          }
+
+          fn hello(name: &str) { println!("Hello, {name}!"); }
+
+          fn main() {
+              let x = 5;
+              let y = MyBox::new(x);
+              assert_eq!(5, *y);                 // *y is *(y.deref())
+              let m = MyBox::new(String::from("Rust"));
+              hello(&m);                          // &MyBox<String> -> &String -> &str
+              let c = Connection { name: "db".into() };
+              let _d = Connection { name: "cache".into() };
+              drop(c);                            // close early
+              println!("end of main");
+          }
+        output: |
+          Hello, Rust!
+          closing db
+          end of main
+          closing cache
+        note: Deref coercion lets the compiler insert as many deref calls as needed to match a parameter type, which is why &String works where &str is expected. You cannot call c.drop() yourself; std::mem::drop(c) takes ownership and lets the normal Drop run.
+      ex:
+        - t: A timer guard
+          p: 'Write struct Timer { label: &''static str, start: Instant } whose Drop prints how long it lived. Use it to time a block of work by just creating it at the top of the block.'
+          hints:
+            - std::time::Instant::now() records the start.
+            - "In drop: println!(\"{} took {:?}\", self.label, self.start.elapsed());"
+            - Bind it with let _t = Timer { ... }; because let _ = ... drops it immediately.
+          solution: |
+            use std::time::Instant;
+
+            struct Timer {
+                label: &'static str,
+                start: Instant,
+            }
+
+            impl Timer {
+                fn new(label: &'static str) -> Timer {
+                    Timer { label, start: Instant::now() }
+                }
+            }
+
+            impl Drop for Timer {
+                fn drop(&mut self) {
+                    println!("{} took {:?}", self.label, self.start.elapsed());
+                }
+            }
+
+            fn main() {
+                {
+                    let _t = Timer::new("summing");
+                    let s: u64 = (1..=5_000_000u64).sum();
+                    println!("sum = {s}");
+                }
+                println!("done");
+            }
+          explain: This is the RAII guard pattern, also used by MutexGuard and file handles. Watch the difference between let _t (lives to the end of the block) and let _ (dropped on the spot), a classic gotcha.
+        - t: Deref for a wrapper
+          p: Create struct Name(String) with Deref to str, so a Name can be passed to functions taking &str and can call str methods like len and to_uppercase directly.
+          check: test
+          hints:
+            - type Target = str;
+            - "fn deref(&self) -> &str { &self.0 }"
+            - Then name.len() and takes_str(&name) both work.
+          solution: |
+            use std::ops::Deref;
+
+            struct Name(String);
+
+            impl Deref for Name {
+                type Target = str;
+                fn deref(&self) -> &str {
+                    &self.0
+                }
+            }
+
+            fn shout(s: &str) -> String {
+                s.to_uppercase()
+            }
+
+            fn main() {
+                let n = Name(String::from("kevon"));
+                println!("{} has {} letters", shout(&n), n.len());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn derefs() {
+                    let n = Name("ab".into());
+                    assert_eq!(n.len(), 2);
+                    assert_eq!(shout(&n), "AB");
+                }
+            }
+          explain: Implementing Deref is meant for smart-pointer-like wrappers. Using it to fake inheritance between unrelated types is discouraged, because method lookups become surprising.
+    - id: "15.3"
+      t: Rc and shared ownership
+      min: 45
+      learn: Share ownership of one value with Rc, clone the pointer instead of the data, and watch the strong count change.
+      example:
+        title: Two lists sharing a tail
+        code: |
+          use std::rc::Rc;
+
+          #[derive(Debug)]
+          enum List {
+              Cons(i32, Rc<List>),
+              Nil,
+          }
+          use List::{Cons, Nil};
+
+          fn main() {
+              let a = Rc::new(Cons(5, Rc::new(Cons(10, Rc::new(Nil)))));
+              println!("count after creating a = {}", Rc::strong_count(&a));
+              let _b = Cons(3, Rc::clone(&a));
+              println!("count after creating b = {}", Rc::strong_count(&a));
+              {
+                  let _c = Cons(4, Rc::clone(&a));
+                  println!("count after creating c = {}", Rc::strong_count(&a));
+              }
+              println!("count after c goes out of scope = {}", Rc::strong_count(&a));
+          }
+        output: |
+          count after creating a = 1
+          count after creating b = 2
+          count after creating c = 3
+          count after c goes out of scope = 2
+        note: Rc::clone only increments a counter, so it is cheap; writing Rc::clone(&a) instead of a.clone() makes that visible to readers. The value is dropped when the last Rc goes away. Rc is for one thread only; Chapter 16 uses Arc for threads. Data inside an Rc is read-only unless combined with RefCell.
+      ex:
+        - t: Shared configuration
+          p: Create an Rc<Config> and give it to three Worker structs. Print the strong count, drop one worker, and print it again.
+          hints:
+            - "struct Worker { id: u32, config: Rc<Config> }"
+            - Create workers in a Vec with Rc::clone(&cfg).
+            - Remove one with workers.pop() or drop(workers.remove(0)).
+          solution: |
+            use std::rc::Rc;
+
+            struct Config {
+                server: String,
+            }
+
+            struct Worker {
+                id: u32,
+                config: Rc<Config>,
+            }
+
+            fn main() {
+                let cfg = Rc::new(Config { server: "api.example.com".into() });
+                let mut workers: Vec<Worker> = (1..=3).map(|id| Worker { id, config: Rc::clone(&cfg) }).collect();
+                println!("count = {}", Rc::strong_count(&cfg));
+                let w = workers.remove(0);
+                println!("worker {} used {}", w.id, w.config.server);
+                drop(w);
+                println!("count = {}", Rc::strong_count(&cfg));
+                println!("{} workers left", workers.len());
+            }
+          explain: Each worker owns a share of the same Config, so nobody has to decide who is the "real" owner. When all workers and cfg are gone, the Config is freed exactly once.
+        - t: A graph of shared nodes
+          p: Build nodes A, B, C, D where B and C both point to D, using Rc<Node> with a Vec of children. Print D's strong count and the names reachable from A.
+          hints:
+            - "struct Node { name: &'static str, children: Vec<Rc<Node>> }"
+            - Build from the bottom up, D first, then B and C cloning the Rc of D, then A.
+            - A recursive function can print the names depth-first.
+          solution: |
+            use std::rc::Rc;
+
+            struct Node {
+                name: &'static str,
+                children: Vec<Rc<Node>>,
+            }
+
+            fn walk(n: &Node, depth: usize) {
+                println!("{}{}", "  ".repeat(depth), n.name);
+                for c in &n.children {
+                    walk(c, depth + 1);
+                }
+            }
+
+            fn main() {
+                let d = Rc::new(Node { name: "D", children: vec![] });
+                let b = Rc::new(Node { name: "B", children: vec![Rc::clone(&d)] });
+                let c = Rc::new(Node { name: "C", children: vec![Rc::clone(&d)] });
+                let a = Node { name: "A", children: vec![b, c] };
+                println!("D is shared by {} owners", Rc::strong_count(&d));
+                walk(&a, 0);
+            }
+          explain: D's count is 3, one for the variable d and one for each parent. Notice D is printed twice when walking, because two paths reach it; this is a DAG, not a tree.
+    - id: "15.4"
+      t: RefCell and interior mutability
+      min: 75
+      learn: Borrow rules checked at run time with RefCell, borrow and borrow_mut, the panic when the rules are broken, a mock object for tests, and Rc<RefCell<T>> for shared mutable data.
+      example:
+        title: A mock messenger and shared mutable data
+        check: test
+        code: |
+          use std::cell::RefCell;
+          use std::rc::Rc;
+
+          pub trait Messenger {
+              fn send(&self, msg: &str);
+          }
+
+          pub fn check_quota(m: &dyn Messenger, used: u32, max: u32) {
+              if used * 100 / max >= 90 {
+                  m.send("Warning: over 90% of quota used");
+              }
+          }
+
+          struct MockMessenger {
+              sent: RefCell<Vec<String>>,   // send takes &self, yet we record messages
+          }
+
+          impl Messenger for MockMessenger {
+              fn send(&self, msg: &str) {
+                  self.sent.borrow_mut().push(String::from(msg));
+              }
+          }
+
+          fn main() {
+              let shared = Rc::new(RefCell::new(vec![1, 2]));
+              let other = Rc::clone(&shared);
+              other.borrow_mut().push(3);
+              println!("{:?}", shared.borrow());
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              #[test]
+              fn sends_warning() {
+                  let m = MockMessenger { sent: RefCell::new(vec![]) };
+                  check_quota(&m, 95, 100);
+                  assert_eq!(m.sent.borrow().len(), 1);
+              }
+          }
+        output: |
+          [1, 2, 3]
+        note: RefCell enforces the same one-writer-or-many-readers rule, but at run time; holding two borrow_mut at once panics with "already borrowed". Use it when you know the access pattern is safe but the compiler cannot prove it, as with a mock behind an &self interface.
+      ex:
+        - t: A shared bank ledger
+          p: Two Teller structs share one Rc<RefCell<Vec<i64>>> ledger. Each teller has deposit(&self, amount) that records into the shared ledger. Print the total after both tellers make deposits.
+          check: test
+          hints:
+            - "struct Teller { ledger: Rc<RefCell<Vec<i64>>> }"
+            - Inside deposit, self.ledger.borrow_mut().push(amount);
+            - Sum with ledger.borrow().iter().sum::<i64>().
+          solution: |
+            use std::cell::RefCell;
+            use std::rc::Rc;
+
+            struct Teller {
+                ledger: Rc<RefCell<Vec<i64>>>,
+            }
+
+            impl Teller {
+                fn deposit(&self, amount: i64) {
+                    self.ledger.borrow_mut().push(amount);
+                }
+            }
+
+            fn main() {
+                let ledger = Rc::new(RefCell::new(Vec::new()));
+                let a = Teller { ledger: Rc::clone(&ledger) };
+                let b = Teller { ledger: Rc::clone(&ledger) };
+                a.deposit(100);
+                b.deposit(250);
+                a.deposit(-40);
+                println!("total = {}", ledger.borrow().iter().sum::<i64>());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn both_tellers_write() {
+                    let l = Rc::new(RefCell::new(vec![]));
+                    Teller { ledger: Rc::clone(&l) }.deposit(1);
+                    Teller { ledger: Rc::clone(&l) }.deposit(2);
+                    assert_eq!(*l.borrow(), vec![1, 2]);
+                }
+            }
+          explain: Rc gives several owners, RefCell lets them change the value; together they are the single-threaded version of Arc<Mutex<T>>. Keep borrows short, since a borrow held across another call is how "already borrowed" panics happen.
+        - t: Trigger the panic on purpose
+          p: Write a test marked should_panic that holds a borrow_mut and then calls borrow on the same RefCell. Then fix the code by limiting the first borrow to a block.
+          check: test
+          hints:
+            - let a = cell.borrow_mut(); let b = cell.borrow(); panics.
+            - "The message contains \"already mutably borrowed\"."
+            - Put the borrow_mut in its own { } block so it ends before the next borrow.
+          solution: |
+            use std::cell::RefCell;
+
+            fn fixed() -> i32 {
+                let cell = RefCell::new(1);
+                {
+                    let mut w = cell.borrow_mut();
+                    *w += 1;
+                } // the mutable borrow ends here
+                let r = cell.borrow();
+                *r
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+
+                #[test]
+                #[should_panic(expected = "already mutably borrowed")]
+                fn overlapping_borrows_panic() {
+                    let cell = RefCell::new(1);
+                    let _w = cell.borrow_mut();
+                    let _r = cell.borrow(); // panics at run time
+                }
+
+                #[test]
+                fn scoped_borrows_are_fine() {
+                    assert_eq!(fixed(), 2);
+                }
+            }
+          explain: The compiler accepts the broken version because RefCell moves the check to run time. try_borrow and try_borrow_mut return a Result instead of panicking when you need to handle contention.
+    - id: "15.5"
+      t: Reference cycles and Weak
+      min: 45
+      learn: How two Rc values pointing at each other leak memory, and how Weak references for parent links break the cycle, with upgrade, strong_count and weak_count.
+      example:
+        title: A tree with Weak parent links
+        code: |
+          use std::cell::RefCell;
+          use std::rc::{Rc, Weak};
+
+          #[derive(Debug)]
+          struct Node {
+              value: i32,
+              parent: RefCell<Weak<Node>>,
+              children: RefCell<Vec<Rc<Node>>>,
+          }
+
+          fn main() {
+              let leaf = Rc::new(Node { value: 3, parent: RefCell::new(Weak::new()), children: RefCell::new(vec![]) });
+              println!("leaf parent = {:?}", leaf.parent.borrow().upgrade().map(|p| p.value));
+              let branch = Rc::new(Node { value: 5, parent: RefCell::new(Weak::new()), children: RefCell::new(vec![Rc::clone(&leaf)]) });
+              *leaf.parent.borrow_mut() = Rc::downgrade(&branch);
+              println!("leaf parent = {:?}", leaf.parent.borrow().upgrade().map(|p| p.value));
+              println!("branch strong = {}, weak = {}", Rc::strong_count(&branch), Rc::weak_count(&branch));
+          }
+        output: |
+          leaf parent = None
+          leaf parent = Some(5)
+          branch strong = 1, weak = 1
+        note: A Weak does not keep its value alive, so parents own children with Rc, and children point back with Weak. upgrade returns Some only while the value still exists. Rust prevents dangling pointers but not memory leaks, so cycles are your responsibility.
+      ex:
+        - t: Find the root
+          p: 'Using the Node type from the example, write fn root_value(node: &Rc<Node>) -> i32 that follows parent links up until there is no parent. Build a three-level tree and test it.'
+          check: test
+          hints:
+            - Loop while node.parent.borrow().upgrade() returns Some(p), moving to p.
+            - Keep the current node in a variable of type Rc<Node>.
+            - Link each child with Rc::downgrade(&parent).
+          solution: |
+            use std::cell::RefCell;
+            use std::rc::{Rc, Weak};
+
+            struct Node {
+                value: i32,
+                parent: RefCell<Weak<Node>>,
+                children: RefCell<Vec<Rc<Node>>>,
+            }
+
+            fn new_node(value: i32) -> Rc<Node> {
+                Rc::new(Node { value, parent: RefCell::new(Weak::new()), children: RefCell::new(vec![]) })
+            }
+
+            fn add_child(parent: &Rc<Node>, child: &Rc<Node>) {
+                *child.parent.borrow_mut() = Rc::downgrade(parent);
+                parent.children.borrow_mut().push(Rc::clone(child));
+            }
+
+            fn root_value(node: &Rc<Node>) -> i32 {
+                let mut current = Rc::clone(node);
+                loop {
+                    let parent = current.parent.borrow().upgrade();
+                    match parent {
+                        Some(p) => current = p,
+                        None => return current.value,
+                    }
+                }
+            }
+
+            fn main() {
+                let root = new_node(1);
+                let mid = new_node(2);
+                let leaf = new_node(3);
+                add_child(&root, &mid);
+                add_child(&mid, &leaf);
+                println!("root of leaf = {}", root_value(&leaf));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn climbs() {
+                    let r = new_node(10);
+                    let c = new_node(20);
+                    add_child(&r, &c);
+                    assert_eq!(root_value(&c), 10);
+                    assert_eq!(root_value(&r), 10);
+                }
+            }
+          explain: The upgrade result is stored in a variable before the match so the RefCell borrow ends before current is replaced; matching on current.parent.borrow().upgrade() directly would hold the borrow too long.
+        - t: Prove the leak
+          p: Make two nodes that hold Rc pointers to each other through RefCell, give the node type a Drop that prints, and show that nothing is printed when main ends. Then change one link to Weak and show both drops happen.
+          hints:
+            - "struct Pal { name: &'static str, other: RefCell<Option<Rc<Pal>>> } with a printing Drop."
+            - Set a.other to b and b.other to a, then let main end.
+            - The fixed version uses RefCell<Option<Weak<Pal>>> for one of the links.
+          solution: |
+            use std::cell::RefCell;
+            use std::rc::{Rc, Weak};
+
+            struct Pal {
+                name: &'static str,
+                strong: RefCell<Option<Rc<Pal>>>,
+                weak: RefCell<Option<Weak<Pal>>>,
+            }
+
+            impl Drop for Pal {
+                fn drop(&mut self) {
+                    println!("dropping {}", self.name);
+                }
+            }
+
+            fn pal(name: &'static str) -> Rc<Pal> {
+                Rc::new(Pal { name, strong: RefCell::new(None), weak: RefCell::new(None) })
+            }
+
+            fn main() {
+                {
+                    let a = pal("leaky a");
+                    let b = pal("leaky b");
+                    *a.strong.borrow_mut() = Some(Rc::clone(&b));
+                    *b.strong.borrow_mut() = Some(Rc::clone(&a)); // cycle: never dropped
+                }
+                {
+                    let a = pal("fine a");
+                    let b = pal("fine b");
+                    *a.strong.borrow_mut() = Some(Rc::clone(&b));
+                    *b.weak.borrow_mut() = Some(Rc::downgrade(&a)); // back link is weak
+                }
+                println!("end of main");
+            }
+            // Output: dropping fine a, dropping fine b, end of main
+          explain: The leaky pair never prints because each keeps the other's count above zero forever. Leaks are memory-safe in Rust, which is exactly why the compiler cannot help here; design ownership so back links are Weak.
+  quiz:
+    - q: Why does enum List { Cons(i32, List), Nil } fail to compile?
+      o: |
+        It has infinite size; a Box is needed for indirection
+        Enums cannot contain themselves even with Box
+        i32 must come last
+        Nil needs a value
+      a: 0
+      x: Box has a known size, which breaks the infinite recursion.
+    - q: What does Rc::clone(&a) do?
+      o: |
+        Increments the reference count and returns another pointer to the same data
+        Deep-copies the data
+        Moves a into a new Rc
+        Creates a weak reference
+      a: 0
+      x: It is cheap; no data is copied.
+    - q: What happens if you call borrow_mut twice on the same RefCell at the same time?
+      o: |
+        The program panics at run time
+        It fails to compile
+        The second call waits
+        Both succeed
+      a: 0
+      x: RefCell checks the borrowing rules at run time.
+    - q: Which one does not keep a value alive?
+      o: |
+        Weak<T>
+        Rc<T>
+        Box<T>
+        Arc<T>
+      a: 0
+      x: Weak must be upgraded and may find the value gone.
+    - q: Why can you pass &MyBox<String> to a function expecting &str?
+      o: |
+        Deref coercion applies deref repeatedly to match the type
+        MyBox implements Into<str>
+        All references convert to &str
+        Strings are Copy
+      a: 0
+      x: The compiler inserts deref calls at compile time, so it costs nothing.
+      pool: exam
+    - q: Which are true about Rc<T>?
+      type: multi
+      o: |
+        It is for single-threaded use
+        It allows several owners of one value
+        It lets you mutate the value directly
+        The value is dropped when the strong count reaches zero
+      a: [0, 1, 3]
+      x: Mutation needs interior mutability such as RefCell.
+      pool: exam
+    - q: How do you drop a value before the end of its scope?
+      o: |
+        std::mem::drop(value)
+        value.drop()
+        delete value
+        value = null
+      a: 0
+      x: Calling the Drop method directly is not allowed.
+      pool: exam
+  recap:
+    summary:
+      - Box<T> puts a value on the heap; it enables recursive types and cheap moves of large data.
+      - Deref lets a type act like a reference, and deref coercion inserts conversions in calls.
+      - Drop runs cleanup when a value goes out of scope; std::mem::drop ends a value early.
+      - Rc<T> gives shared ownership on one thread; Rc::clone only bumps a counter.
+      - RefCell<T> moves borrow checking to run time for interior mutability; Rc<RefCell<T>> shares mutable data.
+      - Rc cycles leak memory; use Weak<T> for back links and upgrade to use them.
+    functions: |
+      Box::new(x) || Allocate x on the heap.
+      impl Deref for T { type Target } || Make a type behave like a reference.
+      impl Drop for T || Run code when a value is dropped.
+      Rc::new / Rc::clone / Rc::strong_count || Shared ownership and its count.
+      RefCell::new / .borrow() / .borrow_mut() || Run-time checked borrows.
+      Rc::downgrade(&rc) / weak.upgrade() || Create and use a Weak reference.
+    next: Chapter 16 takes these ideas to multiple threads with Arc, Mutex and channels.
+
+- id: c16
+  n: "16"
+  book: 16
+  t: Fearless concurrency
+  lv: 4
+  goal: Run code on several threads, pass messages between them, share state safely with Arc and Mutex, and understand what Send and Sync guarantee.
+  res: |
+    Chapter 16 in the book | https://doc.rust-lang.org/book/ch16-00-concurrency.html
+    std::thread | https://doc.rust-lang.org/std/thread/
+    std::sync | https://doc.rust-lang.org/std/sync/
+  items:
+    - id: "16.1"
+      t: Threads
+      min: 45
+      learn: Start threads with thread::spawn, wait for them with join, move data into a thread with a move closure, and borrow local data safely with scoped threads.
+      example:
+        title: spawn, join, move and scope
+        code: |
+          use std::thread;
+          use std::time::Duration;
+
+          fn main() {
+              let handle = thread::spawn(|| {
+                  for i in 1..4 {
+                      println!("hi number {i} from the spawned thread!");
+                      thread::sleep(Duration::from_millis(1));
+                  }
+              });
+              handle.join().unwrap();             // wait for it to finish
+
+              let v = vec![1, 2, 3];
+              let h = thread::spawn(move || {     // v moves into the thread
+                  println!("vector: {v:?}");
+                  v.len()
+              });
+              println!("thread returned {}", h.join().unwrap());
+
+              let mut data = vec![1, 2, 3, 4];
+              thread::scope(|s| {                  // scoped threads may borrow
+                  let (left, right) = data.split_at_mut(2);
+                  s.spawn(|| left.iter_mut().for_each(|x| *x *= 10));
+                  s.spawn(|| right.iter_mut().for_each(|x| *x += 1));
+              });
+              println!("{data:?}");
+          }
+        output: |
+          hi number 1 from the spawned thread!
+          hi number 2 from the spawned thread!
+          hi number 3 from the spawned thread!
+          vector: [1, 2, 3]
+          thread returned 3
+          [10, 20, 4, 5]
+        note: A spawned thread might outlive the function that started it, so it cannot borrow local variables; move gives it ownership instead. thread::scope guarantees every thread ends before the scope does, so borrowing is allowed there. When main returns, any threads still running are stopped.
+      ex:
+        - t: Parallel sum
+          p: Split a Vec of the numbers 1 to 1,000,000 into four chunks and sum each chunk on its own scoped thread. Add the four results and check them against the formula n(n+1)/2.
+          check: test
+          hints:
+            - "data.chunks(data.len() / 4) gives four slices."
+            - Inside thread::scope, collect the handles from s.spawn into a Vec.
+            - Each handle's join() returns that chunk's sum.
+          solution: |
+            use std::thread;
+
+            fn parallel_sum(data: &[u64], parts: usize) -> u64 {
+                let size = data.len().div_ceil(parts).max(1);
+                thread::scope(|s| {
+                    let handles: Vec<_> = data
+                        .chunks(size)
+                        .map(|chunk| s.spawn(move || chunk.iter().sum::<u64>()))
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap()).sum()
+                })
+            }
+
+            fn main() {
+                let data: Vec<u64> = (1..=1_000_000).collect();
+                let n = data.len() as u64;
+                println!("{} (expected {})", parallel_sum(&data, 4), n * (n + 1) / 2);
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn matches_formula() {
+                    let d: Vec<u64> = (1..=1000).collect();
+                    assert_eq!(parallel_sum(&d, 4), 500500);
+                    assert_eq!(parallel_sum(&d, 3), 500500);
+                }
+            }
+          explain: The threads only borrow the chunks, which is safe because scope waits for them all. div_ceil makes sure no numbers are left over when the length does not divide evenly. For real data-parallel work, the rayon crate does this splitting for you.
+        - t: Return values from threads
+          p: Spawn five threads with thread::spawn that each compute the square of their index after sleeping a little, collect the JoinHandles, and print the results in index order.
+          hints:
+            - "Each closure needs move so it owns its i."
+            - Store handles in a Vec<thread::JoinHandle<u64>>.
+            - Joining in order gives results in order, regardless of which finished first.
+          solution: |
+            use std::thread;
+            use std::time::Duration;
+
+            fn main() {
+                let handles: Vec<thread::JoinHandle<u64>> = (0..5u64)
+                    .map(|i| {
+                        thread::spawn(move || {
+                            thread::sleep(Duration::from_millis(50 - i * 10));
+                            i * i
+                        })
+                    })
+                    .collect();
+                let results: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+                println!("{results:?}");
+            }
+          explain: Later threads sleep less so they finish first, but joining in order still produces [0, 1, 4, 9, 16]. join returns Err if the thread panicked, which is why unwrap is needed.
+    - id: "16.2"
+      t: Message passing with channels
+      min: 45
+      learn: Create a channel with mpsc::channel, send values from producer threads, receive with recv or by iterating, ownership moving through send, and cloning the sender for several producers.
+      example:
+        title: Several producers, one consumer
+        code: |
+          use std::sync::mpsc;
+          use std::thread;
+          use std::time::Duration;
+
+          fn main() {
+              let (tx, rx) = mpsc::channel();
+              let tx2 = tx.clone();
+
+              thread::spawn(move || {
+                  for word in ["hi", "from", "the", "thread"] {
+                      tx.send(format!("A: {word}")).unwrap();
+                      thread::sleep(Duration::from_millis(5));
+                  }
+              });
+              thread::spawn(move || {
+                  for word in ["more", "messages"] {
+                      tx2.send(format!("B: {word}")).unwrap();
+                      thread::sleep(Duration::from_millis(5));
+                  }
+              });
+
+              let mut got: Vec<String> = rx.iter().collect(); // ends when all senders drop
+              got.sort();
+              println!("{got:?}");
+          }
+        output: |
+          ["A: from", "A: hi", "A: the", "A: thread", "B: messages", "B: more"]
+        note: send moves the value into the channel, so the sending thread cannot use it afterwards; the compiler enforces this. The receiver's iterator ends when every sender has been dropped, which is a simple way to know all work is finished. The order between producers is not guaranteed, which is why the example sorts.
+      ex:
+        - t: A worker pipeline
+          p: Spawn three worker threads that each receive the same job description and send back a (worker_id, result) tuple through one channel. The main thread prints all results once all workers finish.
+          hints:
+            - Clone tx once per worker inside a loop.
+            - Drop the original tx in main, or the receiving loop never ends.
+            - for (id, r) in rx { ... } collects results as they arrive.
+          solution: |
+            use std::sync::mpsc;
+            use std::thread;
+
+            fn main() {
+                let (tx, rx) = mpsc::channel();
+                for id in 1..=3u32 {
+                    let tx = tx.clone();
+                    thread::spawn(move || {
+                        let result: u32 = (1..=id * 100).sum();
+                        tx.send((id, result)).unwrap();
+                    });
+                }
+                drop(tx); // otherwise rx waits forever for this sender
+                let mut results: Vec<(u32, u32)> = rx.iter().collect();
+                results.sort();
+                for (id, r) in results {
+                    println!("worker {id}: {r}");
+                }
+            }
+          explain: Forgetting drop(tx) is the most common channel bug, the program simply hangs. Channels are the core of the worker pool you will build in Chapter 21.
+        - t: A bounded queue
+          p: Use mpsc::sync_channel(2) so a fast producer has to wait for a slow consumer. Print when each item is sent and received to see the back-pressure.
+          check: build
+          hints:
+            - sync_channel(2) holds at most two unreceived messages.
+            - send blocks when the buffer is full.
+            - Make the consumer sleep 50 ms per item and the producer not sleep at all.
+          solution: |
+            use std::sync::mpsc;
+            use std::thread;
+            use std::time::Duration;
+
+            fn main() {
+                let (tx, rx) = mpsc::sync_channel(2);
+                let producer = thread::spawn(move || {
+                    for i in 1..=6 {
+                        tx.send(i).unwrap(); // blocks while two items are waiting
+                        println!("sent {i}");
+                    }
+                });
+                for item in rx {
+                    thread::sleep(Duration::from_millis(50));
+                    println!("  received {item}");
+                }
+                producer.join().unwrap();
+            }
+          explain: Back-pressure stops a fast producer from filling memory when the consumer cannot keep up, the same idea as a bounded queue in a load-testing tool. An unbounded channel would let the producer race ahead.
+    - id: "16.3"
+      t: Shared state with Mutex and Arc
+      min: 60
+      learn: Lock a Mutex to get a guard, the guard unlocking on drop, why Rc does not work across threads, sharing with Arc, and deadlocks to watch out for.
+      example:
+        title: Ten threads, one counter
+        code: |
+          use std::sync::{Arc, Mutex};
+          use std::thread;
+
+          fn main() {
+              let counter = Arc::new(Mutex::new(0));
+              let mut handles = vec![];
+              for _ in 0..10 {
+                  let counter = Arc::clone(&counter);
+                  handles.push(thread::spawn(move || {
+                      let mut num = counter.lock().unwrap();  // MutexGuard
+                      *num += 1;
+                  }));                                         // guard dropped: unlocked
+              }
+              for h in handles {
+                  h.join().unwrap();
+              }
+              println!("Result: {}", *counter.lock().unwrap());
+          }
+        output: |
+          Result: 10
+        note: Arc is the thread-safe version of Rc, using atomic operations for its count. lock returns a Result because a thread that panicked while holding the lock leaves it poisoned. Keep lock scopes short, and always take several locks in the same order to avoid deadlocks.
+      ex:
+        - t: A shared inventory
+          p: Store a HashMap<String, u32> of stock in Arc<Mutex<...>>. Spawn four threads that each sell items, reducing the stock but never below zero, and print the final stock.
+          check: test
+          hints:
+            - "fn sell(stock: &Mutex<HashMap<String, u32>>, item: &str) -> bool"
+            - "Inside, let mut s = stock.lock().unwrap(); then check and decrement."
+            - Use get_mut to change a value in place.
+          solution: |
+            use std::collections::HashMap;
+            use std::sync::{Arc, Mutex};
+            use std::thread;
+
+            fn sell(stock: &Mutex<HashMap<String, u32>>, item: &str) -> bool {
+                let mut s = stock.lock().unwrap();
+                match s.get_mut(item) {
+                    Some(n) if *n > 0 => {
+                        *n -= 1;
+                        true
+                    }
+                    _ => false,
+                }
+            }
+
+            fn main() {
+                let stock = Arc::new(Mutex::new(HashMap::from([("apple".to_string(), 5), ("pear".to_string(), 2)])));
+                let handles: Vec<_> = (0..4)
+                    .map(|_| {
+                        let stock = Arc::clone(&stock);
+                        thread::spawn(move || (0..3).filter(|_| sell(&stock, "apple")).count())
+                    })
+                    .collect();
+                let sold: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+                println!("sold {sold} apples, stock now {:?}", stock.lock().unwrap());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn never_below_zero() {
+                    let s = Mutex::new(HashMap::from([("x".to_string(), 1)]));
+                    assert!(sell(&s, "x"));
+                    assert!(!sell(&s, "x"));
+                    assert!(!sell(&s, "missing"));
+                }
+            }
+          explain: Twelve attempts but only five apples, and the check-and-decrement happens while holding the lock, so two threads can never both sell the last apple. That race is exactly the kind of bug QA finds in systems without such guarantees.
+        - t: Spot the deadlock
+          p: Write two threads that lock Mutex A then B, and B then A, with a short sleep in between, and see the program hang. Fix it by making both threads lock in the same order.
+          check: build
+          hints:
+            - "Thread 1: let _a = a.lock(); sleep; let _b = b.lock();"
+            - "Thread 2 does the same but with b first."
+            - The fix is to make both threads take a first, then b.
+          solution: |
+            use std::sync::{Arc, Mutex};
+            use std::thread;
+            use std::time::Duration;
+
+            fn main() {
+                let a = Arc::new(Mutex::new(0));
+                let b = Arc::new(Mutex::new(0));
+
+                // Fixed version: both threads lock a, then b.
+                // (Locking b then a in the second thread can deadlock.)
+                let (a1, b1) = (Arc::clone(&a), Arc::clone(&b));
+                let t1 = thread::spawn(move || {
+                    let mut x = a1.lock().unwrap();
+                    thread::sleep(Duration::from_millis(10));
+                    let mut y = b1.lock().unwrap();
+                    *x += 1;
+                    *y += 1;
+                });
+                let (a2, b2) = (Arc::clone(&a), Arc::clone(&b));
+                let t2 = thread::spawn(move || {
+                    let mut x = a2.lock().unwrap();
+                    thread::sleep(Duration::from_millis(10));
+                    let mut y = b2.lock().unwrap();
+                    *x += 10;
+                    *y += 10;
+                });
+                t1.join().unwrap();
+                t2.join().unwrap();
+                println!("a = {}, b = {}", a.lock().unwrap(), b.lock().unwrap());
+            }
+          explain: Rust prevents data races, but not deadlocks, which are a logic problem. A consistent lock order is the standard cure; holding a single lock around both values is often even simpler.
+    - id: "16.4"
+      t: Send and Sync
+      min: 30
+      learn: What the Send and Sync marker traits mean, why Rc and RefCell are neither, how the compiler uses them to reject unsafe sharing, and why you rarely implement them yourself.
+      example:
+        title: The compiler refusing Rc across threads
+        check: fail
+        code: |
+          use std::rc::Rc;
+          use std::thread;
+
+          fn main() {
+              let shared = Rc::new(5);
+              let s = Rc::clone(&shared);
+              // error[E0277]: `Rc<i32>` cannot be sent between threads safely
+              let h = thread::spawn(move || println!("{s}"));
+              h.join().unwrap();
+          }
+        output: |
+          error[E0277]: `Rc<i32>` cannot be sent between threads safely
+             = help: within `{closure}`, the trait `Send` is not implemented for `Rc<i32>`
+        note: Send means ownership of a value can move to another thread; Sync means a shared reference can be used from several threads. Types made only of Send and Sync parts get the traits automatically. Rc's counter is not atomic, so the compiler stops it at the thread boundary; swap in Arc and it compiles.
+      ex:
+        - t: Make it compile
+          p: Fix the example by switching to the thread-safe types, then extend it so two threads each add to a shared total stored inside.
+          check: test
+          hints:
+            - Replace Rc with Arc.
+            - To change the number, wrap it as Arc<Mutex<i32>>.
+            - Clone the Arc once per thread.
+          solution: |
+            use std::sync::{Arc, Mutex};
+            use std::thread;
+
+            fn add_in_threads(start: i32) -> i32 {
+                let shared = Arc::new(Mutex::new(start));
+                let handles: Vec<_> = [5, 7]
+                    .into_iter()
+                    .map(|n| {
+                        let s = Arc::clone(&shared);
+                        thread::spawn(move || *s.lock().unwrap() += n)
+                    })
+                    .collect();
+                for h in handles {
+                    h.join().unwrap();
+                }
+                let total = *shared.lock().unwrap();
+                total
+            }
+
+            fn main() {
+                println!("{}", add_in_threads(5));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn adds() {
+                    assert_eq!(add_in_threads(0), 12);
+                }
+            }
+          explain: Arc gives shared ownership across threads (Send and Sync), and Mutex makes changing the value safe. The compiler error disappears because every type involved now carries the right marker traits.
+        - t: Which are Send and Sync
+          p: 'Write a function fn assert_send<T: Send>() {} and fn assert_sync<T: Sync>() {}, then call them for i32, String, Vec<u8>, Arc<Mutex<i32>>, Rc<i32> and Cell<i32>. Note which calls fail and why.'
+          hints:
+            - These empty generic functions compile only if T has the bound.
+            - "Call them as assert_send::<String>();"
+            - Comment out the ones that fail and write the reason next to each.
+          solution: |
+            use std::cell::Cell;
+            use std::sync::{Arc, Mutex};
+
+            fn assert_send<T: Send>() {}
+            fn assert_sync<T: Sync>() {}
+
+            fn main() {
+                assert_send::<i32>();
+                assert_sync::<i32>();
+                assert_send::<String>();
+                assert_sync::<String>();
+                assert_send::<Vec<u8>>();
+                assert_send::<Arc<Mutex<i32>>>();
+                assert_sync::<Arc<Mutex<i32>>>();
+                assert_send::<Cell<i32>>(); // Cell can move to another thread...
+                // assert_sync::<Cell<i32>>(); // ...but not be shared: changes are not synchronised
+                // assert_send::<std::rc::Rc<i32>>(); // Rc's count is not atomic
+                println!("all remaining checks compiled");
+            }
+          explain: This trick of compile-time assertions with empty generic functions is common in library tests. Cell is Send but not Sync, which shows the two traits really are different questions.
+  quiz:
+    - q: Why does a closure passed to thread::spawn usually need move?
+      o: |
+        The thread may outlive the variables it would borrow
+        Threads cannot read variables at all
+        move makes the thread start faster
+        It is required for join to work
+      a: 0
+      x: Ownership guarantees the data lives as long as the thread needs it.
+    - q: When does iterating over a channel receiver end?
+      o: |
+        When every sender has been dropped
+        After the first message
+        After a timeout
+        Never
+      a: 0
+      x: The channel closes when no senders remain.
+    - q: What unlocks a Mutex in Rust?
+      o: |
+        Dropping the MutexGuard returned by lock
+        Calling unlock
+        The end of the program
+        Calling join on the thread
+      a: 0
+      x: The guard unlocks in its Drop implementation.
+    - q: Why can you not use Rc<T> with threads?
+      o: |
+        Its reference count is not updated atomically, so it is not Send
+        It is too slow
+        It can only hold integers
+        Threads cannot hold pointers
+      a: 0
+      x: Arc uses atomic operations and is the thread-safe replacement.
+    - q: What does thread::scope allow that thread::spawn does not?
+      o: |
+        Threads that borrow local variables without move
+        Threads that run forever
+        Threads without join
+        More than 8 threads
+      a: 0
+      x: The scope waits for its threads, so borrows stay valid.
+      pool: exam
+    - q: Which can Rust's type system not prevent?
+      type: multi
+      o: |
+        Deadlocks
+        Data races
+        Logic races such as checking then acting in two separate lock scopes
+        Sending an Rc to another thread
+      a: [0, 2]
+      x: Data races and sending non-Send types are compile errors; deadlocks and logic races are design issues.
+      pool: exam
+    - q: What does it mean for a type to be Sync?
+      o: |
+        A shared reference to it can be used from several threads
+        It can be sent to another thread
+        It synchronises its own clocks
+        It implements Mutex
+      a: 0
+      x: T is Sync if &T is Send.
+      pool: exam
+  recap:
+    summary:
+      - thread::spawn runs a closure on a new thread; join waits for it and returns its value.
+      - move closures give threads ownership; thread::scope lets threads borrow because it waits for them.
+      - Channels (mpsc) pass ownership of messages between threads; clone the sender for several producers.
+      - Mutex<T> allows one thread at a time; the guard unlocks when dropped; Arc<T> shares it between threads.
+      - Send and Sync mark what may cross or be shared between threads; the compiler enforces them.
+      - Rust prevents data races at compile time, but deadlocks and logic races are still yours to avoid.
+    functions: |
+      thread::spawn(move || ...) || Start a thread.
+      handle.join() || Wait for a thread and get its result.
+      thread::scope(|s| s.spawn(...)) || Threads that can borrow local data.
+      mpsc::channel() / sync_channel(n) || Unbounded or bounded channel.
+      tx.send(v) / rx.recv() / for v in rx || Send and receive messages.
+      Arc::new(Mutex::new(v)) || Shared, lockable data.
+      m.lock().unwrap() || Lock and get a guard.
+    next: Chapter 17 introduces async programming, a different way to handle many tasks at once without a thread per task.

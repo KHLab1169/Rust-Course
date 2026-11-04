@@ -1,0 +1,2431 @@
+- id: c17
+  n: "17"
+  book: 17
+  t: "Async and await"
+  lv: 4
+  goal: Write asynchronous code with async and await, run many tasks concurrently on one thread, combine futures, and process streams.
+  res: |
+    Chapter 17 in the book | https://doc.rust-lang.org/book/ch17-00-async-await.html
+    Tokio tutorial | https://tokio.rs/tokio/tutorial
+    Asynchronous Programming in Rust | https://rust-lang.github.io/async-book/
+  items:
+    - id: "17.1"
+      t: Futures and the async syntax
+      min: 60
+      learn: What a future is, async fn and async blocks, await points, why futures do nothing until awaited, and starting a runtime. The book uses its trpl crate, a thin wrapper over Tokio; these lessons use Tokio directly, as real projects do.
+      example:
+        title: Two async functions, awaited in order
+        deps: ['tokio = { version = "1", features = ["full"] }']
+        code: |
+          use std::time::Duration;
+          use tokio::time::sleep;
+
+          async fn fetch_title(url: &str) -> String {
+              sleep(Duration::from_millis(50)).await;      // pretend network wait
+              format!("Title of {url}")
+          }
+
+          #[tokio::main]
+          async fn main() {
+              let fut = fetch_title("https://rust-lang.org"); // nothing happens yet
+              println!("future created");
+              let title = fut.await;                          // now it runs
+              println!("{title}");
+          }
+        output: |
+          future created
+          Title of https://rust-lang.org
+        note: 'An async fn returns a future, a value that describes work to do. Futures are lazy, so nothing runs until something awaits them. #[tokio::main] starts a runtime that drives the futures. Each .await is a point where the task can pause and let others run.'
+      ex:
+        - t: First async program
+          p: 'Create a Cargo project with Tokio, write async fn slow_add(a: u32, b: u32) -> u32 that sleeps 100 ms and returns the sum, and await it twice in main, printing the elapsed time.'
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          hints:
+            - cargo add tokio --features full
+            - Use tokio::time::sleep, never std::thread::sleep, inside async code.
+            - Awaiting one after the other takes about 200 ms in total.
+          solution: |
+            use std::time::{Duration, Instant};
+
+            async fn slow_add(a: u32, b: u32) -> u32 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                a + b
+            }
+
+            #[tokio::main]
+            async fn main() {
+                let start = Instant::now();
+                let x = slow_add(1, 2).await;
+                let y = slow_add(x, 3).await;
+                println!("{y} after {:?}", start.elapsed());
+            }
+          explain: std::thread::sleep would block the whole runtime thread, freezing every other task; tokio::time::sleep only pauses this task. The two calls run in sequence here because each await waits for its result before moving on.
+        - t: Laziness in action
+          p: Create a future with an async block that prints "running", then show that the message only appears after you await it, and never appears if the future is dropped without being awaited.
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          hints:
+            - "let f = async { println!(\"running\"); 42 };"
+            - Print something before awaiting it.
+            - Make a second future and drop it with drop(g).
+          solution: |
+            #[tokio::main]
+            async fn main() {
+                let f = async {
+                    println!("running f");
+                    42
+                };
+                println!("before await");
+                println!("f returned {}", f.await);
+
+                let g = async {
+                    println!("running g"); // never printed
+                };
+                drop(g);
+                println!("g was dropped without running");
+            }
+          explain: Unlike JavaScript promises, Rust futures do not start on their own. This is a frequent surprise; if a log line never appears, check that the future is actually awaited or spawned.
+    - id: "17.2"
+      t: Concurrency with async
+      min: 60
+      learn: Run futures at the same time with join!, spawn independent tasks with tokio::spawn, pass messages between tasks with tokio::sync::mpsc, and move ownership into async blocks.
+      example:
+        title: join!, spawn and an async channel
+        deps: ['tokio = { version = "1", features = ["full"] }']
+        code: |
+          use std::time::{Duration, Instant};
+          use tokio::sync::mpsc;
+          use tokio::time::sleep;
+
+          async fn work(name: &str, ms: u64) -> String {
+              sleep(Duration::from_millis(ms)).await;
+              format!("{name} done")
+          }
+
+          #[tokio::main]
+          async fn main() {
+              let start = Instant::now();
+              let (a, b) = tokio::join!(work("a", 100), work("b", 100));
+              println!("{a}, {b} in about {} ms", start.elapsed().as_millis() / 100 * 100);
+
+              let (tx, mut rx) = mpsc::channel(8);
+              let producer = tokio::spawn(async move {
+                  for i in 1..=3 {
+                      tx.send(i).await.unwrap();
+                      sleep(Duration::from_millis(10)).await;
+                  }
+              }); // tx dropped when the task ends, closing the channel
+              while let Some(v) = rx.recv().await {
+                  println!("got {v}");
+              }
+              producer.await.unwrap();
+          }
+        output: |
+          a done, b done in about 100 ms
+          got 1
+          got 2
+          got 3
+        note: join! polls both futures in the same task, so their waits overlap and the total is about one wait, not two. tokio::spawn hands a future to the runtime as its own task, which needs 'static data, hence async move. while let Some(v) = rx.recv().await ends when all senders are dropped, just like the thread channel.
+      ex:
+        - t: Fetch three pages at once
+          p: Simulate fetching three URLs with different delays using an async fn, run them together with tokio::join!, and show the total time is the longest delay rather than the sum.
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          hints:
+            - 'async fn fake_fetch(url: &str, ms: u64) -> usize returns a pretend page length.'
+            - tokio::join!(a, b, c) returns a tuple of the three results.
+            - Measure with Instant::now() before and elapsed() after.
+          solution: |
+            use std::time::{Duration, Instant};
+
+            async fn fake_fetch(url: &str, ms: u64) -> usize {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+                url.len() * 100
+            }
+
+            #[tokio::main]
+            async fn main() {
+                let start = Instant::now();
+                let (a, b, c) = tokio::join!(
+                    fake_fetch("https://a.example", 300),
+                    fake_fetch("https://b.example", 100),
+                    fake_fetch("https://c.example", 200),
+                );
+                println!("{a} {b} {c} in {:?} (about 300 ms, not 600)", start.elapsed());
+            }
+          explain: All three waits overlap on a single thread. This is where async shines, I/O-bound work such as HTTP requests, where a thread per request would waste memory.
+        - t: Spawned workers report back
+          p: Spawn five tasks with tokio::spawn that each send a message with their id after a random-ish delay (for example 50 ms times (5 - id)), and collect all five messages in the order they arrive.
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          hints:
+            - Create the channel with mpsc::channel(10) and clone tx for each task.
+            - Drop the original tx after spawning so recv eventually returns None.
+            - Push each received message into a Vec and print it at the end.
+          solution: |
+            use std::time::Duration;
+            use tokio::sync::mpsc;
+
+            #[tokio::main]
+            async fn main() {
+                let (tx, mut rx) = mpsc::channel(10);
+                for id in 1..=5u64 {
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(50 * (5 - id))).await;
+                        tx.send(format!("task {id}")).await.unwrap();
+                    });
+                }
+                drop(tx);
+                let mut arrived = Vec::new();
+                while let Some(msg) = rx.recv().await {
+                    arrived.push(msg);
+                }
+                println!("{arrived:?}");
+            }
+          explain: Task 5 waits least, so it arrives first. Spawned tasks run independently and may run on different worker threads, which is why their futures must be Send.
+    - id: "17.3"
+      t: Working with any number of futures
+      min: 60
+      learn: Wait for a whole list of futures with join_all, race futures with tokio::select!, add a timeout, and yield control so long loops do not starve other tasks.
+      example:
+        title: join_all, select! and timeout
+        deps: ['tokio = { version = "1", features = ["full"] }', 'futures = "0.3"']
+        code: |
+          use futures::future::join_all;
+          use std::time::Duration;
+          use tokio::time::{sleep, timeout};
+
+          async fn job(id: u64) -> u64 {
+              sleep(Duration::from_millis(20 * id)).await;
+              id * 10
+          }
+
+          #[tokio::main]
+          async fn main() {
+              let results = join_all((1..=4).map(job)).await;
+              println!("all: {results:?}");
+
+              tokio::select! {
+                  v = job(3) => println!("job 3 won with {v}"),
+                  v = job(1) => println!("job 1 won with {v}"),
+              }
+
+              match timeout(Duration::from_millis(30), job(5)).await {
+                  Ok(v) => println!("finished: {v}"),
+                  Err(_) => println!("job 5 timed out"),
+              }
+
+              for i in 0..3 {
+                  // in a long CPU loop, let other tasks run now and then
+                  tokio::task::yield_now().await;
+                  println!("step {i}");
+              }
+          }
+        output: |
+          all: [10, 20, 30, 40]
+          job 1 won with 10
+          job 5 timed out
+          step 0
+          step 1
+          step 2
+        note: join_all keeps the results in the same order as the input. select! runs whichever branch finishes first and drops the others, which cancels them. A future that never reaches an await point never gives other tasks a turn, so heavy computation belongs in tokio::task::spawn_blocking or a regular thread.
+      ex:
+        - t: A health checker
+          p: Check five fake services concurrently with join_all; each check sleeps for a different time and returns Ok or Err. Wrap each check in a 150 ms timeout and print a status line per service.
+          deps: ['tokio = { version = "1", features = ["full"] }', 'futures = "0.3"']
+          hints:
+            - "async fn check(name: &str, ms: u64, healthy: bool) -> Result<(), String>"
+            - "Map each service to timeout(Duration::from_millis(150), check(...))."
+            - The result is Result<Result<(), String>, Elapsed>; match both layers.
+          solution: |
+            use futures::future::join_all;
+            use std::time::Duration;
+            use tokio::time::{sleep, timeout};
+
+            async fn check(ms: u64, healthy: bool) -> Result<(), String> {
+                sleep(Duration::from_millis(ms)).await;
+                if healthy { Ok(()) } else { Err("returned 500".into()) }
+            }
+
+            #[tokio::main]
+            async fn main() {
+                let services = [("auth", 40, true), ("db", 90, true), ("search", 400, true), ("mail", 60, false), ("cdn", 10, true)];
+                let checks = services
+                    .iter()
+                    .map(|&(_, ms, ok)| timeout(Duration::from_millis(150), check(ms, ok)));
+                let results = join_all(checks).await;
+                for ((name, _, _), r) in services.iter().zip(results) {
+                    let status = match r {
+                        Ok(Ok(())) => "UP".to_string(),
+                        Ok(Err(e)) => format!("DOWN ({e})"),
+                        Err(_) => "TIMEOUT".to_string(),
+                    };
+                    println!("{name:<8}{status}");
+                }
+            }
+          explain: The whole check takes about 150 ms no matter how many services there are, because the waits overlap and the slow one is cut off. This is the skeleton of a real monitoring or smoke-test tool.
+        - t: First response wins
+          p: Query two mirror servers (simulated with sleeps) using tokio::select!, print which mirror answered first, and check that the slower one was cancelled by giving it a print statement after its sleep.
+          deps: ['tokio = { version = "1", features = ["full"] }']
+          hints:
+            - "async fn mirror(name: &'static str, ms: u64) -> &'static str prints after sleeping."
+            - Put both calls in select!, each with its own branch.
+            - The loser's print never appears, because select! drops it.
+          solution: |
+            use std::time::Duration;
+
+            async fn mirror(name: &'static str, ms: u64) -> &'static str {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+                println!("{name} finished its request"); // only the winner gets here
+                name
+            }
+
+            #[tokio::main]
+            async fn main() {
+                let winner = tokio::select! {
+                    n = mirror("eu-mirror", 80) => n,
+                    n = mirror("us-mirror", 30) => n,
+                };
+                println!("using {winner}");
+                tokio::time::sleep(Duration::from_millis(100)).await; // the loser never prints
+            }
+          explain: Cancellation by dropping is powerful but means a future can stop at any await point. Code that must finish once started (such as writing a file) should be spawned as its own task instead.
+    - id: "17.4"
+      t: Streams, async traits and threads
+      min: 60
+      learn: Streams as asynchronous iterators, processing them with StreamExt, the Future trait, Pin and Unpin at a high level, and choosing between threads and async tasks.
+      example:
+        title: A stream of ticks, filtered and mapped
+        deps: ['tokio = { version = "1", features = ["full"] }', 'tokio-stream = "0.1"']
+        code: |
+          use std::time::Duration;
+          use tokio_stream::{wrappers::IntervalStream, StreamExt};
+
+          #[tokio::main]
+          async fn main() {
+              let ticks = IntervalStream::new(tokio::time::interval(Duration::from_millis(10)));
+              let mut count = 0;
+              let mut evens = ticks
+                  .map(move |_| { count += 1; count - 1 })  // number each tick
+                  .filter(|i| i % 2 == 0)
+                  .take(4);
+              while let Some(i) = evens.next().await {
+                  println!("tick {i}");
+              }
+
+              let mut words = tokio_stream::iter(["async", "streams", "are", "iterators"]).map(str::len);
+              let mut total = 0;
+              while let Some(n) = words.next().await {
+                  total += n;
+              }
+              println!("total letters: {total}");
+          }
+        output: |
+          tick 0
+          tick 2
+          tick 4
+          tick 6
+          total letters: 27
+        note: A stream produces values over time, the async version of an iterator, and StreamExt adds map, filter, take and friends. Under the hood every future implements the Future trait's poll method; Pin guarantees a future will not move in memory once polled, which self-referencing async code needs. Use threads for CPU-heavy work and async for many waits.
+      ex:
+        - t: Batch a stream
+          p: Turn the numbers 1 to 20 into a stream, keep only multiples of 3, and use chunks_timeout or a manual buffer to print them in batches of 2.
+          deps: ['tokio = { version = "1", features = ["full"] }', 'tokio-stream = "0.1"']
+          hints:
+            - tokio_stream::iter(1..=20) makes a stream from a range.
+            - .filter(|n| n % 3 == 0) works just like on iterators.
+            - Collect items into a Vec buffer and print when it reaches 2, then print any leftovers.
+          solution: |
+            use tokio_stream::StreamExt;
+
+            #[tokio::main]
+            async fn main() {
+                let mut s = tokio_stream::iter(1..=20).filter(|n| n % 3 == 0);
+                let mut batch = Vec::new();
+                while let Some(n) = s.next().await {
+                    batch.push(n);
+                    if batch.len() == 2 {
+                        println!("batch {batch:?}");
+                        batch.clear();
+                    }
+                }
+                if !batch.is_empty() {
+                    println!("last batch {batch:?}");
+                }
+            }
+          explain: Batching is how real pipelines cut down on database or network round trips. The StreamExt trait must be imported for the adaptor methods to appear, the same way Iterator methods need nothing because Iterator is in the prelude.
+        - t: Async or threads
+          p: For each workload decide async or threads and write one sentence why. (1) Resize 10,000 images. (2) Serve 5,000 idle websocket connections. (3) Call 200 REST endpoints. (4) Compress a 10 GB file while keeping a UI responsive.
+          lang: text
+          check: none
+          hints:
+            - Is the time spent computing or waiting?
+            - Async tasks are cheap; threads use real CPU cores in parallel.
+            - Mixing is fine, spawn_blocking runs blocking work from async code.
+          solution: |
+            1. Threads (or rayon): pure CPU work that should use every core.
+            2. Async: thousands of connections that mostly wait; one thread each
+               would waste memory.
+            3. Async: the time is network waiting, so overlapping requests helps.
+            4. A dedicated thread (or spawn_blocking) for compression so the UI
+               or async runtime stays responsive.
+          explain: The book's own summary is that threads suit parallel computation and async suits concurrent waiting, and many real programs use both together.
+  quiz:
+    - q: What happens when you call an async fn without awaiting the result?
+      o: |
+        Nothing runs; you get a future that does nothing until awaited
+        It runs in the background
+        It blocks the thread
+        It panics
+      a: 0
+      x: Rust futures are lazy.
+    - q: Why should you not call std::thread::sleep inside an async task?
+      o: |
+        It blocks the runtime thread and freezes other tasks on it
+        It does not compile in async code
+        It sleeps for a random time
+        It cancels the task
+      a: 0
+      x: Use tokio::time::sleep, which yields instead of blocking.
+    - q: How long does tokio::join!(wait(100ms), wait(100ms)) take?
+      o: |
+        About 100 ms
+        About 200 ms
+        0 ms
+        It depends on the number of CPU cores
+      a: 0
+      x: The waits overlap within one task.
+    - q: What does tokio::select! do with the branches that do not finish first?
+      o: |
+        Drops them, which cancels them
+        Lets them keep running in the background
+        Waits for them too
+        Restarts them
+      a: 0
+      x: Dropping a future cancels it.
+    - q: What is a stream?
+      o: |
+        An asynchronous sequence of values, like an iterator whose next is awaited
+        A file handle
+        A thread pool
+        A kind of channel only
+      a: 0
+      x: StreamExt gives it iterator-like adaptors.
+      pool: exam
+    - q: Which workloads suit async best?
+      type: multi
+      o: |
+        Many network requests that mostly wait
+        Thousands of mostly idle connections
+        Heavy number crunching on every core
+        Timers and timeouts
+      a: [0, 1, 3]
+      x: CPU-bound work belongs on threads.
+      pool: exam
+    - q: Why must a future passed to tokio::spawn usually be 'static?
+      o: |
+        The task may outlive the function that spawned it
+        Spawned tasks run at compile time
+        Futures cannot borrow anything ever
+        It makes them faster
+      a: 0
+      x: Use async move to give the task ownership.
+      pool: exam
+  recap:
+    summary:
+      - async fn and async blocks produce futures, which are lazy until awaited or spawned.
+      - 'A runtime such as Tokio drives futures; #[tokio::main] starts one.'
+      - join! runs futures concurrently in one task; tokio::spawn makes independent tasks; async channels pass messages.
+      - join_all waits for many futures, select! races them and cancels the losers, timeout adds a deadline.
+      - Streams are asynchronous iterators processed with StreamExt.
+      - Async suits many waits; threads suit CPU-heavy parallel work; spawn_blocking bridges the two.
+    functions: |
+      async fn / async { } || Define asynchronous code that returns a future.
+      fut.await || Wait for a future inside async code.
+      #[tokio::main] || Start a Tokio runtime for main.
+      tokio::join!(a, b) || Await several futures concurrently.
+      tokio::spawn(async move { }) || Run a future as its own task.
+      tokio::select! { } || Take whichever future finishes first.
+      tokio::time::timeout(d, fut) || Give a future a deadline.
+      futures::future::join_all(iter) || Await a list of futures.
+      StreamExt::next().await || Get the next value from a stream.
+    next: Chapter 18 looks at how Rust supports object-oriented ideas with traits and trait objects.
+
+- id: c18
+  n: "18"
+  book: 18
+  t: Object-oriented programming features
+  lv: 4
+  goal: Map object-oriented ideas onto Rust, use trait objects for runtime polymorphism, and implement the state pattern two ways.
+  res: |
+    Chapter 18 in the book | https://doc.rust-lang.org/book/ch18-00-oop.html
+    The Rust Reference, trait objects | https://doc.rust-lang.org/reference/types/trait-object.html
+  items:
+    - id: "18.1"
+      t: Object-oriented ideas in Rust
+      min: 30
+      learn: Objects as data plus behaviour, encapsulation with pub and private fields, why Rust has no inheritance, and getting code reuse and polymorphism from traits instead.
+      example:
+        title: Encapsulation with a private field
+        code: |
+          pub struct AveragedCollection {
+              list: Vec<i32>,     // private: callers cannot desync the average
+              average: f64,
+          }
+
+          impl AveragedCollection {
+              pub fn new() -> Self { AveragedCollection { list: vec![], average: 0.0 } }
+              pub fn add(&mut self, value: i32) {
+                  self.list.push(value);
+                  self.update_average();
+              }
+              pub fn remove(&mut self) -> Option<i32> {
+                  let result = self.list.pop();
+                  if result.is_some() { self.update_average(); }
+                  result
+              }
+              pub fn average(&self) -> f64 { self.average }
+              fn update_average(&mut self) {
+                  let total: i32 = self.list.iter().sum();
+                  self.average = if self.list.is_empty() { 0.0 } else { total as f64 / self.list.len() as f64 };
+              }
+          }
+
+          fn main() {
+              let mut c = AveragedCollection::new();
+              for v in [3, 5, 10] { c.add(v); }
+              c.remove();
+              println!("average = {}", c.average());
+          }
+        output: |
+          average = 4
+        note: Because the fields are private, the cached average can never disagree with the list. Rust gives you encapsulation and polymorphism, and shares code through default trait methods and composition rather than inheritance.
+      ex:
+        - t: Encapsulate a temperature log
+          p: Write a TempLog that keeps readings private and also caches the minimum and maximum, updated on every add. Expose add, min, max and len only.
+          check: test
+          hints:
+            - 'Store readings Vec<f64>, min: Option<f64> and max: Option<f64>.'
+            - In add, update min and max with f64::min and f64::max.
+            - min() and max() return Option<f64> so an empty log is handled.
+          solution: |
+            pub struct TempLog {
+                readings: Vec<f64>,
+                min: Option<f64>,
+                max: Option<f64>,
+            }
+
+            impl TempLog {
+                pub fn new() -> Self {
+                    TempLog { readings: Vec::new(), min: None, max: None }
+                }
+                pub fn add(&mut self, t: f64) {
+                    self.readings.push(t);
+                    self.min = Some(self.min.map_or(t, |m| m.min(t)));
+                    self.max = Some(self.max.map_or(t, |m| m.max(t)));
+                }
+                pub fn min(&self) -> Option<f64> { self.min }
+                pub fn max(&self) -> Option<f64> { self.max }
+                pub fn len(&self) -> usize { self.readings.len() }
+            }
+
+            fn main() {
+                let mut log = TempLog::new();
+                for t in [21.0, -4.5, 30.2] { log.add(t); }
+                println!("{} readings, min {:?}, max {:?}", log.len(), log.min(), log.max());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn tracks_extremes() {
+                    let mut l = TempLog::new();
+                    assert_eq!(l.min(), None);
+                    l.add(5.0);
+                    l.add(-1.0);
+                    assert_eq!((l.min(), l.max()), (Some(-1.0), Some(5.0)));
+                }
+            }
+          explain: map_or handles the first reading neatly, when there is no previous minimum. Since nothing outside can push to readings directly, the cache is always right.
+        - t: Reuse without inheritance
+          p: Give three types (Circle, Square, Hexagon) a shared describe method through a Shape trait with required name and area methods and a default describe that uses them.
+          hints:
+            - "trait Shape { fn name(&self) -> String; fn area(&self) -> f64; fn describe(&self) -> String { ... } }"
+            - Each type implements only name and area.
+            - A regular hexagon with side s has area 3 * sqrt(3) / 2 * s squared.
+          solution: |
+            trait Shape {
+                fn name(&self) -> String;
+                fn area(&self) -> f64;
+                fn describe(&self) -> String {
+                    format!("{} with area {:.2}", self.name(), self.area())
+                }
+            }
+
+            struct Circle(f64);
+            struct Square(f64);
+            struct Hexagon(f64);
+
+            impl Shape for Circle {
+                fn name(&self) -> String { "circle".into() }
+                fn area(&self) -> f64 { std::f64::consts::PI * self.0 * self.0 }
+            }
+            impl Shape for Square {
+                fn name(&self) -> String { "square".into() }
+                fn area(&self) -> f64 { self.0 * self.0 }
+            }
+            impl Shape for Hexagon {
+                fn name(&self) -> String { "hexagon".into() }
+                fn area(&self) -> f64 { 3.0 * 3f64.sqrt() / 2.0 * self.0 * self.0 }
+            }
+
+            fn main() {
+                println!("{}", Circle(1.0).describe());
+                println!("{}", Square(2.0).describe());
+                println!("{}", Hexagon(1.0).describe());
+            }
+          explain: The default method plays the role an inherited method would in other languages, but there is no hidden parent state, so each type stays simple and the shared behaviour is spelled out in the trait.
+    - id: "18.2"
+      t: Trait objects
+      min: 60
+      learn: Store values of different types behind dyn Trait in a Box, dynamic dispatch through a vtable, the difference from generics, and which traits can be made into trait objects (dyn compatibility).
+      example:
+        title: A GUI screen of mixed components
+        code: |
+          pub trait Draw {
+              fn draw(&self) -> String;
+          }
+
+          pub struct Screen {
+              pub components: Vec<Box<dyn Draw>>,
+          }
+
+          impl Screen {
+              pub fn run(&self) {
+                  for c in self.components.iter() {
+                      println!("{}", c.draw());
+                  }
+              }
+          }
+
+          pub struct Button { pub label: String }
+          impl Draw for Button {
+              fn draw(&self) -> String { format!("[ {} ]", self.label) }
+          }
+
+          struct SelectBox { options: Vec<String> }
+          impl Draw for SelectBox {
+              fn draw(&self) -> String { format!("<{}>", self.options.join(" | ")) }
+          }
+
+          fn main() {
+              let screen = Screen {
+                  components: vec![
+                      Box::new(SelectBox { options: vec!["Yes".into(), "Maybe".into(), "No".into()] }),
+                      Box::new(Button { label: "OK".into() }),
+                  ],
+              };
+              screen.run();
+          }
+        output: |
+          <Yes | Maybe | No>
+          [ OK ]
+        note: A generic Screen<T Draw> could only hold one component type at a time; Box<dyn Draw> holds any mix. The cost is a pointer lookup per call and no inlining. A trait can be used with dyn only if its methods do not return Self or take generic type parameters.
+      ex:
+        - t: A plugin pipeline
+          p: 'Define trait Step { fn name(&self) -> &str; fn apply(&self, input: String) -> String; } and build a Vec<Box<dyn Step>> pipeline with Trim, Upper and Replace { from, to } steps. Run text through every step and log each step''s name.'
+          check: test
+          hints:
+            - Each step is its own struct implementing Step.
+            - Fold the text through the steps with steps.iter().fold(text, |acc, s| s.apply(acc)).
+            - Replace holds the two strings as fields.
+          solution: |
+            trait Step {
+                fn name(&self) -> &str;
+                fn apply(&self, input: String) -> String;
+            }
+
+            struct Trim;
+            struct Upper;
+            struct Replace { from: String, to: String }
+
+            impl Step for Trim {
+                fn name(&self) -> &str { "trim" }
+                fn apply(&self, s: String) -> String { s.trim().to_string() }
+            }
+            impl Step for Upper {
+                fn name(&self) -> &str { "upper" }
+                fn apply(&self, s: String) -> String { s.to_uppercase() }
+            }
+            impl Step for Replace {
+                fn name(&self) -> &str { "replace" }
+                fn apply(&self, s: String) -> String { s.replace(&self.from, &self.to) }
+            }
+
+            fn run(steps: &[Box<dyn Step>], text: &str) -> String {
+                steps.iter().fold(text.to_string(), |acc, s| {
+                    println!("applying {}", s.name());
+                    s.apply(acc)
+                })
+            }
+
+            fn main() {
+                let steps: Vec<Box<dyn Step>> = vec![
+                    Box::new(Trim),
+                    Box::new(Replace { from: "rust".into(), to: "Rust".into() }),
+                    Box::new(Upper),
+                ];
+                println!("{}", run(&steps, "  i like rust  "));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn order_matters() {
+                    let s: Vec<Box<dyn Step>> = vec![Box::new(Upper), Box::new(Replace { from: "A".into(), to: "4".into() })];
+                    assert_eq!(run(&s, "banana"), "B4N4N4");
+                }
+            }
+          explain: Users can add their own Step types without changing run, which is the open-closed principle in practice. This shape appears in middleware stacks, log processors and test harnesses.
+        - t: Generic or dyn
+          p: 'Write the same "render all" function twice, once generic (fn render_all<T: Draw>(items: &[T])) and once with trait objects (fn render_dyn(items: &[&dyn Draw])), then show a call that only the dyn version accepts.'
+          hints:
+            - The generic version needs every item to be the same type T.
+            - "Mixing a Button and a Label in one slice only works with &dyn Draw."
+            - Write the failing generic call as a comment with the error.
+          solution: |
+            trait Draw {
+                fn draw(&self) -> String;
+            }
+            struct Button(&'static str);
+            struct Label(&'static str);
+            impl Draw for Button { fn draw(&self) -> String { format!("[{}]", self.0) } }
+            impl Draw for Label { fn draw(&self) -> String { self.0.to_string() } }
+
+            fn render_all<T: Draw>(items: &[T]) -> Vec<String> {
+                items.iter().map(|i| i.draw()).collect()
+            }
+
+            fn render_dyn(items: &[&dyn Draw]) -> Vec<String> {
+                items.iter().map(|i| i.draw()).collect()
+            }
+
+            fn main() {
+                println!("{:?}", render_all(&[Button("Save"), Button("Quit")]));
+                println!("{:?}", render_dyn(&[&Label("Name:"), &Button("OK")]));
+                // render_all(&[Label("x"), Button("y")]); // error: expected `Label`, found `Button`
+            }
+          explain: Reach for generics when one type per call is enough and speed matters; reach for dyn when a collection must hold mixed types or when you want smaller compiled code.
+    - id: "18.3"
+      t: The state pattern, two ways
+      min: 60
+      learn: Implement a blog post workflow with trait-object states that change at run time, then re-implement it with separate types so invalid transitions cannot even compile.
+      example:
+        title: Encoding states as types
+        code: |
+          pub struct Post { content: String }
+          pub struct DraftPost { content: String }
+          pub struct PendingReviewPost { content: String }
+
+          impl Post {
+              pub fn new() -> DraftPost { DraftPost { content: String::new() } }
+              pub fn content(&self) -> &str { &self.content }
+          }
+          impl DraftPost {
+              pub fn add_text(&mut self, text: &str) { self.content.push_str(text); }
+              pub fn request_review(self) -> PendingReviewPost {
+                  PendingReviewPost { content: self.content }
+              }
+          }
+          impl PendingReviewPost {
+              pub fn approve(self) -> Post { Post { content: self.content } }
+          }
+
+          fn main() {
+              let mut post = Post::new();
+              post.add_text("I ate a salad for lunch today");
+              // post.content();      // error: DraftPost has no content method
+              let post = post.request_review();
+              let post = post.approve();
+              println!("{}", post.content());
+          }
+        output: |
+          I ate a salad for lunch today
+        note: The book first builds this with a Box<dyn State> field that swaps itself on each transition, which is flexible but only checks rules at run time. Turning each state into its own type moves those checks to the compiler, and a draft simply has no content method to call. The trade-off is less flexibility when states are configured at run time.
+      ex:
+        - t: Trait-object states
+          p: "Implement the book's run-time version: Post with state Option<Box<dyn State>> and states Draft, PendingReview and Published, where content returns an empty string unless the post is published."
+          check: test
+          hints:
+            - "trait State { fn request_review(self: Box<Self>) -> Box<dyn State>; fn approve(self: Box<Self>) -> Box<dyn State>; fn content<'a>(&self, _p: &'a Post) -> &'a str { \"\" } }"
+            - Use self.state.take() to move the old state out before replacing it.
+            - Published overrides content to return &post.content.
+          solution: |
+            pub struct Post {
+                state: Option<Box<dyn State>>,
+                content: String,
+            }
+
+            impl Post {
+                pub fn new() -> Post {
+                    Post { state: Some(Box::new(Draft)), content: String::new() }
+                }
+                pub fn add_text(&mut self, text: &str) {
+                    self.content.push_str(text);
+                }
+                pub fn content(&self) -> &str {
+                    self.state.as_ref().unwrap().content(self)
+                }
+                pub fn request_review(&mut self) {
+                    if let Some(s) = self.state.take() {
+                        self.state = Some(s.request_review());
+                    }
+                }
+                pub fn approve(&mut self) {
+                    if let Some(s) = self.state.take() {
+                        self.state = Some(s.approve());
+                    }
+                }
+            }
+
+            trait State {
+                fn request_review(self: Box<Self>) -> Box<dyn State>;
+                fn approve(self: Box<Self>) -> Box<dyn State>;
+                fn content<'a>(&self, _post: &'a Post) -> &'a str {
+                    ""
+                }
+            }
+
+            struct Draft;
+            struct PendingReview;
+            struct Published;
+
+            impl State for Draft {
+                fn request_review(self: Box<Self>) -> Box<dyn State> { Box::new(PendingReview) }
+                fn approve(self: Box<Self>) -> Box<dyn State> { self }
+            }
+            impl State for PendingReview {
+                fn request_review(self: Box<Self>) -> Box<dyn State> { self }
+                fn approve(self: Box<Self>) -> Box<dyn State> { Box::new(Published) }
+            }
+            impl State for Published {
+                fn request_review(self: Box<Self>) -> Box<dyn State> { self }
+                fn approve(self: Box<Self>) -> Box<dyn State> { self }
+                fn content<'a>(&self, post: &'a Post) -> &'a str { &post.content }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn workflow() {
+                    let mut p = Post::new();
+                    p.add_text("hello");
+                    assert_eq!(p.content(), "");
+                    p.request_review();
+                    assert_eq!(p.content(), "");
+                    p.approve();
+                    assert_eq!(p.content(), "hello");
+                }
+            }
+          explain: self Box<Self> lets a state consume itself and return the next one. Option plus take is the standard trick for moving a value out of a field you only have &mut access to.
+        - t: Two approvals
+          p: Extend the type-state version so a PendingReviewPost needs two calls to approve before it becomes a Post. Model the half-approved state as its own type.
+          hints:
+            - 'Add a struct HalfApprovedPost { content: String }.'
+            - PendingReviewPost::approve returns HalfApprovedPost; HalfApprovedPost::approve returns Post.
+            - Add a reject method on both that returns a DraftPost.
+          solution: |
+            pub struct Post { content: String }
+            pub struct DraftPost { content: String }
+            pub struct PendingReviewPost { content: String }
+            pub struct HalfApprovedPost { content: String }
+
+            impl Post {
+                pub fn new() -> DraftPost { DraftPost { content: String::new() } }
+                pub fn content(&self) -> &str { &self.content }
+            }
+            impl DraftPost {
+                pub fn add_text(&mut self, t: &str) { self.content.push_str(t); }
+                pub fn request_review(self) -> PendingReviewPost { PendingReviewPost { content: self.content } }
+            }
+            impl PendingReviewPost {
+                pub fn approve(self) -> HalfApprovedPost { HalfApprovedPost { content: self.content } }
+                pub fn reject(self) -> DraftPost { DraftPost { content: self.content } }
+            }
+            impl HalfApprovedPost {
+                pub fn approve(self) -> Post { Post { content: self.content } }
+                pub fn reject(self) -> DraftPost { DraftPost { content: self.content } }
+            }
+
+            fn main() {
+                let mut d = Post::new();
+                d.add_text("Two reviewers agree");
+                let published = d.request_review().approve().approve();
+                println!("{}", published.content());
+                // d.request_review().approve().content(); // error: no method `content` on HalfApprovedPost
+            }
+          explain: The compiler now enforces the two-approval rule, so no test can ever find a post published with one approval. This is a powerful technique for workflows in regulated domains such as medtech, where a skipped step is a serious defect.
+  quiz:
+    - q: How does Rust share behaviour between types instead of inheritance?
+      o: |
+        Traits with default methods, plus composition
+        Base classes
+        Macros only
+        It cannot
+      a: 0
+      x: Default trait methods give reuse; struct fields give composition.
+    - q: What does Vec<Box<dyn Draw>> allow that Vec<T> with T Draw does not?
+      o: |
+        Holding different types that implement Draw in one vector
+        Faster method calls
+        Storing values on the stack
+        Calling generic methods
+      a: 0
+      x: Trait objects erase the concrete type.
+    - q: What is the run-time cost of calling a method on a trait object?
+      o: |
+        A pointer lookup in a vtable, which also prevents inlining
+        A heap allocation per call
+        Nothing at all
+        A thread switch
+      a: 0
+      x: This is dynamic dispatch.
+    - q: Which trait cannot be used as dyn Trait?
+      o: |
+        One with a method that returns Self
+        One with a default method
+        One with a method taking &self
+        One implemented for String
+      a: 0
+      x: The size of Self is unknown behind a trait object.
+      pool: exam
+    - q: What is the main benefit of encoding states as separate types?
+      o: |
+        Invalid transitions become compile errors
+        It uses less memory
+        States can be added at run time
+        It avoids ownership
+      a: 0
+      x: Methods simply do not exist on the wrong state.
+      pool: exam
+    - q: Why does the state field use Option<Box<dyn State>> with take()?
+      o: |
+        To move the old state out through a mutable reference and replace it
+        Because states can be null
+        To make the struct Copy
+        To avoid heap allocation
+      a: 0
+      x: take leaves None behind temporarily so the old box can be consumed.
+      pool: exam
+  recap:
+    summary:
+      - Rust supports encapsulation (private fields) and polymorphism (traits) but not inheritance.
+      - Default trait methods and composition provide code reuse.
+      - Box<dyn Trait> stores mixed types; calls go through a vtable (dynamic dispatch).
+      - Generics are resolved at compile time (static dispatch); pick dyn for mixed collections or plug-ins.
+      - Only dyn compatible traits (no Self returns, no generic methods) can be trait objects.
+      - The state pattern can use trait objects (checked at run time) or separate types (checked at compile time).
+    functions: |
+      Box<dyn Trait> || An owned trait object.
+      &dyn Trait || A borrowed trait object.
+      Vec<Box<dyn Trait>> || A collection of mixed types.
+      fn m(self: Box<Self>) || A method that consumes a boxed self.
+      option.take() || Move the value out, leaving None.
+    next: Chapter 19 covers every kind of pattern Rust supports and everywhere you can use them.
+
+- id: c19
+  n: "19"
+  book: 19
+  t: Patterns and matching
+  lv: 3
+  goal: Use patterns everywhere they are allowed, tell refutable from irrefutable patterns, and write expressive matches with destructuring, guards and bindings.
+  res: |
+    Chapter 19 in the book | https://doc.rust-lang.org/book/ch19-00-patterns.html
+    The Rust Reference, patterns | https://doc.rust-lang.org/reference/patterns.html
+  items:
+    - id: "19.1"
+      t: Where patterns appear and refutability
+      min: 45
+      learn: Patterns in match, if let, while let, for, let and function parameters, and why let needs irrefutable patterns while if let and let...else accept refutable ones.
+      example:
+        title: Patterns everywhere
+        code: |
+          fn print_coordinates(&(x, y): &(i32, i32)) {   // pattern in a parameter
+              println!("Current location: ({x}, {y})");
+          }
+
+          fn main() {
+              let (a, b, c) = (1, 2, 3);                   // let with a tuple pattern
+              println!("{a} {b} {c}");
+
+              let mut stack = vec![1, 2, 3];
+              while let Some(top) = stack.pop() {          // while let
+                  print!("{top} ");
+              }
+              println!();
+
+              for (index, value) in ['a', 'b'].iter().enumerate() {  // for
+                  println!("{value} is at index {index}");
+              }
+
+              print_coordinates(&(3, 5));
+
+              let maybe: Option<i32> = None;
+              // let Some(x) = maybe;   // error: refutable pattern in local binding
+              let Some(x) = maybe else {
+                  println!("nothing there");
+                  return;
+              };
+              println!("{x}");
+          }
+        output: |
+          1 2 3
+          3 2 1
+          a is at index 0
+          b is at index 1
+          Current location: (3, 5)
+          nothing there
+        note: A pattern that can fail to match, such as Some(x), is refutable; one that always matches, such as a plain name or a tuple of names, is irrefutable. let, for and parameters need irrefutable patterns, since there is nothing sensible to do on failure.
+      ex:
+        - t: Parameters that destructure
+          p: Write fn distance(&(x1, y1) &(f64, f64), &(x2, y2) &(f64, f64)) -> f64 using patterns in the parameters, and use it in a for loop over pairs of points.
+          check: test
+          hints:
+            - The pattern goes where the parameter name usually is.
+            - "The formula is ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt()."
+            - "Loop with for w in points.windows(2) and call distance(&w[0], &w[1])."
+          solution: |
+            fn distance(&(x1, y1): &(f64, f64), &(x2, y2): &(f64, f64)) -> f64 {
+                ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt()
+            }
+
+            fn main() {
+                let route = [(0.0, 0.0), (3.0, 4.0), (6.0, 8.0)];
+                let mut total = 0.0;
+                for w in route.windows(2) {
+                    total += distance(&w[0], &w[1]);
+                }
+                println!("route length {total}");
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn three_four_five() {
+                    assert_eq!(distance(&(0.0, 0.0), &(3.0, 4.0)), 5.0);
+                }
+            }
+          explain: windows(2) yields overlapping pairs of neighbours, perfect for routes and time series. The pattern in the parameter saves a line of let destructuring in the body.
+        - t: Drain a queue with while let
+          p: Process a VecDeque of tasks with while let Some(task) = queue.pop_front(), where some tasks add follow-up tasks to the back. Stop when the queue is empty and print the order.
+          hints:
+            - "use std::collections::VecDeque;"
+            - Represent a task as a (name, depth) tuple and add a child while depth < 2.
+            - Destructure in the pattern, while let Some((name, depth)) = ...
+          solution: |
+            use std::collections::VecDeque;
+
+            fn main() {
+                let mut queue = VecDeque::from([("root".to_string(), 0)]);
+                let mut order = Vec::new();
+                while let Some((name, depth)) = queue.pop_front() {
+                    if depth < 2 {
+                        queue.push_back((format!("{name}.a"), depth + 1));
+                        queue.push_back((format!("{name}.b"), depth + 1));
+                    }
+                    order.push(name);
+                }
+                println!("{order:?}");
+            }
+          explain: This is a breadth-first traversal. The loop ends naturally when pop_front returns None, with no index or counter to get wrong.
+    - id: "19.2"
+      t: Pattern syntax
+      min: 75
+      learn: Literals, named variables and shadowing, multiple patterns with |, ranges with ..=, destructuring structs, enums, nested values and references, ignoring with _ and .., match guards, and @ bindings.
+      example:
+        title: The whole pattern toolbox
+        code: |
+          struct Point { x: i32, y: i32 }
+
+          enum Message {
+              Hello { id: i32 },
+              Move { x: i32, y: i32 },
+              Color(u8, u8, u8),
+          }
+
+          fn classify(n: i32) -> &'static str {
+              match n {
+                  i32::MIN..=-1 => "negative",
+                  0 => "zero",
+                  1 | 2 | 3 => "small",
+                  x if x % 2 == 0 => "even and big",
+                  _ => "odd and big",
+              }
+          }
+
+          fn main() {
+              let p = Point { x: 0, y: 7 };
+              match p {
+                  Point { x: 0, y } => println!("on the y axis at {y}"),
+                  Point { x, y: 0 } => println!("on the x axis at {x}"),
+                  Point { x, y } => println!("at ({x}, {y})"),
+              }
+
+              for msg in [Message::Hello { id: 5 }, Message::Hello { id: 42 }, Message::Move { x: 1, y: 2 }, Message::Color(0, 160, 255)] {
+                  match msg {
+                      Message::Hello { id: id_var @ 3..=7 } => println!("id in range: {id_var}"),
+                      Message::Hello { id } => println!("other id: {id}"),
+                      Message::Move { x, .. } => println!("move to x = {x}"),
+                      Message::Color(r, _, b) => println!("red {r}, blue {b}"),
+                  }
+              }
+
+              let numbers = (2, 4, 8, 16, 32);
+              let (first, .., last) = numbers;
+              println!("{first} {last} {} {} {}", classify(-5), classify(2), classify(10));
+          }
+        output: |
+          on the y axis at 7
+          id in range: 5
+          other id: 42
+          move to x = 1
+          red 0, blue 255
+          2 32 negative small even and big
+        note: A match guard (if ...) adds a condition the pattern itself cannot express; the compiler does not count guarded arms toward exhaustiveness. @ binds a name while also testing the value against a pattern. .. ignores the rest of a struct or tuple, and _ ignores a single value without binding it.
+      ex:
+        - t: HTTP status classifier
+          p: 'Write fn describe(code: u16) -> String using ranges, |, a guard and @, so 200 gives "OK", 201 to 299 "success CODE", 301 or 302 "redirect", other 3xx "other redirect", 404 "not found", 4xx "client error", 5xx "server error CODE" and anything else "unknown".'
+          check: test
+          hints:
+            - Put the specific codes before the ranges that contain them.
+            - "c @ 201..=299 => format!(\"success {c}\")"
+            - The last arm _ handles everything else.
+          solution: |
+            fn describe(code: u16) -> String {
+                match code {
+                    200 => "OK".to_string(),
+                    c @ 201..=299 => format!("success {c}"),
+                    301 | 302 => "redirect".to_string(),
+                    300..=399 => "other redirect".to_string(),
+                    404 => "not found".to_string(),
+                    400..=499 => "client error".to_string(),
+                    c @ 500..=599 => format!("server error {c}"),
+                    _ => "unknown".to_string(),
+                }
+            }
+
+            fn main() {
+                for c in [200, 204, 302, 307, 404, 418, 503, 999] {
+                    println!("{c}: {}", describe(c));
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn classes() {
+                    assert_eq!(describe(204), "success 204");
+                    assert_eq!(describe(418), "client error");
+                    assert_eq!(describe(503), "server error 503");
+                    assert_eq!(describe(42), "unknown");
+                }
+            }
+          explain: Ordering matters, because 404 also falls in 400..=499. The compiler warns about unreachable arms if you put a broad range before a specific value, a free bug check.
+        - t: Destructure nested data
+          p: "Given enum Shape { Circle { center: (i32, i32), r: u32 }, Line((i32, i32), (i32, i32)) }, write fn touches_origin(s: &Shape) -> bool using nested patterns: a circle centred at (0, 0), or a line with either end at (0, 0)."
+          check: test
+          hints:
+            - "Shape::Circle { center: (0, 0), .. } => true"
+            - "Shape::Line((0, 0), _) | Shape::Line(_, (0, 0)) => true"
+            - Everything else is false.
+          solution: |
+            enum Shape {
+                Circle { center: (i32, i32), r: u32 },
+                Line((i32, i32), (i32, i32)),
+            }
+
+            fn touches_origin(s: &Shape) -> bool {
+                match s {
+                    Shape::Circle { center: (0, 0), .. } => true,
+                    Shape::Line((0, 0), _) | Shape::Line(_, (0, 0)) => true,
+                    _ => false,
+                }
+            }
+
+            fn main() {
+                let shapes = [
+                    Shape::Circle { center: (0, 0), r: 3 },
+                    Shape::Circle { center: (1, 1), r: 3 },
+                    Shape::Line((5, 5), (0, 0)),
+                ];
+                for s in &shapes {
+                    println!("{}", touches_origin(s));
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn nested() {
+                    assert!(touches_origin(&Shape::Line((0, 0), (9, 9))));
+                    assert!(!touches_origin(&Shape::Circle { center: (0, 1), r: 1 }));
+                }
+            }
+          explain: Matching on &Shape works without writing & in the patterns thanks to default binding modes, a convenience the book calls match ergonomics.
+    - id: "19.3"
+      t: Slice patterns and let chains
+      min: 45
+      learn: Match on the shape of slices with [first, .., last] and [head, tail @ ..], combine conditions with let chains in if (Rust 2024), and use matches! for quick checks.
+      example:
+        title: Slices, let chains and matches!
+        code: |
+          fn describe(xs: &[i32]) -> String {
+              match xs {
+                  [] => "empty".into(),
+                  [x] => format!("one item: {x}"),
+                  [first, .., last] if first == last => format!("starts and ends with {first}"),
+                  [first, rest @ ..] => format!("{first} then {} more", rest.len()),
+              }
+          }
+
+          fn main() {
+              for xs in [&[][..], &[7], &[1, 2, 1], &[4, 5, 6, 7]] {
+                  println!("{}", describe(xs));
+              }
+
+              let input = Some("42");
+              if let Some(s) = input && let Ok(n) = s.parse::<i32>() && n > 10 {
+                  println!("got a big number: {n}");
+              }
+
+              let c = 'q';
+              println!("{}", matches!(c, 'a'..='z' | 'A'..='Z'));
+          }
+        output: |
+          empty
+          one item: 7
+          starts and ends with 1
+          4 then 3 more
+          got a big number: 42
+          true
+        note: rest @ .. binds the middle or tail of a slice as a sub-slice. Let chains, stable since Rust 1.88 in the 2024 edition, replace deeply nested if let blocks. matches! turns a pattern into a bool.
+      ex:
+        - t: A tiny command parser
+          p: Parse commands from words with slice patterns, ["add", item], ["remove", item], ["list"] and ["rename", old, new], returning an enum Command or an Err with a helpful message.
+          check: test
+          hints:
+            - "let words: Vec<&str> = line.split_whitespace().collect(); match words.as_slice() { ... }"
+            - "[\"add\", item] => Ok(Command::Add(item.to_string()))"
+            - "[] => Err(\"empty command\".into()), and [other, ..] => Err(format!(\"unknown command {other}\"))."
+          solution: |
+            #[derive(Debug, PartialEq)]
+            enum Command {
+                Add(String),
+                Remove(String),
+                List,
+                Rename(String, String),
+            }
+
+            fn parse(line: &str) -> Result<Command, String> {
+                let words: Vec<&str> = line.split_whitespace().collect();
+                match words.as_slice() {
+                    ["add", item] => Ok(Command::Add(item.to_string())),
+                    ["remove", item] => Ok(Command::Remove(item.to_string())),
+                    ["list"] => Ok(Command::List),
+                    ["rename", old, new] => Ok(Command::Rename(old.to_string(), new.to_string())),
+                    [] => Err("empty command".into()),
+                    [cmd @ ("add" | "remove" | "rename" | "list"), ..] => Err(format!("wrong number of arguments for {cmd}")),
+                    [other, ..] => Err(format!("unknown command {other}")),
+                }
+            }
+
+            fn main() {
+                for l in ["add milk", "list", "rename milk oat-milk", "add", "fly away"] {
+                    println!("{l:?} -> {:?}", parse(l));
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn parses() {
+                    assert_eq!(parse("add milk"), Ok(Command::Add("milk".into())));
+                    assert_eq!(parse("rename a b"), Ok(Command::Rename("a".into(), "b".into())));
+                    assert!(parse("add").unwrap_err().contains("wrong number"));
+                    assert!(parse("jump").unwrap_err().contains("unknown"));
+                }
+            }
+          explain: Each arm documents one command's exact shape, so the parser reads like its own specification. The cmd @ (... | ...) arm gives a better error than "unknown" when the command exists but the arguments are wrong.
+        - t: Flatten nested if lets
+          p: "Rewrite this with a let chain: if let Some(user) = find(id) { if let Some(email) = user.email { if email.ends_with(\"@example.com\") { notify(email) } } }."
+          hints:
+            - Join the conditions with && after each let.
+            - The final plain condition can go in the same chain.
+            - Requires edition 2024, which new Cargo projects use.
+          solution: |
+            struct User {
+                email: Option<String>,
+            }
+
+            fn find(id: u32) -> Option<User> {
+                (id == 1).then(|| User { email: Some("kev@example.com".into()) })
+            }
+
+            fn notify(email: &str) {
+                println!("notifying {email}");
+            }
+
+            fn main() {
+                let id = 1;
+                if let Some(user) = find(id)
+                    && let Some(email) = user.email
+                    && email.ends_with("@example.com")
+                {
+                    notify(&email);
+                }
+            }
+          explain: Three levels of nesting become one condition. Names bound earlier in the chain, such as user, are available in the later conditions and in the body.
+  quiz:
+    - q: Which of these is a refutable pattern?
+      o: |
+        Some(x)
+        x
+        (a, b)
+        _
+      a: 0
+      x: Some(x) does not match None.
+    - q: What does this print?
+      code: |
+        let x = 5;
+        match x {
+            1..=4 => println!("low"),
+            n @ 5..=9 => println!("mid {n}"),
+            _ => println!("high"),
+        }
+      o: |
+        mid 5
+        low
+        high
+        "5"
+      a: 0
+      x: "@ binds the matched value to n."
+    - q: What does .. do in let (first, .., last) = t;?
+      o: |
+        Ignores all the values in between
+        Creates a range
+        Collects the middle into a tuple
+        Is a syntax error
+      a: 0
+      x: ".. can appear once in a tuple or struct pattern."
+    - q: Why does the compiler not count arms with a match guard toward exhaustiveness?
+      o: |
+        It cannot know in general whether the guard condition holds
+        Guards are always false
+        Guards are evaluated at compile time
+        It does count them
+      a: 0
+      x: You still need an arm without a guard to cover the rest.
+    - q: Which places require irrefutable patterns?
+      type: multi
+      o: |
+        let statements (without else)
+        for loops
+        function parameters
+        if let
+      a: [0, 1, 2]
+      x: if let exists precisely for refutable patterns.
+      pool: exam
+    - q: In match xs { [first, rest @ ..] => ... }, what is rest?
+      o: |
+        A slice of all the elements after the first
+        The last element
+        A Vec copy of the tail
+        The length of the slice
+      a: 0
+      x: "rest @ .. binds the remaining elements as a sub-slice."
+      pool: exam
+    - q: What does matches!(c, 'a'..='z') return?
+      o: |
+        A bool saying whether c matches the pattern
+        The matched char
+        An Option
+        A Result
+      a: 0
+      x: It is shorthand for a match returning true or false.
+      pool: exam
+  recap:
+    summary:
+      - Patterns appear in match, if let, while let, let...else, for, let and function parameters.
+      - Refutable patterns can fail; irrefutable ones always match and are required by let, for and parameters.
+      - Literals, ranges, | alternatives, destructuring of structs, enums, tuples, references and slices all work as patterns.
+      - _ ignores one value, .. ignores the rest, a guard adds a condition, and @ binds while testing.
+      - Let chains combine several let and boolean conditions in one if, and matches! gives a bool.
+    functions: |
+      1 | 2 || Match either pattern.
+      1..=5 || Match an inclusive range.
+      Point { x, .. } || Destructure a struct, ignoring other fields.
+      x if x > 0 || A match guard.
+      id @ 3..=7 || Bind a value while testing it.
+      [first, .., last] / [head, tail @ ..] || Slice patterns.
+      if let A = a && let B = b && cond || A let chain.
+      matches!(v, pattern) || Test a pattern as a bool.
+    next: Chapter 20 covers advanced features you will meet in libraries, unsafe code, advanced traits and types, and macros.
+
+- id: c20
+  n: "20"
+  book: 20
+  t: Advanced features
+  lv: 5
+  goal: Read and write unsafe code responsibly, use advanced trait and type features, return closures, and write your own macros.
+  res: |
+    Chapter 20 in the book | https://doc.rust-lang.org/book/ch20-00-advanced-features.html
+    The Rustonomicon | https://doc.rust-lang.org/nomicon/
+    The Little Book of Rust Macros | https://veykril.github.io/tlborm/
+  items:
+    - id: "20.1"
+      t: Unsafe Rust
+      min: 60
+      learn: The five unsafe superpowers, raw pointers, calling unsafe functions, building a safe abstraction like split_at_mut, extern functions, mutable statics, and why unsafe blocks should be small and documented.
+      example:
+        title: A safe wrapper around unsafe code
+        code: |
+          use std::slice;
+
+          /// Splits a slice into two mutable halves at `mid`.
+          fn split_at_mut(values: &mut [i32], mid: usize) -> (&mut [i32], &mut [i32]) {
+              let len = values.len();
+              let ptr = values.as_mut_ptr();
+              assert!(mid <= len);
+              // SAFETY: the two ranges [0, mid) and [mid, len) do not overlap
+              // and both lie inside the original slice.
+              unsafe {
+                  (
+                      slice::from_raw_parts_mut(ptr, mid),
+                      slice::from_raw_parts_mut(ptr.add(mid), len - mid),
+                  )
+              }
+          }
+
+          unsafe extern "C" {
+              safe fn abs(input: i32) -> i32;   // a C library function we promise is safe to call
+          }
+
+          fn main() {
+              let mut v = vec![1, 2, 3, 4, 5, 6];
+              let (a, b) = split_at_mut(&mut v, 3);
+              a[0] = 10;
+              b[0] = 40;
+              println!("{v:?}");
+
+              let x = 5;
+              let r = &raw const x;                 // creating a raw pointer is safe
+              unsafe { println!("r points to {}", *r); } // dereferencing is not
+              println!("abs(-3) according to C: {}", abs(-3));
+          }
+        output: |
+          [10, 2, 3, 40, 5, 6]
+          r points to 5
+          abs(-3) according to C: 3
+        note: Inside unsafe you may dereference raw pointers, call unsafe functions, access mutable statics, implement unsafe traits and access union fields. The borrow checker still runs; unsafe only means you, not the compiler, are guaranteeing these operations are valid. Wrapping them in a safe function with a SAFETY comment keeps the risky part tiny and reviewable.
+      ex:
+        - t: Swap through raw pointers
+          p: 'Write fn swap_ends(v: &mut [i32]) that swaps the first and last elements using raw pointers and std::ptr::swap, with a SAFETY comment. Make it do nothing for slices shorter than 2, and test it.'
+          check: test
+          hints:
+            - Get the pointers with v.as_mut_ptr() and ptr.add(v.len() - 1).
+            - std::ptr::swap(a, b) is unsafe because it trusts the pointers.
+            - The safe slice method v.swap(0, v.len() - 1) does the same; compare your result with it in the test.
+          solution: |
+            fn swap_ends(v: &mut [i32]) {
+                if v.len() < 2 {
+                    return;
+                }
+                let p = v.as_mut_ptr();
+                // SAFETY: len >= 2, so index 0 and len - 1 are both valid,
+                // distinct elements of this exclusively borrowed slice.
+                unsafe {
+                    std::ptr::swap(p, p.add(v.len() - 1));
+                }
+            }
+
+            fn main() {
+                let mut v = [1, 2, 3, 4];
+                swap_ends(&mut v);
+                println!("{v:?}");
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn matches_safe_version() {
+                    let mut a = [5, 6, 7];
+                    let mut b = a;
+                    swap_ends(&mut a);
+                    b.swap(0, 2);
+                    assert_eq!(a, b);
+                    let mut one = [9];
+                    swap_ends(&mut one);
+                    assert_eq!(one, [9]);
+                }
+            }
+          explain: The length check is what makes the unsafe block sound; without it an empty slice would compute an invalid pointer. In real code you would just call v.swap, the point is to practise writing a sound safe wrapper. Running tests under cargo miri test checks unsafe code for undefined behaviour.
+        - t: A global counter
+          p: Count how many times a function is called using a static AtomicUsize, then explain in a comment why this is better than static mut.
+          hints:
+            - "static CALLS: AtomicUsize = AtomicUsize::new(0);"
+            - CALLS.fetch_add(1, Ordering::Relaxed) increments it without unsafe.
+            - static mut needs unsafe for every access and is a data race waiting to happen with threads.
+          solution: |
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+            fn tracked() {
+                CALLS.fetch_add(1, Ordering::Relaxed);
+            }
+
+            fn main() {
+                for _ in 0..5 {
+                    tracked();
+                }
+                println!("tracked() was called {} times", CALLS.load(Ordering::Relaxed));
+                // static mut COUNT: usize would need `unsafe` on every read and
+                // write, and two threads updating it at once is undefined
+                // behaviour. Atomics make the same thing safe and thread-safe.
+            }
+          explain: Most uses of mutable global state are better served by atomics, a Mutex in a static (std::sync::LazyLock or OnceLock), or passing state explicitly. Rust 2024 makes references to static mut a hard error to discourage it further.
+    - id: "20.2"
+      t: Advanced traits
+      min: 60
+      learn: Associated types versus generic parameters, default type parameters and operator overloading with Add, fully qualified syntax for methods with the same name, supertraits, and the newtype pattern for implementing outside traits on outside types.
+      example:
+        title: Add for Point, supertraits and newtype
+        code: |
+          use std::fmt;
+          use std::ops::Add;
+
+          #[derive(Debug, Copy, Clone, PartialEq)]
+          struct Point { x: i32, y: i32 }
+
+          impl Add for Point {
+              type Output = Point;
+              fn add(self, other: Point) -> Point {
+                  Point { x: self.x + other.x, y: self.y + other.y }
+              }
+          }
+
+          trait OutlinePrint: fmt::Display {      // supertrait: requires Display
+              fn outline_print(&self) {
+                  let s = self.to_string();
+                  println!("{}", "*".repeat(s.len() + 4));
+                  println!("* {s} *");
+                  println!("{}", "*".repeat(s.len() + 4));
+              }
+          }
+
+          impl fmt::Display for Point {
+              fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "({}, {})", self.x, self.y) }
+          }
+          impl OutlinePrint for Point {}
+
+          struct Wrapper(Vec<String>);           // newtype around an outside type
+          impl fmt::Display for Wrapper {
+              fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "[{}]", self.0.join(", ")) }
+          }
+
+          trait Pilot { fn fly(&self) -> &'static str; }
+          struct Human;
+          impl Pilot for Human { fn fly(&self) -> &'static str { "This is your captain speaking." } }
+          impl Human { fn fly(&self) -> &'static str { "*waving arms furiously*" } }
+
+          fn main() {
+              let p = Point { x: 1, y: 0 } + Point { x: 2, y: 3 };
+              p.outline_print();
+              println!("{}", Wrapper(vec!["hello".into(), "world".into()]));
+              let h = Human;
+              println!("{} / {}", h.fly(), Pilot::fly(&h));
+          }
+        output: |
+          **********
+          * (3, 3) *
+          **********
+          [hello, world]
+          *waving arms furiously* / This is your captain speaking.
+        note: Iterator uses an associated type (type Item) because a type has exactly one item type; a generic parameter would let one type implement the trait many times. The newtype Wrapper gets around the orphan rule at zero cost. When names clash, Trait::method(&value) picks the trait's version.
+      ex:
+        - t: Money arithmetic
+          p: Implement Add, Sub and Mul<i64> (multiplying by a quantity) for a Money(i64) of cents type, plus Display, so you can write Money(1999) * 3 + Money(500).
+          check: test
+          hints:
+            - "impl Mul<i64> for Money { type Output = Money; fn mul(self, n: i64) -> Money { Money(self.0 * n) } }"
+            - Derive Debug, Clone, Copy and PartialEq for easy testing.
+            - Display divides by 100 for dollars and uses {:02} for cents.
+          solution: |
+            use std::fmt;
+            use std::ops::{Add, Mul, Sub};
+
+            #[derive(Debug, Clone, Copy, PartialEq)]
+            struct Money(i64);
+
+            impl Add for Money {
+                type Output = Money;
+                fn add(self, o: Money) -> Money { Money(self.0 + o.0) }
+            }
+            impl Sub for Money {
+                type Output = Money;
+                fn sub(self, o: Money) -> Money { Money(self.0 - o.0) }
+            }
+            impl Mul<i64> for Money {
+                type Output = Money;
+                fn mul(self, n: i64) -> Money { Money(self.0 * n) }
+            }
+            impl fmt::Display for Money {
+                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    let sign = if self.0 < 0 { "-" } else { "" };
+                    write!(f, "{sign}${}.{:02}", self.0.abs() / 100, self.0.abs() % 100)
+                }
+            }
+
+            fn main() {
+                let total = Money(1999) * 3 + Money(500) - Money(97);
+                println!("{total}");
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn arithmetic() {
+                    assert_eq!(Money(1999) * 3 + Money(500), Money(6497));
+                    assert_eq!((Money(100) - Money(250)).to_string(), "-$1.50");
+                }
+            }
+          explain: Mul<i64> shows why Add has a default type parameter, Rhs = Self, the right-hand side can be a different type. Implementing Money * Money is deliberately left out because multiplying two amounts of money has no meaning.
+        - t: A supertrait for reports
+          p: 'Define trait Report: Display + Debug with a default fn report(&self) -> String combining both formats, and implement it for a TestRun { passed: u32, failed: u32 } struct.'
+          hints:
+            - "trait Report: std::fmt::Display + std::fmt::Debug { fn report(&self) -> String { format!(\"{self} / {self:?}\") } }"
+            - Derive Debug and implement Display by hand.
+            - impl Report for TestRun {} is enough because report has a default.
+          solution: |
+            use std::fmt;
+
+            trait Report: fmt::Display + fmt::Debug {
+                fn report(&self) -> String {
+                    format!("{self}\n  details: {self:?}")
+                }
+            }
+
+            #[derive(Debug)]
+            struct TestRun {
+                passed: u32,
+                failed: u32,
+            }
+
+            impl fmt::Display for TestRun {
+                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    let total = self.passed + self.failed;
+                    write!(f, "{}/{} passed ({:.0}%)", self.passed, total, self.passed as f64 / total as f64 * 100.0)
+                }
+            }
+
+            impl Report for TestRun {}
+
+            fn main() {
+                println!("{}", TestRun { passed: 47, failed: 3 }.report());
+            }
+          explain: The supertrait bound lets the default method use {self} and {self:?}, because every implementer is guaranteed to have both. Forgetting Display on TestRun gives a clear compile error pointing at the missing bound.
+    - id: "20.3"
+      t: Advanced types and functions
+      min: 45
+      learn: Type aliases, the never type, dynamically sized types and the Sized bound, function pointers versus closures, and returning closures with impl Fn or Box<dyn Fn>.
+      example:
+        title: Aliases, never, fn pointers and returned closures
+        code: |
+          type Thunk = Box<dyn Fn() -> String + Send + 'static>;   // alias for a long type
+
+          fn add_one(x: i32) -> i32 { x + 1 }
+
+          fn do_twice(f: fn(i32) -> i32, arg: i32) -> i32 { f(arg) + f(arg) }
+
+          fn make_adder(n: i32) -> impl Fn(i32) -> i32 { move |x| x + n }
+
+          fn make_op(name: &str) -> Box<dyn Fn(i32, i32) -> i32> {
+              match name {
+                  "add" => Box::new(|a, b| a + b),
+                  "mul" => Box::new(|a, b| a * b),
+                  _ => panic!("unknown op {name}"),   // panic! has the never type !
+              }
+          }
+
+          fn generic<T: ?Sized + std::fmt::Debug>(t: &T) { println!("{t:?}"); } // accepts str too
+
+          fn main() {
+              let t: Thunk = Box::new(|| String::from("lazy hello"));
+              println!("{}", t());
+              println!("{}", do_twice(add_one, 5));
+              let list: Vec<String> = vec![1, 2, 3].iter().map(ToString::to_string).collect();
+              println!("{list:?}");
+              println!("{}", make_adder(10)(5));
+              println!("{}", make_op("mul")(6, 7));
+              generic("an unsized str");
+          }
+        output: |
+          lazy hello
+          12
+          ["1", "2", "3"]
+          15
+          42
+          "an unsized str"
+        note: The never type ! is the type of expressions that never produce a value, such as panic!, continue and loop without break, which is why they fit in any match arm. str and dyn Trait have no size known at compile time, so they always live behind a pointer; generic functions assume Sized unless you write ?Sized.
+      ex:
+        - t: A calculator table
+          p: Build a HashMap<&str, fn(f64, f64) -> f64> of operations (+, -, *, /) using function pointers and closures that capture nothing, then evaluate a list of (a, op, b) expressions.
+          check: test
+          hints:
+            - Closures that capture nothing coerce to fn pointers.
+            - "ops.insert(\"+\", |a, b| a + b);"
+            - Look up each op with ops.get(op) and handle unknown operators.
+          solution: |
+            use std::collections::HashMap;
+
+            fn ops() -> HashMap<&'static str, fn(f64, f64) -> f64> {
+                let mut m: HashMap<&'static str, fn(f64, f64) -> f64> = HashMap::new();
+                m.insert("+", |a, b| a + b);
+                m.insert("-", |a, b| a - b);
+                m.insert("*", |a, b| a * b);
+                m.insert("/", |a, b| a / b);
+                m
+            }
+
+            fn eval(a: f64, op: &str, b: f64) -> Option<f64> {
+                ops().get(op).map(|f| f(a, b))
+            }
+
+            fn main() {
+                for (a, op, b) in [(6.0, "*", 7.0), (1.0, "/", 4.0), (2.0, "^", 3.0)] {
+                    match eval(a, op, b) {
+                        Some(r) => println!("{a} {op} {b} = {r}"),
+                        None => println!("unknown operator {op}"),
+                    }
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn evaluates() {
+                    assert_eq!(eval(6.0, "*", 7.0), Some(42.0));
+                    assert_eq!(eval(1.0, "%", 2.0), None);
+                }
+            }
+          explain: fn pointers are plain addresses, small and Copy, which makes them ideal for dispatch tables. A closure that captured a variable would need Box<dyn Fn> instead.
+        - t: Composing functions
+          p: 'Write fn compose<A, B, C>(f: impl Fn(A) -> B, g: impl Fn(B) -> C) -> impl Fn(A) -> C and use it to build a slugify function from trim, lowercase and replace-spaces steps.'
+          check: test
+          hints:
+            - The body is move |x| g(f(x)).
+            - Each step can be a closure taking and returning a String.
+            - Compose two at a time, compose(compose(a, b), c).
+          solution: |
+            fn compose<A, B, C>(f: impl Fn(A) -> B, g: impl Fn(B) -> C) -> impl Fn(A) -> C {
+                move |x| g(f(x))
+            }
+
+            fn main() {
+                let trim = |s: String| s.trim().to_string();
+                let lower = |s: String| s.to_lowercase();
+                let dashes = |s: String| s.split_whitespace().collect::<Vec<_>>().join("-");
+                let slugify = compose(compose(trim, lower), dashes);
+                println!("{}", slugify("  Hello Rust World  ".to_string()));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn composes() {
+                    let inc_then_double = compose(|x: i32| x + 1, |x: i32| x * 2);
+                    assert_eq!(inc_then_double(3), 8);
+                }
+            }
+          explain: Returning impl Fn keeps everything statically dispatched, so the composed function is as fast as writing the steps inline. Each call to compose produces a new, unnameable closure type.
+    - id: "20.4"
+      t: Macros
+      min: 75
+      learn: How macros differ from functions, declarative macros with macro_rules and repetition, hygiene, and an overview of the three kinds of procedural macros (derive, attribute-like and function-like).
+      example:
+        title: A vec-like macro and a hashmap literal
+        code: |
+          macro_rules! my_vec {
+              ( $( $x:expr ),* $(,)? ) => {
+                  {
+                      let mut temp_vec = Vec::new();
+                      $( temp_vec.push($x); )*
+                      temp_vec
+                  }
+              };
+          }
+
+          macro_rules! hashmap {
+              ( $( $k:expr => $v:expr ),* $(,)? ) => {{
+                  let mut m = ::std::collections::HashMap::new();
+                  $( m.insert($k, $v); )*
+                  m
+              }};
+          }
+
+          fn main() {
+              let v = my_vec![1, 2, 3,];
+              let ages = hashmap! { "ada" => 36, "grace" => 85 };
+              println!("{v:?} {}", ages["grace"]);
+          }
+        output: |
+          [1, 2, 3] 85
+        note: 'Macros run at compile time on code, not values, so they can take any number of arguments and generate items such as functions or impls. $x:expr matches an expression; $( ... ),* repeats for each comma-separated item. Procedural macros are Rust functions in their own crate that receive and return token streams; #[derive(Debug)] and serde''s #[derive(Serialize)] are the ones you use most.'
+      ex:
+        - t: A max! macro
+          p: Write a macro max! that takes one or more expressions and returns the largest, so max!(3), max!(3, 9, 2) all work. Use recursion in the macro.
+          check: test
+          hints:
+            - One rule for a single expression returns it as is.
+            - "A second rule ($x:expr, $($rest:expr),+) compares $x with max!($($rest),+)."
+            - Use a let binding inside so each expression is evaluated once.
+          solution: |
+            macro_rules! max {
+                ($x:expr) => { $x };
+                ($x:expr, $($rest:expr),+) => {{
+                    let a = $x;
+                    let b = max!($($rest),+);
+                    if a > b { a } else { b }
+                }};
+            }
+
+            fn main() {
+                println!("{} {}", max!(3), max!(3, 9, 2));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                #[test]
+                fn picks_largest() {
+                    assert_eq!(max!(1, 5, 3, 4), 5);
+                    assert_eq!(max!(-1), -1);
+                    assert_eq!(max!("pear", "apple"), "pear");
+                }
+            }
+          explain: The let bindings stop an expression with side effects from being evaluated twice, a classic macro bug. Recursive rules are how many standard macros handle any number of arguments.
+        - t: Generate getters
+          p: 'Write a macro getters! that, given a struct name and a list of field: Type pairs, generates the struct and a getter method for each field.'
+          check: test
+          hints:
+            - 'Match ( $name:ident { $( $field:ident : $ty:ty ),* } ).'
+            - 'Emit pub struct $name { $( $field: $ty ),* } and an impl block.'
+            - Inside the impl, $( pub fn $field(&self) -> &$ty { &self.$field } )*
+          solution: |
+            macro_rules! getters {
+                ( $name:ident { $( $field:ident : $ty:ty ),* $(,)? } ) => {
+                    pub struct $name {
+                        $( $field: $ty ),*
+                    }
+                    impl $name {
+                        $(
+                            pub fn $field(&self) -> &$ty {
+                                &self.$field
+                            }
+                        )*
+                    }
+                };
+            }
+
+            getters!(Config { host: String, port: u16, verbose: bool });
+
+            fn main() {
+                let c = Config { host: "localhost".into(), port: 8080, verbose: true };
+                println!("{}:{} verbose={}", c.host(), c.port(), c.verbose());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn getters_work() {
+                    let c = Config { host: "h".into(), port: 1, verbose: false };
+                    assert_eq!(*c.port(), 1);
+                    assert_eq!(c.host(), "h");
+                }
+            }
+          explain: Macros that generate items remove repetitive boilerplate, but they also make code harder to read and give worse error messages, so use them when the repetition is real. For this exact job a derive macro from a crate is usually nicer.
+  quiz:
+    - q: Which of these does unsafe let you do?
+      type: multi
+      o: |
+        Dereference a raw pointer
+        Turn off the borrow checker
+        Call an unsafe function
+        Access or modify a mutable static variable
+      a: [0, 2, 3]
+      x: The borrow checker still runs inside unsafe blocks.
+    - q: Why does Iterator use an associated type (type Item) instead of a generic parameter?
+      o: |
+        A type should implement Iterator only once, with one item type
+        Associated types are faster
+        Generic traits cannot have methods
+        For compatibility with C
+      a: 0
+      x: A generic parameter would allow many implementations for one type.
+    - q: What is the newtype pattern used for?
+      o: |
+        Implementing an outside trait on an outside type, or adding type safety
+        Creating new primitive types
+        Allocating on the heap
+        Running code in parallel
+      a: 0
+      x: Wrapping in a local tuple struct satisfies the orphan rule.
+    - q: What is the type of panic!("x")?
+      o: |
+        "! (the never type)"
+        "()"
+        String
+        "Result<(), String>"
+      a: 0
+      x: It never returns, so it can stand in for any type.
+    - q: What does $( $x:expr ),* match in a macro_rules pattern?
+      o: |
+        Zero or more comma-separated expressions
+        Exactly one expression
+        One or more identifiers
+        A block of statements
+      a: 0
+      x: "* means zero or more; + would mean one or more."
+      pool: exam
+    - q: What does the bound T ?Sized allow?
+      o: |
+        T may be a dynamically sized type such as str or dyn Trait
+        T must be sized
+        T can be any size up to 1 KB
+        T is optional
+      a: 0
+      x: Generic parameters are Sized by default.
+      pool: exam
+    - q: When should you write a SAFETY comment?
+      o: |
+        Above every unsafe block, explaining why it is sound
+        Only in libraries
+        Never; unsafe is self-explanatory
+        Only for FFI calls
+      a: 0
+      x: Reviewers and clippy rely on it.
+      pool: exam
+    - q: Which are kinds of procedural macro?
+      type: multi
+      o: |
+        Custom derive
+        Attribute-like
+        Function-like
+        macro_rules!
+      a: [0, 1, 2]
+      x: macro_rules! defines a declarative macro.
+      pool: exam
+  recap:
+    summary:
+      - unsafe unlocks five extra powers but keeps every other check; keep unsafe blocks small, wrapped in safe APIs, with SAFETY comments.
+      - Associated types, default type parameters, operator traits, supertraits and fully qualified syntax give fine control over traits.
+      - The newtype pattern adds type safety and gets around the orphan rule at no cost.
+      - Type aliases shorten long types; ! is the never type; ?Sized allows dynamically sized types.
+      - fn pointers are plain function addresses; closures can be returned with impl Fn or Box<dyn Fn>.
+      - macro_rules! macros match code patterns and expand at compile time; procedural macros transform token streams.
+    functions: |
+      unsafe { ... } || A block allowed to use unsafe operations.
+      &raw const x / &raw mut x || Create raw pointers.
+      impl Add for T { type Output } || Overload the + operator.
+      Trait::method(&value) || Call a specific trait's method.
+      trait A: B || A supertrait requirement.
+      type Alias = LongType; || A type alias.
+      fn(i32) -> i32 || A function pointer type.
+      macro_rules! name { (pattern) => { expansion } } || A declarative macro.
+    next: Chapter 21 brings everything together in the book's final project, a multithreaded web server.
+
+- id: c21
+  n: "21"
+  book: 21
+  t: "Final project: a multithreaded web server"
+  lv: 4
+  goal: Build an HTTP server from TCP sockets up, make it handle requests in parallel with a thread pool you write yourself, and shut it down gracefully.
+  res: |
+    Chapter 21 in the book | https://doc.rust-lang.org/book/ch21-00-final-project-a-web-server.html
+    std::net | https://doc.rust-lang.org/std/net/
+  items:
+    - id: "21.1"
+      t: A single-threaded web server
+      min: 75
+      kind: project
+      learn: Listen on a port with TcpListener, read an HTTP request line with BufReader, write a valid response with a status line, headers and an HTML body, and route / versus everything else.
+      example:
+        title: Serving hello.html and a 404 page
+        check: build
+        code: |
+          use std::fs;
+          use std::io::{BufRead, BufReader, Write};
+          use std::net::{TcpListener, TcpStream};
+
+          fn main() {
+              let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+              for stream in listener.incoming() {
+                  handle_connection(stream.unwrap());
+              }
+          }
+
+          fn handle_connection(mut stream: TcpStream) {
+              let buf_reader = BufReader::new(&stream);
+              let request_line = buf_reader.lines().next().unwrap().unwrap();
+
+              let (status_line, filename) = if request_line == "GET / HTTP/1.1" {
+                  ("HTTP/1.1 200 OK", "hello.html")
+              } else {
+                  ("HTTP/1.1 404 NOT FOUND", "404.html")
+              };
+              let contents = fs::read_to_string(filename).unwrap_or_else(|_| String::from("<h1>missing page file</h1>"));
+              let length = contents.len();
+              let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
+              stream.write_all(response.as_bytes()).unwrap();
+          }
+        note: HTTP is plain text over TCP. A response is a status line, headers, a blank line (\r\n\r\n) and the body; Content-Length tells the browser where the body ends. Port 7878 needs no admin rights. This server handles one connection at a time, which the next lesson shows is a problem.
+      ex:
+        - t: Build and visit it
+          p: Create the hello project with hello.html and 404.html, run it, and open http://127.0.0.1:7878 and http://127.0.0.1:7878/nope in a browser. Then print each request line to the terminal.
+          check: build
+          hints:
+            - The HTML files go in the project folder, next to Cargo.toml.
+            - "Add println!(\"Request: {request_line}\"); in handle_connection."
+            - Browsers also request /favicon.ico, so you will see extra lines.
+          solution: |
+            use std::fs;
+            use std::io::{BufRead, BufReader, Write};
+            use std::net::{TcpListener, TcpStream};
+
+            fn main() {
+                let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+                println!("Listening on http://127.0.0.1:7878");
+                for stream in listener.incoming() {
+                    handle_connection(stream.unwrap());
+                }
+            }
+
+            fn handle_connection(mut stream: TcpStream) {
+                let request_line = match BufReader::new(&stream).lines().next() {
+                    Some(Ok(line)) => line,
+                    _ => return, // the browser closed the connection early
+                };
+                println!("Request: {request_line}");
+                let (status, file) = if request_line == "GET / HTTP/1.1" {
+                    ("HTTP/1.1 200 OK", "hello.html")
+                } else {
+                    ("HTTP/1.1 404 NOT FOUND", "404.html")
+                };
+                let body = fs::read_to_string(file).unwrap_or_else(|_| format!("<h1>{file} not found on disk</h1>"));
+                let response = format!("{status}\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+                let _ = stream.write_all(response.as_bytes());
+            }
+          explain: Returning early instead of unwrapping the request line keeps the server alive when a browser opens a connection and closes it without sending anything, which happens more than you would think.
+        - t: A JSON health endpoint
+          p: Add a route GET /health that returns {"status":"ok"} with a Content-Type application/json header, and test it with curl -i http://127.0.0.1:7878/health.
+          check: build
+          hints:
+            - Match on the request line with a match on string slices.
+            - "Return the content type as part of the tuple and add a Content-Type header line."
+            - Each header ends with \r\n, and the headers end with one extra \r\n.
+          solution: |
+            use std::io::{BufRead, BufReader, Write};
+            use std::net::{TcpListener, TcpStream};
+
+            fn respond(request_line: &str) -> (&'static str, &'static str, String) {
+                match request_line {
+                    "GET / HTTP/1.1" => ("200 OK", "text/html", "<h1>Hello!</h1>".to_string()),
+                    "GET /health HTTP/1.1" => ("200 OK", "application/json", r#"{"status":"ok"}"#.to_string()),
+                    _ => ("404 NOT FOUND", "text/html", "<h1>Not found</h1>".to_string()),
+                }
+            }
+
+            fn handle_connection(mut stream: TcpStream) {
+                let Some(Ok(line)) = BufReader::new(&stream).lines().next() else { return };
+                let (status, ctype, body) = respond(&line);
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+
+            fn main() {
+                let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+                for stream in listener.incoming().flatten() {
+                    handle_connection(stream);
+                }
+            }
+            // $ curl -i http://127.0.0.1:7878/health
+            // HTTP/1.1 200 OK
+            // Content-Type: application/json
+            // Content-Length: 15
+            //
+            // {"status":"ok"}
+          explain: Pulling the routing into a pure respond function means you can unit test it without opening sockets. Health endpoints like this are what load balancers and uptime monitors call.
+    - id: "21.2"
+      t: From single-threaded to a thread pool
+      min: 120
+      kind: project
+      learn: Show the problem with a slow /sleep route, design a ThreadPool API first, build it from Workers that pull jobs from a shared channel, and type jobs as Box<dyn FnOnce() + Send + 'static>.
+      example:
+        title: The ThreadPool
+        check: test
+        code: |
+          use std::sync::{mpsc, Arc, Mutex};
+          use std::thread;
+
+          type Job = Box<dyn FnOnce() + Send + 'static>;
+
+          pub struct ThreadPool {
+              workers: Vec<Worker>,
+              sender: mpsc::Sender<Job>,
+          }
+
+          impl ThreadPool {
+              /// Create a new ThreadPool with `size` threads.
+              ///
+              /// # Panics
+              /// Panics if `size` is zero.
+              pub fn new(size: usize) -> ThreadPool {
+                  assert!(size > 0);
+                  let (sender, receiver) = mpsc::channel();
+                  let receiver = Arc::new(Mutex::new(receiver));
+                  let workers = (0..size).map(|id| Worker::new(id, Arc::clone(&receiver))).collect();
+                  ThreadPool { workers, sender }
+              }
+
+              pub fn execute<F>(&self, f: F)
+              where
+                  F: FnOnce() + Send + 'static,
+              {
+                  self.sender.send(Box::new(f)).unwrap();
+              }
+
+              pub fn size(&self) -> usize { self.workers.len() }
+          }
+
+          struct Worker {
+              _id: usize,
+              _thread: thread::JoinHandle<()>,
+          }
+
+          impl Worker {
+              fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+                  let thread = thread::spawn(move || loop {
+                      let message = receiver.lock().unwrap().recv(); // lock released at end of statement
+                      match message {
+                          Ok(job) => job(),
+                          Err(_) => break, // channel closed
+                      }
+                  });
+                  Worker { _id: id, _thread: thread }
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              #[test]
+              fn runs_jobs_on_workers() {
+                  let pool = ThreadPool::new(4);
+                  let (tx, rx) = mpsc::channel();
+                  for i in 0..8 {
+                      let tx = tx.clone();
+                      pool.execute(move || tx.send(i * i).unwrap());
+                  }
+                  drop(tx);
+                  let mut got: Vec<i32> = rx.iter().collect();
+                  got.sort();
+                  assert_eq!(got, vec![0, 1, 4, 9, 16, 25, 36, 49]);
+                  assert_eq!(pool.size(), 4);
+              }
+          }
+        note: The workers share one receiver, so it sits in Arc<Mutex<...>>, and whichever worker locks it first takes the next job. Calling recv inside a let statement drops the lock guard before the job runs, so other workers are not blocked while it executes; writing while let Ok(job) = receiver.lock().unwrap().recv() would hold the lock for the whole job.
+      ex:
+        - t: Prove the slowdown, then fix it
+          p: "Add a GET /sleep route that sleeps five seconds. Open /sleep and / in two tabs and observe / waiting. Then use your ThreadPool with four threads in main via pool.execute(|| handle_connection(stream)) and observe / responding immediately."
+          lang: text
+          check: none
+          hints:
+            - "Add a match arm: \"GET /sleep HTTP/1.1\" => { thread::sleep(Duration::from_secs(5)); (\"HTTP/1.1 200 OK\", \"hello.html\") }"
+            - Put ThreadPool in src/lib.rs and use hello::ThreadPool; in main.rs.
+            - The closure needs to own the stream, which happens automatically because handle_connection takes it by value.
+          solution: |
+            // src/main.rs
+            use hello::ThreadPool;
+            use std::net::TcpListener;
+
+            fn main() {
+                let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+                let pool = ThreadPool::new(4);
+                for stream in listener.incoming() {
+                    let stream = stream.unwrap();
+                    pool.execute(|| {
+                        handle_connection(stream);
+                    });
+                }
+            }
+
+            // In handle_connection's routing:
+            // "GET /sleep HTTP/1.1" => {
+            //     thread::sleep(Duration::from_secs(5));
+            //     ("HTTP/1.1 200 OK", "hello.html")
+            // }
+          explain: With four workers, up to four slow requests can run before anyone has to wait. A fixed-size pool protects the server from creating unlimited threads under heavy load, the same reason load testers cap their concurrency.
+        - t: Measure with a mini load test
+          p: Write a separate Rust program that opens 20 TCP connections at once to your server (one thread each), requests /, and reports the slowest response time. Compare a pool of 1 thread with a pool of 4 while one /sleep request is running.
+          check: build
+          hints:
+            - "In each thread: TcpStream::connect(\"127.0.0.1:7878\"), write \"GET / HTTP/1.1\\r\\n\\r\\n\", then read_to_string."
+            - Time each request with Instant::now() and send the duration back through a channel.
+            - Take the maximum of the collected durations.
+          solution: |
+            use std::io::{Read, Write};
+            use std::net::TcpStream;
+            use std::sync::mpsc;
+            use std::thread;
+            use std::time::{Duration, Instant};
+
+            fn one_request() -> std::io::Result<Duration> {
+                let start = Instant::now();
+                let mut s = TcpStream::connect("127.0.0.1:7878")?;
+                s.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
+                let mut body = String::new();
+                s.read_to_string(&mut body)?;
+                Ok(start.elapsed())
+            }
+
+            fn main() {
+                let (tx, rx) = mpsc::channel();
+                for _ in 0..20 {
+                    let tx = tx.clone();
+                    thread::spawn(move || {
+                        let _ = tx.send(one_request());
+                    });
+                }
+                drop(tx);
+                let times: Vec<Duration> = rx.iter().filter_map(Result::ok).collect();
+                let slowest = times.iter().max().copied().unwrap_or_default();
+                println!("{} ok, slowest {:?}", times.len(), slowest);
+            }
+          explain: With one worker busy on /sleep, every request waits about five seconds; with four, most return in milliseconds. You have just built a tiny load-testing tool, and Track 3 turns this idea into a full portfolio project.
+    - id: "21.3"
+      t: Graceful shutdown and cleanup
+      min: 75
+      kind: project
+      learn: Implement Drop for ThreadPool so it closes the channel and joins every worker, store the sender in an Option so it can be dropped first, and stop the server after a fixed number of requests to watch the shutdown.
+      example:
+        title: Drop for ThreadPool
+        check: test
+        code: |
+          use std::sync::{mpsc, Arc, Mutex};
+          use std::thread;
+
+          type Job = Box<dyn FnOnce() + Send + 'static>;
+
+          pub struct ThreadPool {
+              workers: Vec<Worker>,
+              sender: Option<mpsc::Sender<Job>>,
+          }
+
+          impl ThreadPool {
+              pub fn new(size: usize) -> ThreadPool {
+                  assert!(size > 0);
+                  let (sender, receiver) = mpsc::channel();
+                  let receiver = Arc::new(Mutex::new(receiver));
+                  let workers = (0..size).map(|id| Worker::new(id, Arc::clone(&receiver))).collect();
+                  ThreadPool { workers, sender: Some(sender) }
+              }
+              pub fn execute<F: FnOnce() + Send + 'static>(&self, f: F) {
+                  self.sender.as_ref().unwrap().send(Box::new(f)).unwrap();
+              }
+          }
+
+          impl Drop for ThreadPool {
+              fn drop(&mut self) {
+                  drop(self.sender.take()); // close the channel: workers' recv returns Err
+                  for worker in self.workers.drain(..) {
+                      println!("Shutting down worker {}", worker.id);
+                      worker.thread.join().unwrap();
+                  }
+              }
+          }
+
+          struct Worker {
+              id: usize,
+              thread: thread::JoinHandle<()>,
+          }
+
+          impl Worker {
+              fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+                  let thread = thread::spawn(move || loop {
+                      let message = receiver.lock().unwrap().recv();
+                      match message {
+                          Ok(job) => job(),
+                          Err(_) => {
+                              println!("Worker {id} disconnected; shutting down.");
+                              break;
+                          }
+                      }
+                  });
+                  Worker { id, thread }
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              use std::sync::atomic::{AtomicUsize, Ordering};
+
+              #[test]
+              fn drop_waits_for_all_jobs() {
+                  let done = Arc::new(AtomicUsize::new(0));
+                  {
+                      let pool = ThreadPool::new(3);
+                      for _ in 0..10 {
+                          let done = Arc::clone(&done);
+                          pool.execute(move || {
+                              thread::sleep(std::time::Duration::from_millis(5));
+                              done.fetch_add(1, Ordering::SeqCst);
+                          });
+                      }
+                  } // pool dropped here: waits for queued jobs, then joins
+                  assert_eq!(done.load(Ordering::SeqCst), 10);
+              }
+          }
+        note: Dropping the sender first is essential; otherwise the workers block in recv forever and join never returns. drain(..) moves each Worker out of the Vec so its JoinHandle can be consumed by join. In main, listener.incoming().take(2) stops after two requests so you can watch the shutdown messages.
+      ex:
+        - t: Shut down after N requests
+          p: Make your server accept an optional command-line argument for how many requests to serve before shutting down, and print a summary line with the count when it exits.
+          lang: text
+          check: none
+          hints:
+            - "let limit: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);"
+            - listener.incoming().take(limit) ends the loop after limit connections.
+            - The pool's Drop runs at the end of main and joins the workers.
+          solution: |
+            use hello::ThreadPool;
+            use std::net::TcpListener;
+
+            fn main() {
+                let limit: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+                let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+                let pool = ThreadPool::new(4);
+                let mut served = 0;
+                for stream in listener.incoming().take(limit) {
+                    let stream = stream.unwrap();
+                    served += 1;
+                    pool.execute(|| handle_connection(stream));
+                }
+                println!("Served {served} connections. Shutting down.");
+            } // pool dropped here: every worker finishes and is joined
+          explain: Because cleanup lives in Drop, any way out of main (the loop ending, an early return, even a panic that unwinds) still shuts the workers down properly.
+        - t: A fallible pool builder
+          p: Replace ThreadPool::new's assert with ThreadPool::build(size) -> Result<ThreadPool, PoolCreationError>, where PoolCreationError is your own error type implementing Display and std::error::Error.
+          check: test
+          hints:
+            - "#[derive(Debug)] pub struct PoolCreationError(String);"
+            - "impl std::fmt::Display for PoolCreationError and an empty impl std::error::Error for PoolCreationError {}."
+            - Return Err for size 0, otherwise Ok(the pool).
+          solution: |
+            use std::fmt;
+            use std::sync::{mpsc, Arc, Mutex};
+            use std::thread;
+
+            type Job = Box<dyn FnOnce() + Send + 'static>;
+
+            #[derive(Debug)]
+            pub struct PoolCreationError(String);
+
+            impl fmt::Display for PoolCreationError {
+                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    write!(f, "cannot create thread pool: {}", self.0)
+                }
+            }
+            impl std::error::Error for PoolCreationError {}
+
+            pub struct ThreadPool {
+                _workers: Vec<thread::JoinHandle<()>>,
+                sender: mpsc::Sender<Job>,
+            }
+
+            impl ThreadPool {
+                pub fn build(size: usize) -> Result<ThreadPool, PoolCreationError> {
+                    if size == 0 {
+                        return Err(PoolCreationError("size must be at least 1".into()));
+                    }
+                    let (sender, receiver) = mpsc::channel::<Job>();
+                    let receiver = Arc::new(Mutex::new(receiver));
+                    let workers = (0..size)
+                        .map(|_| {
+                            let rx = Arc::clone(&receiver);
+                            thread::spawn(move || loop {
+                                let msg = rx.lock().unwrap().recv();
+                                match msg {
+                                    Ok(job) => job(),
+                                    Err(_) => break,
+                                }
+                            })
+                        })
+                        .collect();
+                    Ok(ThreadPool { _workers: workers, sender })
+                }
+                pub fn execute<F: FnOnce() + Send + 'static>(&self, f: F) {
+                    self.sender.send(Box::new(f)).unwrap();
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn zero_is_an_error() {
+                    let err = ThreadPool::build(0).err().unwrap();
+                    assert!(err.to_string().contains("at least 1"));
+                }
+                #[test]
+                fn builds() {
+                    let pool = ThreadPool::build(2).unwrap();
+                    let (tx, rx) = mpsc::channel();
+                    pool.execute(move || tx.send(7).unwrap());
+                    assert_eq!(rx.recv().unwrap(), 7);
+                }
+            }
+          explain: The book suggests exactly this improvement. A library should let the caller decide what to do about a bad configuration value, and implementing std::error::Error lets the error work with ? and Box<dyn Error>.
+  recap:
+    summary:
+      - TcpListener::bind and incoming accept connections; BufReader reads the request line by line.
+      - An HTTP response is a status line, headers ending in a blank line, then the body.
+      - A single-threaded server blocks on slow requests; a fixed-size thread pool fixes that safely.
+      - Workers share one receiver through Arc<Mutex<Receiver<Job>>>; jobs are Box<dyn FnOnce() + Send + 'static>.
+      - Drop for the pool closes the channel first, then joins every worker, giving a graceful shutdown.
+    functions: |
+      TcpListener::bind("127.0.0.1:7878") || Listen for TCP connections.
+      listener.incoming() || Iterate over incoming connections.
+      BufReader::new(&stream).lines() || Read text lines from a stream.
+      stream.write_all(bytes) || Send the whole response.
+      type Job = Box<dyn FnOnce() + Send + 'static> || A boxed job a thread can run once.
+      self.sender.take() || Move the sender out to drop it during shutdown.
+      workers.drain(..) || Move every worker out of the Vec to join it.
+    explore:
+      - Serve static files from a folder, with the right Content-Type for each extension.
+      - Rebuild the server with Tokio or axum (Track 2, A12) and compare the code size.
+    repo: rust-thread-pool-server
+    cv:
+      - Implemented an HTTP/1.1 server in Rust from raw TCP sockets with a custom thread pool, graceful shutdown and a companion load-testing client.
+    next: You have finished the book. Track 2 deepens each topic the way roadmap.sh/rust lays it out, and Track 3 builds portfolio projects.

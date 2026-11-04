@@ -1,0 +1,2177 @@
+- id: c7
+  n: "07"
+  book: 7
+  t: Packages, crates and modules
+  lv: 2
+  goal: Organise code into modules, control what is public, bring paths into scope with use, and split a project across files.
+  res: |
+    Chapter 7 in the book | https://doc.rust-lang.org/book/ch07-00-managing-growing-projects-with-packages-crates-and-modules.html
+    The Cargo Book, package layout | https://doc.rust-lang.org/cargo/guide/project-layout.html
+  items:
+    - id: "7.1"
+      t: Packages and crates
+      min: 30
+      learn: The difference between a package, a binary crate and a library crate, the crate root files src/main.rs and src/lib.rs, and extra binaries in src/bin.
+      example:
+        title: One package, a library and two binaries
+        lang: text
+        check: none
+        code: |
+          my_tool/
+          ├── Cargo.toml
+          └── src/
+              ├── lib.rs          <- library crate root (shared logic)
+              ├── main.rs         <- binary crate "my_tool"
+              └── bin/
+                  └── report.rs   <- another binary: cargo run --bin report
+
+          // src/main.rs uses the library by its package name:
+          // fn main() { my_tool::run(); }
+        note: A crate is the unit the compiler works on; a package is what Cargo builds and contains one Cargo.toml. A package can hold at most one library crate and any number of binary crates. Putting the real logic in lib.rs and keeping main.rs thin makes it easy to test, which Chapter 12 does.
+      ex:
+        - t: Library and binary
+          p: 'Create a package with cargo new tally, add src/lib.rs with a pub fn add(a: i32, b: i32) -> i32, and call it from main.rs through the package name.'
+          lang: text
+          check: none
+          hints:
+            - cargo new tally creates main.rs; create lib.rs yourself next to it.
+            - Functions are private unless marked pub.
+            - In main.rs call tally::add(2, 3).
+          solution: |
+            // src/lib.rs
+            pub fn add(a: i32, b: i32) -> i32 {
+                a + b
+            }
+
+            // src/main.rs
+            fn main() {
+                println!("2 + 3 = {}", tally::add(2, 3));
+            }
+
+            // cargo run  ->  2 + 3 = 5
+          explain: Cargo sees both files and builds two crates with the same name. The binary depends on the library automatically, so no Cargo.toml change is needed. If you forget pub, the error says the function is private.
+        - t: A second binary
+          p: Add src/bin/stats.rs to the tally package that prints the sum of 1 to 100 using tally::add in a loop. Run it with cargo run --bin stats.
+          lang: text
+          check: none
+          hints:
+            - Every file in src/bin becomes its own binary named after the file.
+            - It needs its own fn main.
+            - cargo run alone now asks you to pick a binary, so pass --bin.
+          solution: |
+            // src/bin/stats.rs
+            fn main() {
+                let mut total = 0;
+                for n in 1..=100 {
+                    total = tally::add(total, n);
+                }
+                println!("sum = {total}");
+            }
+
+            // cargo run --bin stats  ->  sum = 5050
+          explain: Extra binaries are handy for small tools that share one library, such as an admin command next to a server. Set default-run in Cargo.toml if you want cargo run to pick one without --bin.
+    - id: "7.2"
+      t: Modules and privacy
+      min: 45
+      learn: Group related code with mod, the module tree that starts at the crate root, private by default, pub on items, and how privacy works for struct fields and enum variants.
+      example:
+        title: A restaurant module tree
+        code: |
+          mod front_of_house {
+              pub mod hosting {
+                  pub fn add_to_waitlist() {
+                      println!("added to waitlist");
+                  }
+              }
+          }
+
+          mod back_of_house {
+              pub struct Breakfast {
+                  pub toast: String,          // public field
+                  seasonal_fruit: String,     // private field
+              }
+              impl Breakfast {
+                  pub fn summer(toast: &str) -> Breakfast {
+                      Breakfast { toast: String::from(toast), seasonal_fruit: String::from("peaches") }
+                  }
+                  pub fn fruit(&self) -> &str { &self.seasonal_fruit }
+              }
+              pub enum Appetizer { Soup, Salad } // variants of a pub enum are public
+          }
+
+          fn main() {
+              front_of_house::hosting::add_to_waitlist();
+              let mut meal = back_of_house::Breakfast::summer("Rye");
+              meal.toast = String::from("Wheat");
+              // meal.seasonal_fruit = String::from("blueberries"); // error: private field
+              println!("{} toast with {}", meal.toast, meal.fruit());
+              let _a = back_of_house::Appetizer::Soup;
+          }
+        output: |
+          added to waitlist
+          Wheat toast with peaches
+        note: Everything is private to its parent module unless marked pub, and making a module pub does not make its contents pub. Because Breakfast has a private field, code outside the module can only create one through a constructor like summer, which lets the module keep its rules.
+      ex:
+        - t: A geometry module
+          p: 'In one file, create mod geometry with pub fn circle_area(r: f64) -> f64 and a private helper square(x: f64) -> f64 that circle_area uses. Call circle_area from main and show that square cannot be called from main.'
+          hints:
+            - Items inside a module can use each other without pub.
+            - From main, the path is geometry::circle_area(2.0).
+            - Calling geometry::square from main gives error E0603, function is private.
+          solution: |
+            mod geometry {
+                use std::f64::consts::PI;
+
+                fn square(x: f64) -> f64 {
+                    x * x
+                }
+
+                pub fn circle_area(r: f64) -> f64 {
+                    PI * square(r)
+                }
+            }
+
+            fn main() {
+                println!("{:.2}", geometry::circle_area(2.0));
+                // geometry::square(3.0); // error[E0603]: function `square` is private
+            }
+          explain: Privacy is how a module hides its implementation details. You can change or remove square later without breaking any code outside geometry.
+        - t: Guarded constructor
+          p: 'In mod user, create pub struct Email(String) whose field is private and pub fn parse(s: &str) -> Option<Email> that only accepts strings containing @. Add pub fn as_str(&self) -> &str.'
+          check: test
+          hints:
+            - A tuple struct field is private unless you write pub before it.
+            - "parse returns Some(Email(s.to_string())) when s.contains('@')."
+            - Outside the module, Email("x".into()) will not compile, so parse is the only way in.
+          solution: |
+            mod user {
+                pub struct Email(String);
+
+                impl Email {
+                    pub fn parse(s: &str) -> Option<Email> {
+                        if s.contains('@') { Some(Email(s.to_string())) } else { None }
+                    }
+                    pub fn as_str(&self) -> &str {
+                        &self.0
+                    }
+                }
+            }
+
+            fn main() {
+                match user::Email::parse("ada@example.com") {
+                    Some(e) => println!("valid: {}", e.as_str()),
+                    None => println!("invalid"),
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::user::Email;
+                #[test]
+                fn needs_at() {
+                    assert!(Email::parse("nope").is_none());
+                    assert_eq!(Email::parse("a@b").unwrap().as_str(), "a@b");
+                }
+            }
+          explain: Any Email value in the program is now guaranteed to contain @, because the module is the only place one can be built. This "parse, don't validate" idea is one of Rust's most useful design habits.
+    - id: "7.3"
+      t: Paths and the use keyword
+      min: 45
+      learn: Absolute paths from crate, relative paths, super, bringing names into scope with use and as, re-exporting with pub use, nested and glob imports, and using external crates.
+      example:
+        title: use, as, super and pub use
+        code: |
+          use std::collections::HashMap;
+          use std::fmt::Result;
+          use std::io::Result as IoResult;   // rename to avoid a clash
+          use std::io::{self, Write};         // nested paths
+
+          mod kitchen {
+              pub fn cook() -> &'static str { "cooked" }
+              pub mod staff {
+                  pub fn chef() -> String {
+                      format!("chef {}", super::cook())  // super = parent module
+                  }
+              }
+          }
+
+          pub use crate::kitchen::staff::chef;  // re-export: callers can use chef directly
+
+          fn write_hi() -> IoResult<()> {
+              io::stdout().write_all(b"hi\n")
+          }
+
+          fn fmt_ok() -> Result { Ok(()) }
+
+          fn main() {
+              let mut scores = HashMap::new();
+              scores.insert("blue", 10);
+              println!("{} {:?}", chef(), scores.get("blue"));
+              write_hi().unwrap();
+              fmt_ok().unwrap();
+          }
+        output: |
+          chef cooked Some(10)
+          hi
+        note: The convention is to import the parent module for functions (so calls read hosting::add_to_waitlist()) and the full path for structs and enums (HashMap). pub use lets you present a simpler public structure than your internal one.
+      ex:
+        - t: Tidy the imports
+          p: "Rewrite these four lines as one use statement with nested paths: use std::collections::HashMap; use std::collections::HashSet; use std::collections::BTreeMap; use std::io;. Use all four names in main so nothing is unused."
+          hints:
+            - "Nested paths share a common prefix: use std::{...};"
+            - Inside the braces you can nest again, collections::{HashMap, HashSet, BTreeMap}.
+            - io can sit in the same braces as collections.
+          solution: |
+            use std::{
+                collections::{BTreeMap, HashMap, HashSet},
+                io,
+            };
+
+            fn main() {
+                let mut h: HashMap<&str, i32> = HashMap::new();
+                h.insert("a", 1);
+                let s: HashSet<i32> = [1, 2, 2].into_iter().collect();
+                let b: BTreeMap<i32, &str> = [(2, "two"), (1, "one")].into_iter().collect();
+                let _stdin = io::stdin();
+                println!("{h:?} {} {b:?}", s.len());
+            }
+          explain: cargo fmt keeps imports like this neatly sorted. Glob imports (use std::collections::*) are shorter but make it harder to see where a name came from, so they are mostly used in tests and preludes.
+        - t: Re-export a friendly API
+          p: 'Create mod shapes with an inner mod circle containing pub fn area(r: f64) -> f64. Use pub use so main can call shapes::circle_area(1.0).'
+          hints:
+            - Inside shapes, write pub use circle::area as circle_area;
+            - The inner module itself can stay private (mod circle without pub).
+            - The re-export makes the function reachable under the new path.
+          solution: |
+            mod shapes {
+                mod circle {
+                    pub fn area(r: f64) -> f64 {
+                        std::f64::consts::PI * r * r
+                    }
+                }
+                pub use circle::area as circle_area;
+            }
+
+            fn main() {
+                println!("{:.3}", shapes::circle_area(1.0));
+            }
+          explain: Re-exports let a library keep its internal file layout private while offering a short, stable public path. The standard library does this everywhere, for example std::io::Result is defined deeper inside.
+    - id: "7.4"
+      t: Splitting modules into files
+      min: 45
+      learn: Move a module to its own file with mod name; and name.rs, the folder layout for nested modules, and how the compiler finds module files.
+      example:
+        title: From one file to several
+        lang: text
+        check: none
+        code: |
+          src/
+          ├── main.rs            mod garden;            fn main() { garden::vegetables::plant(); }
+          ├── garden.rs          pub mod vegetables;
+          └── garden/
+              └── vegetables.rs  pub fn plant() { println!("planted"); }
+
+          // mod garden;  (with a semicolon) means: load the module body from
+          // src/garden.rs or src/garden/mod.rs (older style).
+        note: mod declarations build the module tree; files do not create modules on their own. You only write mod garden; once, in the parent. Everywhere else you refer to it with a path or a use statement.
+      ex:
+        - t: Split your geometry module
+          p: Take the geometry module from lesson 7.2 and move it into src/geometry.rs in a Cargo project, keeping main.rs to a mod line and main.
+          lang: text
+          check: none
+          hints:
+            - main.rs keeps only mod geometry; and fn main.
+            - The body of the old mod geometry { ... } block goes into geometry.rs without the mod line or braces.
+            - Run cargo run to confirm nothing changed.
+          solution: |
+            // src/main.rs
+            mod geometry;
+
+            fn main() {
+                println!("{:.2}", geometry::circle_area(2.0));
+            }
+
+            // src/geometry.rs
+            use std::f64::consts::PI;
+
+            fn square(x: f64) -> f64 {
+                x * x
+            }
+
+            pub fn circle_area(r: f64) -> f64 {
+                PI * square(r)
+            }
+          explain: The contents of geometry.rs are exactly what used to sit inside the braces. A common mistake is writing mod geometry; again inside geometry.rs, which tells the compiler to look for a nested module.
+        - t: A nested module in a folder
+          p: 'Add a nested module geometry::solids with pub fn sphere_volume(r: f64) -> f64 in its own file, and call it from main.'
+          lang: text
+          check: none
+          hints:
+            - In geometry.rs add pub mod solids;
+            - Create the folder src/geometry and the file solids.rs inside it.
+            - The volume is 4/3 * PI * r cubed.
+          solution: |
+            // src/geometry.rs  (add this line)
+            pub mod solids;
+
+            // src/geometry/solids.rs
+            use std::f64::consts::PI;
+
+            pub fn sphere_volume(r: f64) -> f64 {
+                4.0 / 3.0 * PI * r.powi(3)
+            }
+
+            // src/main.rs
+            mod geometry;
+
+            fn main() {
+                println!("{:.2}", geometry::solids::sphere_volume(1.0));
+            }
+          explain: A module named solids declared in geometry.rs lives at geometry/solids.rs. Keeping this rule in mind makes any Rust project easy to navigate. powi(3) raises a float to an integer power.
+  quiz:
+    - q: How many library crates can one package contain?
+      o: |
+        At most one
+        Any number
+        Exactly two
+        None, packages only contain binaries
+      a: 0
+      x: A package has at most one library crate but any number of binary crates.
+    - q: By default, items in a module are...
+      o: |
+        Private to the parent module
+        Public everywhere
+        Public inside the crate only
+        Visible only in tests
+      a: 0
+      x: Use pub to make an item visible outside its module.
+    - q: If a pub struct has a private field, what can code outside the module do?
+      o: |
+        Use the struct but not construct it with a literal or touch that field
+        Nothing at all with the struct
+        Read the private field but not change it
+        Construct it with a struct literal
+      a: 0
+      x: Outside code needs a public constructor to build it.
+    - q: What does super refer to in a path?
+      o: |
+        The parent module
+        The crate root
+        The standard library
+        The current function
+      a: 0
+      x: super goes up one level, like .. in a file path.
+    - q: Where does mod network; in src/main.rs look for the module's code?
+      o: |
+        src/network.rs or src/network/mod.rs
+        src/main/network.rs
+        Only in Cargo.toml
+        Anywhere in the project
+      a: 0
+      x: The compiler looks next to the parent file.
+      pool: exam
+    - q: What does pub use do?
+      o: |
+        Brings a name into scope and re-exports it for others
+        Makes a module public
+        Imports a crate from crates.io
+        Copies code into the current file
+      a: 0
+      x: Re-exporting lets callers use a shorter or different path.
+      pool: exam
+    - q: Which are true about enums and structs in a module?
+      type: multi
+      o: |
+        All variants of a pub enum are public
+        All fields of a pub struct are public
+        Struct fields are private unless marked pub
+        Enum variants must each be marked pub
+      a: [0, 2]
+      x: Enums are only useful with public variants, so pub on the enum covers them; struct fields are private by default.
+      pool: exam
+  recap:
+    summary:
+      - A package (one Cargo.toml) contains crates; src/main.rs and src/lib.rs are crate roots.
+      - mod creates modules that form a tree; items are private to their parent unless marked pub.
+      - Paths can be absolute (crate::...) or relative (self, super); use brings them into scope.
+      - pub use re-exports items so the public API can differ from the internal layout.
+      - mod name; loads the module body from name.rs (or name/mod.rs) next to the parent file.
+    functions: |
+      mod name { ... } || Define a module inline.
+      mod name; || Load a module from name.rs.
+      pub fn / pub struct / pub mod || Make an item visible outside its module.
+      crate::a::b || Absolute path from the crate root.
+      super::item || Path through the parent module.
+      use a::b::{C, D as E}; || Bring several names into scope, renaming one.
+      pub use inner::thing; || Re-export a name.
+    next: Chapter 8 covers the collections you will use in almost every program, vectors, strings and hash maps.
+
+- id: c8
+  n: "08"
+  book: 8
+  t: Common collections
+  lv: 2
+  goal: Store and process data with Vec, String and HashMap, including UTF-8 text and the entry API.
+  res: |
+    Chapter 8 in the book | https://doc.rust-lang.org/book/ch08-00-common-collections.html
+    std::collections | https://doc.rust-lang.org/std/collections/
+  items:
+    - id: "8.1"
+      t: Vectors
+      min: 60
+      learn: Create vectors with Vec::new and vec!, push and pop, read with indexing or get, iterate immutably and mutably, and store different kinds of values with an enum.
+      example:
+        title: Working with Vec
+        code: |
+          #[derive(Debug)]
+          enum Cell { Int(i32), Text(String) }
+
+          fn main() {
+              let mut v: Vec<i32> = Vec::new();
+              v.push(5);
+              v.push(6);
+              let mut w = vec![1, 2, 3];
+
+              let third: &i32 = &w[2];
+              println!("third is {third}, maybe tenth: {:?}", w.get(9));
+
+              for x in &mut w {
+                  *x *= 10;              // change every element in place
+              }
+              println!("{v:?} {w:?} popped {:?}", w.pop());
+
+              let row = vec![Cell::Int(3), Cell::Text(String::from("blue"))];
+              println!("{row:?}");
+          }
+        output: |
+          third is 3, maybe tenth: None
+          [5, 6] [10, 20] popped Some(30)
+          [Int(3), Text("blue")]
+        note: You cannot push to a vector while holding a reference to one of its elements, because pushing might move the whole vector to a bigger block of memory and leave the reference dangling. The borrow checker catches this at compile time.
+      ex:
+        - t: Statistics
+          p: 'Write median(v: &mut Vec<i32>) -> Option<f64> and mode(v: &[i32]) -> Option<i32>. Return None for an empty input.'
+          check: test
+          hints:
+            - Sort the vector with v.sort() first; the middle element (or the average of the two middle ones) is the median.
+            - For the mode, count occurrences in a HashMap and keep the value with the highest count.
+            - "Return early with if v.is_empty() { return None; }"
+          solution: |
+            use std::collections::HashMap;
+
+            fn median(v: &mut Vec<i32>) -> Option<f64> {
+                if v.is_empty() {
+                    return None;
+                }
+                v.sort();
+                let mid = v.len() / 2;
+                if v.len() % 2 == 0 {
+                    Some((v[mid - 1] + v[mid]) as f64 / 2.0)
+                } else {
+                    Some(v[mid] as f64)
+                }
+            }
+
+            fn mode(v: &[i32]) -> Option<i32> {
+                let mut counts = HashMap::new();
+                for &x in v {
+                    *counts.entry(x).or_insert(0) += 1;
+                }
+                counts.into_iter().max_by_key(|&(_, c)| c).map(|(x, _)| x)
+            }
+
+            fn main() {
+                let mut data = vec![3, 7, 1, 7, 2];
+                println!("median {:?}, mode {:?}", median(&mut data), mode(&data));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn stats() {
+                    assert_eq!(median(&mut vec![4, 1, 3, 2]), Some(2.5));
+                    assert_eq!(mode(&[1, 2, 2, 3]), Some(2));
+                    assert_eq!(median(&mut vec![]), None);
+                }
+            }
+          explain: max_by_key and map are iterator tools from Chapter 13; a plain loop that tracks the best count works just as well. If two values tie for the mode, this returns either one, which is fine unless your exercise requires the smallest.
+        - t: Remove the duplicates
+          p: 'Write dedup_keep_order(v: &[i32]) -> Vec<i32> that removes repeated values but keeps the first time each value appears.'
+          check: test
+          hints:
+            - Keep a HashSet of values you have already seen.
+            - "seen.insert(x) returns true when x was not there before."
+            - Push x into the result only when insert returned true.
+          solution: |
+            use std::collections::HashSet;
+
+            fn dedup_keep_order(v: &[i32]) -> Vec<i32> {
+                let mut seen = HashSet::new();
+                let mut out = Vec::new();
+                for &x in v {
+                    if seen.insert(x) {
+                        out.push(x);
+                    }
+                }
+                out
+            }
+
+            fn main() {
+                println!("{:?}", dedup_keep_order(&[3, 1, 3, 2, 1]));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn keeps_order() {
+                    assert_eq!(dedup_keep_order(&[3, 1, 3, 2, 1]), vec![3, 1, 2]);
+                }
+            }
+          explain: Vec has its own dedup method, but it only removes repeats that sit next to each other. The HashSet approach handles repeats anywhere and still runs in a single pass.
+    - id: "8.2"
+      t: Strings and UTF-8
+      min: 60
+      learn: String versus &str, building strings with push_str, + and format!, why strings cannot be indexed by position, and iterating over chars and bytes.
+      example:
+        title: Strings are UTF-8 bytes
+        code: |
+          fn main() {
+              let mut s = String::from("foo");
+              s.push_str("bar");
+              s.push('!');
+              let s2 = String::from("tic") + "-" + "tac";    // + takes ownership of the left side
+              let s3 = format!("{s}/{s2}");                 // format! borrows everything
+
+              let hello = "Здравствуйте";
+              println!("{s3} | {} bytes, {} chars", hello.len(), hello.chars().count());
+              // let h = hello[0];                           // error: strings cannot be indexed
+              let first_two: String = hello.chars().take(2).collect();
+              println!("first two chars: {first_two}, first 4 bytes: {}", &hello[0..4]);
+              for b in "é".bytes() { print!("{b} "); }
+              println!();
+          }
+        output: |
+          foobar!/tic-tac | 24 bytes, 12 chars
+          first two chars: Зд, first 4 bytes: Зд
+          195 169
+        note: A String is a growable vector of UTF-8 bytes. Some characters take more than one byte, so s[0] would be ambiguous and Rust refuses it. Slicing with byte ranges works but panics if the range cuts a character in half. Decide whether you want bytes or chars and ask for them explicitly.
+      ex:
+        - t: Pig Latin
+          p: "Write pig_latin(word: &str) -> String: words starting with a consonant move the first letter to the end and add \"ay\" (first becomes irst-fay); words starting with a vowel add \"-hay\" (apple becomes apple-hay)."
+          check: test
+          hints:
+            - Get the first char with word.chars().next().
+            - Check vowels with matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u').
+            - "&word[c.len_utf8()..] is the rest of the word, safely, even for accented letters."
+          solution: |
+            fn pig_latin(word: &str) -> String {
+                let Some(c) = word.chars().next() else {
+                    return String::new();
+                };
+                if matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u') {
+                    format!("{word}-hay")
+                } else {
+                    let rest = &word[c.len_utf8()..];
+                    format!("{rest}-{c}ay")
+                }
+            }
+
+            fn main() {
+                for w in ["first", "apple", "élan"] {
+                    println!("{w} -> {}", pig_latin(w));
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn both_rules() {
+                    assert_eq!(pig_latin("first"), "irst-fay");
+                    assert_eq!(pig_latin("apple"), "apple-hay");
+                }
+            }
+          explain: Using c.len_utf8() instead of 1 is what keeps "élan" from panicking, because é is two bytes. This is the book's own suggested exercise for the chapter.
+        - t: Capitalise each word
+          p: 'Write title_case(s: &str) -> String that capitalises the first letter of every word and lowercases the rest, so "hELLO wORLD" becomes "Hello World".'
+          check: test
+          hints:
+            - Split with s.split_whitespace() and handle each word.
+            - For each word, take the first char with to_uppercase() and the rest with to_lowercase().
+            - Collect the words into a Vec<String> and join them with " ".
+          solution: |
+            fn title_case(s: &str) -> String {
+                s.split_whitespace()
+                    .map(|w| {
+                        let mut chars = w.chars();
+                        match chars.next() {
+                            Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+                            None => String::new(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+
+            fn main() {
+                println!("{}", title_case("hELLO wORLD from rust"));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn mixed_case() {
+                    assert_eq!(title_case("hELLO wORLD"), "Hello World");
+                }
+            }
+          explain: to_uppercase returns an iterator because some characters become several when uppercased (ß becomes SS). chars.as_str() gives the remaining text after the first char without allocating.
+    - id: "8.3"
+      t: Hash maps
+      min: 60
+      learn: Create and fill a HashMap, read with get, iterate, ownership of inserted keys and values, overwriting, and the entry API for insert-if-missing and update-in-place.
+      example:
+        title: Word counts with entry
+        code: |
+          use std::collections::HashMap;
+
+          fn main() {
+              let mut scores = HashMap::new();
+              scores.insert(String::from("Blue"), 10);
+              scores.insert(String::from("Blue"), 25);          // overwrites
+              scores.entry(String::from("Yellow")).or_insert(50);
+              scores.entry(String::from("Blue")).or_insert(50);  // already there: unchanged
+              println!("Blue = {:?}", scores.get("Blue").copied().unwrap_or(0));
+
+              let text = "the cat sat on the mat the end";
+              let mut counts: HashMap<&str, i32> = HashMap::new();
+              for word in text.split_whitespace() {
+                  *counts.entry(word).or_insert(0) += 1;
+              }
+              let mut pairs: Vec<_> = counts.into_iter().collect();
+              pairs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+              println!("{:?}", &pairs[..3]);
+          }
+        output: |
+          Blue = 25
+          [("the", 3), ("cat", 1), ("end", 1)]
+        note: Inserting a String key moves it into the map. entry returns a handle to the slot for that key, and or_insert gives back a mutable reference to the value, which is why *... += 1 works. HashMap does not keep any order, so sort when you need one.
+      ex:
+        - t: Department directory
+          p: "Build the book's exercise: read commands like \"Add Sally to Engineering\" from an array, store people per department in a HashMap<String, Vec<String>>, then print each department with its people sorted alphabetically."
+          check: test
+          hints:
+            - "Split each command into words and match on [\"Add\", name, \"to\", dept]."
+            - "map.entry(dept.to_string()).or_default().push(name.to_string());"
+            - Collect the keys, sort them, then sort each Vec before printing.
+          solution: |
+            use std::collections::HashMap;
+
+            fn build(commands: &[&str]) -> HashMap<String, Vec<String>> {
+                let mut dir: HashMap<String, Vec<String>> = HashMap::new();
+                for cmd in commands {
+                    let words: Vec<&str> = cmd.split_whitespace().collect();
+                    if let ["Add", name, "to", dept] = words.as_slice() {
+                        dir.entry(dept.to_string()).or_default().push(name.to_string());
+                    }
+                }
+                dir
+            }
+
+            fn main() {
+                let dir = build(&["Add Sally to Engineering", "Add Amir to Sales", "Add Bob to Engineering"]);
+                let mut depts: Vec<_> = dir.keys().collect();
+                depts.sort();
+                for d in depts {
+                    let mut people = dir[d].clone();
+                    people.sort();
+                    println!("{d}: {}", people.join(", "));
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn groups() {
+                    let d = build(&["Add A to X", "Add B to X", "nonsense"]);
+                    assert_eq!(d["X"].len(), 2);
+                    assert_eq!(d.len(), 1);
+                }
+            }
+          explain: Matching on a slice pattern ["Add", name, "to", dept] checks the shape and pulls out the parts in one step, and anything else is ignored. or_default creates an empty Vec the first time a department appears.
+        - t: Anagram groups
+          p: 'Write group_anagrams(words: &[&str]) -> Vec<Vec<String>> that groups words that are anagrams of each other, such as "listen" and "silent".'
+          check: test
+          hints:
+            - The key for a word is its letters sorted, for example "eilnst".
+            - "Turn a word into a sorted key with let mut c: Vec<char> = w.chars().collect(); c.sort();"
+            - Use a HashMap<String, Vec<String>> and return its values.
+          solution: |
+            use std::collections::HashMap;
+
+            fn group_anagrams(words: &[&str]) -> Vec<Vec<String>> {
+                let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+                for w in words {
+                    let mut letters: Vec<char> = w.to_lowercase().chars().collect();
+                    letters.sort_unstable();
+                    let key: String = letters.into_iter().collect();
+                    groups.entry(key).or_default().push(w.to_string());
+                }
+                groups.into_values().collect()
+            }
+
+            fn main() {
+                println!("{:?}", group_anagrams(&["listen", "silent", "enlist", "rust", "trust"]));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn finds_group() {
+                    let g = group_anagrams(&["listen", "silent", "dog"]);
+                    assert!(g.iter().any(|v| v.len() == 2));
+                    assert_eq!(g.len(), 2);
+                }
+            }
+          explain: Choosing a good key is the whole trick with hash maps. into_values consumes the map and hands you the groups without copying them.
+  quiz:
+    - q: Why does this not compile?
+      code: |
+        let mut v = vec![1, 2, 3];
+        let first = &v[0];
+        v.push(4);
+        println!("{first}");
+      o: |
+        push needs a mutable borrow while first still borrows v
+        You cannot index a Vec
+        vec! creates an immutable vector
+        push takes two arguments
+      a: 0
+      x: Pushing may reallocate, which would invalidate first.
+    - q: What does v.get(100) return for a three-element Vec<i32>?
+      o: |
+        None
+        A panic
+        0
+        Some(0)
+      a: 0
+      x: get returns Option; indexing with [] would panic.
+    - q: Why can you not write s[0] on a String?
+      o: |
+        Strings are UTF-8 and a byte position may not be a whole character
+        Strings are immutable
+        Indexing is only for arrays of numbers
+        You can; it returns a char
+      a: 0
+      x: Rust makes you choose bytes, chars or a slice explicitly.
+    - q: What does *map.entry(k).or_insert(0) += 1; do?
+      o: |
+        Inserts 0 if k is missing, then adds 1 to the value
+        Always resets the value to 1
+        Fails if k is missing
+        Adds 1 to the key
+      a: 0
+      x: or_insert returns a mutable reference to the existing or new value.
+    - q: What happens to a String key after map.insert(key, 1)?
+      o: |
+        It is moved into the map
+        It is copied into the map
+        The map stores a reference to it
+        It is dropped
+      a: 0
+      x: Owned values move into the map.
+      pool: exam
+    - q: What does "hé".len() return?
+      o: |
+        3
+        2
+        4
+        1
+      a: 0
+      x: len counts bytes, and é takes two bytes in UTF-8.
+      pool: exam
+    - q: Which correctly combine strings?
+      type: multi
+      o: |
+        format!("{a}{b}")
+        a + &b where a is a String
+        &a + &b where both are &str
+        a.push_str(&b) where a is a mutable String
+      a: [0, 1, 3]
+      x: The + operator needs an owned String on the left.
+      pool: exam
+  recap:
+    summary:
+      - Vec<T> is a growable list; push, pop, index with [] (panics) or get (Option), and loop with & or &mut.
+      - The borrow checker stops you from changing a vector while holding a reference into it.
+      - String is UTF-8; build with push_str, + or format!, and work with chars() or bytes() instead of indexes.
+      - HashMap<K, V> maps keys to values; inserting moves owned keys and values in.
+      - The entry API (or_insert, or_default) handles insert-if-missing and update in one lookup.
+    functions: |
+      vec![1, 2, 3] / Vec::new() || Create a vector.
+      v.push(x) / v.pop() || Add to or remove from the end.
+      v.get(i) || Read without panicking; returns Option.
+      s.chars() / s.bytes() || Iterate over characters or bytes.
+      format!("{a}-{b}") || Build a String without taking ownership.
+      map.entry(k).or_insert(v) || Get a mutable reference, inserting v if missing.
+      map.get(&k) / map.contains_key(&k) || Look up a key.
+    next: Chapter 9 shows how Rust handles errors, with panic! for bugs and Result for problems you can recover from.
+
+- id: c9
+  n: "09"
+  book: 9
+  t: Error handling
+  lv: 2
+  goal: Tell bugs from recoverable failures, handle Result values, propagate errors with ?, and design types that validate themselves.
+  res: |
+    Chapter 9 in the book | https://doc.rust-lang.org/book/ch09-00-error-handling.html
+    std::result | https://doc.rust-lang.org/std/result/
+  items:
+    - id: "9.1"
+      t: Unrecoverable errors with panic!
+      min: 30
+      learn: When panic! happens, what unwinding means, reading a backtrace with RUST_BACKTRACE=1, and switching to abort in release builds.
+      example:
+        title: Causing and reading a panic
+        check: build
+        code: |
+          fn main() {
+              let v = vec![1, 2, 3];
+              let i = 99;
+              if i >= v.len() {
+                  // A clearer message than the automatic one
+                  panic!("index {i} is out of range for a list of {} items", v.len());
+              }
+              println!("{}", v[i]);
+          }
+        output: |
+          thread 'main' panicked at src/main.rs:6:9:
+          index 99 is out of range for a list of 3 items
+          note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+        note: A panic means the program reached a state it cannot sensibly continue from, usually a bug. By default Rust unwinds, cleaning up each function's values on the way out. Setting panic = 'abort' under [profile.release] in Cargo.toml makes the program stop immediately and the binary smaller.
+      ex:
+        - t: Read a backtrace
+          p: Write a program where main calls a(), a calls b(), and b indexes past the end of a vector. Run it with RUST_BACKTRACE=1 and find your own functions in the output.
+          lang: rust
+          check: build
+          hints:
+            - "On macOS and Linux: RUST_BACKTRACE=1 cargo run. On Windows PowerShell: $env:RUST_BACKTRACE=1; cargo run."
+            - Look for lines that mention your crate name and src/main.rs.
+            - The first of your own lines from the top is where to start reading.
+          solution: |
+            fn b() -> i32 {
+                let v = vec![1, 2, 3];
+                v[10] // panics here
+            }
+
+            fn a() -> i32 {
+                b() + 1
+            }
+
+            fn main() {
+                println!("{}", a());
+            }
+            // With RUST_BACKTRACE=1 the backtrace lists, among library frames:
+            //   your_crate::b  at ./src/main.rs:3
+            //   your_crate::a  at ./src/main.rs:7
+            //   your_crate::main at ./src/main.rs:11
+          explain: Backtraces list every function that was running, innermost first. Skip the standard library frames and look for your own file names. Debug builds give the most useful backtraces because they keep symbols.
+        - t: Assertions as guards
+          p: "Write fn percentage(part: u32, whole: u32) -> f64 that panics with a clear message when whole is 0, using assert!. Add a test with #[should_panic(expected = \"whole must not be zero\")]."
+          check: test
+          hints:
+            - "assert!(whole != 0, \"whole must not be zero\"); panics with that message when the condition is false."
+            - Convert to f64 before dividing.
+            - should_panic tests pass only if the function panics with a message containing the expected text.
+          solution: |
+            fn percentage(part: u32, whole: u32) -> f64 {
+                assert!(whole != 0, "whole must not be zero");
+                part as f64 / whole as f64 * 100.0
+            }
+
+            fn main() {
+                println!("{:.1}%", percentage(3, 8));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn normal() {
+                    assert_eq!(percentage(1, 4), 25.0);
+                }
+                #[test]
+                #[should_panic(expected = "whole must not be zero")]
+                fn zero_whole() {
+                    percentage(1, 0);
+                }
+            }
+          explain: Panicking is right when a caller breaking the rules is a bug in their code. If a zero could reasonably come from user input, returning a Result (next lesson) would be the better design.
+    - id: "9.2"
+      t: Recoverable errors with Result
+      min: 75
+      learn: Match on Ok and Err, match on different kinds of error, unwrap and expect, propagate errors with the ? operator, and use ? in main by returning Result.
+      example:
+        title: Reading a file, three ways
+        code: |
+          use std::error::Error;
+          use std::fs;
+          use std::io;
+
+          // Long form: match and return the error to the caller
+          fn read_name_long(path: &str) -> Result<String, io::Error> {
+              let s = match fs::read_to_string(path) {
+                  Ok(s) => s,
+                  Err(e) => return Err(e),
+              };
+              Ok(s.trim().to_string())
+          }
+
+          // Short form: ? does the same thing
+          fn read_name(path: &str) -> Result<String, io::Error> {
+              Ok(fs::read_to_string(path)?.trim().to_string())
+          }
+
+          fn main() -> Result<(), Box<dyn Error>> {
+              fs::write("name.txt", "Kev\n")?;
+              println!("{}", read_name_long("name.txt")?);
+              println!("{}", read_name("name.txt")?);
+              match read_name("missing.txt") {
+                  Ok(n) => println!("{n}"),
+                  Err(e) if e.kind() == io::ErrorKind::NotFound => println!("no such file"),
+                  Err(e) => return Err(e.into()),
+              }
+              fs::remove_file("name.txt")?;
+              Ok(())
+          }
+        output: |
+          Kev
+          Kev
+          no such file
+        note: '? returns the error from the current function early, converting it with From if needed, and gives you the Ok value otherwise. It only works in functions that return Result or Option. Box<dyn Error> means "any error type", which keeps main simple.'
+      ex:
+        - t: Sum numbers from a file
+          p: 'Write sum_file(path: &str) -> Result<i64, Box<dyn Error>> that reads one integer per line and returns the total. Blank lines are skipped; a bad line is an error.'
+          check: test
+          hints:
+            - Read the whole file with fs::read_to_string(path)?.
+            - Loop over contents.lines(), skip lines where trim() is empty.
+            - line.trim().parse::<i64>()? turns a parse error into the Box<dyn Error> automatically.
+          solution: |
+            use std::error::Error;
+            use std::fs;
+
+            fn sum_file(path: &str) -> Result<i64, Box<dyn Error>> {
+                let contents = fs::read_to_string(path)?;
+                let mut total = 0;
+                for line in contents.lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    total += line.parse::<i64>()?;
+                }
+                Ok(total)
+            }
+
+            fn main() -> Result<(), Box<dyn Error>> {
+                fs::write("nums.txt", "10\n20\n\n12\n")?;
+                println!("total = {}", sum_file("nums.txt")?);
+                fs::remove_file("nums.txt")?;
+                Ok(())
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn bad_line_is_error() {
+                    let p = std::env::temp_dir().join("sum_file_test.txt");
+                    std::fs::write(&p, "1\nx\n").unwrap();
+                    assert!(sum_file(p.to_str().unwrap()).is_err());
+                }
+            }
+          explain: Two different error types (io::Error and ParseIntError) flow through the same ? because both convert into Box<dyn Error>. Chapter 2 of Track 2 shows how to make your own error enum when callers need to tell them apart.
+        - t: unwrap_or and friends
+          p: "Given let inputs = [\"42\", \"x\", \"-7\"];, print each parsed as i32 three ways: with unwrap_or(0), with unwrap_or_default(), and with a match that prints the error message."
+          hints:
+            - "\"x\".parse::<i32>() returns Err(ParseIntError)."
+            - unwrap_or(0) and unwrap_or_default() both give 0 for the bad input.
+            - "In the match, Err(e) => println!(\"error: {e}\") prints a readable message."
+          solution: |
+            fn main() {
+                let inputs = ["42", "x", "-7"];
+                for s in inputs {
+                    let a = s.parse::<i32>().unwrap_or(0);
+                    let b: i32 = s.parse().unwrap_or_default();
+                    match s.parse::<i32>() {
+                        Ok(n) => println!("{s}: {a} {b} ok {n}"),
+                        Err(e) => println!("{s}: {a} {b} error: {e}"),
+                    }
+                }
+            }
+          explain: unwrap and expect panic on Err, so keep them for tests, examples and cases you have proven cannot fail. unwrap_or and its relatives give you a sensible fallback without a panic.
+    - id: "9.3"
+      t: To panic or not to panic
+      min: 45
+      learn: Guidelines for choosing panic or Result, when unwrap is acceptable, and encoding rules in types such as a Guess that can only hold 1 to 100.
+      example:
+        title: A type that validates itself
+        code: |
+          #[derive(Debug)]
+          pub struct Guess {
+              value: i32,   // private: only new can create a Guess
+          }
+
+          impl Guess {
+              pub fn new(value: i32) -> Result<Guess, String> {
+                  if !(1..=100).contains(&value) {
+                      return Err(format!("Guess value must be between 1 and 100, got {value}."));
+                  }
+                  Ok(Guess { value })
+              }
+              pub fn value(&self) -> i32 {
+                  self.value
+              }
+          }
+
+          fn main() {
+              println!("{:?}", Guess::new(50).map(|g| g.value()));
+              println!("{:?}", Guess::new(200));
+          }
+        output: |
+          Ok(50)
+          Err("Guess value must be between 1 and 100, got 200.")
+        note: The book's version panics in new; returning Result instead lets the caller decide. Either way, any function that receives a Guess no longer needs to check the range. Use panic for broken assumptions and programmer mistakes, and Result for failures you expect to happen, like bad input or a missing file.
+      ex:
+        - t: A Percentage type
+          p: 'Create Percentage(u8) with a private field, Percentage::new(v: u8) -> Result<Percentage, String> that rejects values over 100, and a method of(&self, amount: f64) -> f64.'
+          check: test
+          hints:
+            - Put the struct in a module so the field is truly private.
+            - "new returns Err(format!(...)) when v > 100."
+            - of returns amount * self.0 as f64 / 100.0.
+          solution: |
+            mod money {
+                #[derive(Debug)]
+                pub struct Percentage(u8);
+
+                impl Percentage {
+                    pub fn new(v: u8) -> Result<Percentage, String> {
+                        if v > 100 {
+                            Err(format!("{v} is more than 100%"))
+                        } else {
+                            Ok(Percentage(v))
+                        }
+                    }
+                    pub fn of(&self, amount: f64) -> f64 {
+                        amount * self.0 as f64 / 100.0
+                    }
+                }
+            }
+
+            use money::Percentage;
+
+            fn main() {
+                let tip = Percentage::new(15).unwrap();
+                println!("15% of 80 = {}", tip.of(80.0));
+                println!("{:?}", Percentage::new(150));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn rejects_over_100() {
+                    assert!(Percentage::new(101).is_err());
+                    assert_eq!(Percentage::new(50).unwrap().of(10.0), 5.0);
+                }
+            }
+          explain: The unwrap in main is fine because 15 is a literal you can see is valid. Once a value has passed through new, the rest of the program can trust it, so the checks live in one place.
+        - t: Decide and justify
+          p: 'For each case, decide panic or Result and write one sentence why: (1) a config file is missing, (2) a function gets a negative length that its docs forbid, (3) parsing a number typed by a user, (4) a hard-coded IP address string in your code fails to parse.'
+          lang: text
+          check: none
+          hints:
+            - Ask whether the failure is expected in normal use or a sign of a bug.
+            - User input and the file system fail all the time in normal use.
+            - A literal you wrote yourself can only fail if your code is wrong.
+          solution: |
+            1. Result: files go missing in normal operation; the caller can
+               create a default or show a helpful message.
+            2. Panic: the caller broke the documented contract, which is a bug
+               to fix, not a condition to handle.
+            3. Result: users type bad input all the time.
+            4. Panic (expect with a message): the string is fixed in the code,
+               so a failure means the code itself is wrong.
+          explain: The book's rule of thumb is that panics are for states your code should never reach, and Result is for failures that can happen even when everything is written correctly.
+  quiz:
+    - q: What does the ? operator do when the Result is Err?
+      o: |
+        Returns the error from the current function, converting it with From
+        Panics with the error
+        Replaces it with a default value
+        Ignores the error and continues
+      a: 0
+      x: '? is an early return for errors.'
+    - q: Where can you use ? on a Result?
+      o: |
+        In a function whose return type is Result (or another type that supports it)
+        Anywhere
+        Only in main
+        Only inside match arms
+      a: 0
+      x: The function must be able to return the error.
+    - q: What is the difference between unwrap and expect?
+      o: |
+        expect lets you give the panic message
+        expect never panics
+        unwrap returns an Option
+        There is none
+      a: 0
+      x: Both panic on Err or None; expect adds your message.
+    - q: Which is the best fit for Result rather than panic?
+      o: |
+        A user types a word where a number was expected
+        An internal index that your own code computed is out of range
+        A test assertion fails
+        A hard-coded constant is invalid
+      a: 0
+      x: Bad user input is an expected failure.
+    - q: What type lets main return any kind of error with ??
+      o: |
+        Result<(), Box<dyn Error>>
+        Option<()>
+        Result<(), String>
+        Box<Error>
+      a: 0
+      x: Box<dyn Error> is a trait object that any error type converts into.
+      pool: exam
+    - q: What does RUST_BACKTRACE=1 do?
+      o: |
+        Prints the chain of function calls when a panic happens
+        Makes panics recoverable
+        Turns on optimisations
+        Logs every function call
+      a: 0
+      x: It shows a backtrace on panic.
+      pool: exam
+    - q: Which statements about panic = 'abort' in a release profile are true?
+      type: multi
+      o: |
+        The program stops without unwinding
+        The binary can be smaller
+        Destructors (Drop) still run during the panic
+        Panics turn into Result values
+      a: [0, 1]
+      x: Abort skips unwinding, so Drop code does not run during a panic.
+      pool: exam
+  recap:
+    summary:
+      - panic! is for unrecoverable states and bugs; it unwinds by default and prints where it happened.
+      - Result<T, E> is Ok(T) or Err(E); match on it, or use unwrap_or, map and friends.
+      - The ? operator propagates errors early and converts them with From; it needs a function returning Result.
+      - main can return Result<(), Box<dyn Error>> so ? works there too.
+      - Encode rules in types with private fields and checked constructors, so the rest of the code can trust the values.
+    functions: |
+      panic!("msg") || Stop with a message.
+      assert!(cond, "msg") || Panic when a condition is false.
+      result? || Return the error early or take the Ok value.
+      r.unwrap() / r.expect("why") || Take the value or panic.
+      r.unwrap_or(default) || Take the value or a fallback.
+      Box<dyn Error> || Any error type, handy for main and scripts.
+      e.kind() == io::ErrorKind::NotFound || Check which I/O error happened.
+    next: Chapter 10 covers generics, traits and lifetimes, the tools that let you write code once for many types.
+
+- id: c10
+  n: "10"
+  book: 10
+  t: Generics, traits and lifetimes
+  lv: 3
+  goal: Write code that works for many types with generics, describe shared behaviour with traits, and explain to the compiler how long references live.
+  res: |
+    Chapter 10 in the book | https://doc.rust-lang.org/book/ch10-00-generics.html
+    Rust by Example, generics | https://doc.rust-lang.org/rust-by-example/generics.html
+  items:
+    - id: "10.1"
+      t: Generic data types
+      min: 60
+      learn: Generic functions, structs, enums and methods, methods for one concrete type only, and why generics cost nothing at run time (monomorphisation).
+      example:
+        title: largest and a generic Point
+        code: |
+          fn largest<T: PartialOrd>(list: &[T]) -> &T {
+              let mut largest = &list[0];
+              for item in list {
+                  if item > largest {
+                      largest = item;
+                  }
+              }
+              largest
+          }
+
+          #[derive(Debug)]
+          struct Point<T, U> {
+              x: T,
+              y: U,
+          }
+
+          impl<T, U> Point<T, U> {
+              fn mixup<V, W>(self, other: Point<V, W>) -> Point<T, W> {
+                  Point { x: self.x, y: other.y }
+              }
+          }
+
+          impl Point<f64, f64> {
+              fn distance_from_origin(&self) -> f64 {   // only for f64 points
+                  (self.x.powi(2) + self.y.powi(2)).sqrt()
+              }
+          }
+
+          fn main() {
+              println!("{} {}", largest(&[34, 50, 25, 100, 65]), largest(&['y', 'm', 'a', 'q']));
+              let p = Point { x: 3.0, y: 4.0 };
+              println!("{}", p.distance_from_origin());
+              println!("{:?}", Point { x: 5, y: 10.4 }.mixup(Point { x: "Hello", y: 'c' }));
+          }
+        output: |
+          100 y
+          5
+          Point { x: 5, y: 'c' }
+        note: 'T: PartialOrd is a trait bound; without it the compiler cannot know that values of T can be compared with >. When you call largest with i32 and char, the compiler writes a separate copy for each type, so generic code runs as fast as hand-written code.'
+      ex:
+        - t: A generic Pair
+          p: 'Create struct Pair<T> { a: T, b: T } with new and a method swap(self) -> Pair<T>. Add a method larger(&self) -> &T that only exists when T: PartialOrd.'
+          check: test
+          hints:
+            - "impl<T> Pair<T> { fn new(a: T, b: T) -> Self ... fn swap(self) -> Self ... }"
+            - "A second block impl<T: PartialOrd> Pair<T> holds larger."
+            - Return &self.a or &self.b depending on the comparison.
+          solution: |
+            #[derive(Debug, PartialEq)]
+            struct Pair<T> {
+                a: T,
+                b: T,
+            }
+
+            impl<T> Pair<T> {
+                fn new(a: T, b: T) -> Self {
+                    Pair { a, b }
+                }
+                fn swap(self) -> Self {
+                    Pair { a: self.b, b: self.a }
+                }
+            }
+
+            impl<T: PartialOrd> Pair<T> {
+                fn larger(&self) -> &T {
+                    if self.a >= self.b { &self.a } else { &self.b }
+                }
+            }
+
+            fn main() {
+                let p = Pair::new(3, 9);
+                println!("{} {:?}", p.larger(), Pair::new("x", "y").swap());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn works() {
+                    assert_eq!(*Pair::new(1.5, 0.5).larger(), 1.5);
+                    assert_eq!(Pair::new(1, 2).swap(), Pair::new(2, 1));
+                }
+            }
+          explain: Conditional impl blocks let a type gain methods only when its contents support them. A Pair of values that cannot be compared still works, it just has no larger method.
+        - t: Generic stack
+          p: Implement struct Stack<T> backed by a Vec<T> with push, pop -> Option<T>, peek -> Option<&T>, len and is_empty.
+          check: test
+          hints:
+            - "struct Stack<T> { items: Vec<T> }"
+            - pop and peek can delegate to Vec::pop and Vec::last.
+            - "Add impl<T> Default for Stack<T> or a new() that returns Stack { items: Vec::new() }."
+          solution: |
+            struct Stack<T> {
+                items: Vec<T>,
+            }
+
+            impl<T> Stack<T> {
+                fn new() -> Self {
+                    Stack { items: Vec::new() }
+                }
+                fn push(&mut self, x: T) {
+                    self.items.push(x);
+                }
+                fn pop(&mut self) -> Option<T> {
+                    self.items.pop()
+                }
+                fn peek(&self) -> Option<&T> {
+                    self.items.last()
+                }
+                fn len(&self) -> usize {
+                    self.items.len()
+                }
+                fn is_empty(&self) -> bool {
+                    self.items.is_empty()
+                }
+            }
+
+            fn main() {
+                let mut s = Stack::new();
+                s.push("a");
+                s.push("b");
+                println!("{:?} {:?} {}", s.pop(), s.peek(), s.len());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn lifo() {
+                    let mut s = Stack::new();
+                    assert!(s.is_empty());
+                    s.push(1);
+                    s.push(2);
+                    assert_eq!(s.pop(), Some(2));
+                    assert_eq!(s.peek(), Some(&1));
+                }
+            }
+          explain: Wrapping a Vec in your own type lets you expose only the operations that make sense, here last-in, first-out. Clippy will suggest a Default impl when you write new() with no arguments; it is worth adding.
+    - id: "10.2"
+      t: Traits
+      min: 75
+      learn: Define and implement traits, default methods, traits as parameters with impl Trait and bounds, multiple bounds and where clauses, returning impl Trait, and blanket implementations.
+      example:
+        title: A Summary trait
+        code: |
+          use std::fmt::Display;
+
+          pub trait Summary {
+              fn author(&self) -> String;
+              fn summarize(&self) -> String {           // default method
+                  format!("(Read more from {}...)", self.author())
+              }
+          }
+
+          pub struct Tweet { pub username: String, pub content: String }
+          pub struct Article { pub title: String, pub by: String }
+
+          impl Summary for Tweet {
+              fn author(&self) -> String { format!("@{}", self.username) }
+              fn summarize(&self) -> String { format!("{}: {}", self.author(), self.content) }
+          }
+          impl Summary for Article {
+              fn author(&self) -> String { self.by.clone() }   // uses the default summarize
+          }
+
+          fn notify(item: &impl Summary) {
+              println!("Breaking news! {}", item.summarize());
+          }
+
+          fn print_both<T, U>(a: &T, b: &U)
+          where
+              T: Summary + Display,
+              U: Summary,
+          {
+              println!("{a} / {}", b.summarize());
+          }
+
+          impl std::fmt::Display for Tweet {
+              fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                  write!(f, "tweet by {}", self.username)
+              }
+          }
+
+          fn main() {
+              let t = Tweet { username: "rustlang".into(), content: "1.97 is out".into() };
+              let a = Article { title: "Ownership".into(), by: "Kev".into() };
+              notify(&t);
+              notify(&a);
+              print_both(&t, &a);
+              println!("{}", a.title);
+          }
+        output: |
+          Breaking news! @rustlang: 1.97 is out
+          Breaking news! (Read more from Kev...)
+          tweet by rustlang / (Read more from Kev...)
+          Ownership
+        note: A trait lists methods a type promises to have. &impl Summary is shorthand for a generic T Summary bound. You can implement a trait for a type only if the trait or the type is defined in your crate (the orphan rule), which stops two crates from fighting over the same implementation.
+      ex:
+        - t: Describe yourself
+          p: 'Define trait Describe { fn describe(&self) -> String; } and implement it for a Dog struct, a Car struct and for i32. Write fn print_all(items: &[&dyn Describe]) to print them all, plus a generic fn describe_twice(x: &impl Describe).'
+          check: test
+          hints:
+            - "impl Describe for i32 is allowed because the trait is yours."
+            - "&dyn Describe is a trait object, which lets one slice hold different types (Chapter 18 covers it fully)."
+            - describe_twice can call x.describe() twice and join the results.
+          solution: |
+            trait Describe {
+                fn describe(&self) -> String;
+            }
+
+            struct Dog { name: String }
+            struct Car { model: String, year: u16 }
+
+            impl Describe for Dog {
+                fn describe(&self) -> String { format!("a dog called {}", self.name) }
+            }
+            impl Describe for Car {
+                fn describe(&self) -> String { format!("a {} {}", self.year, self.model) }
+            }
+            impl Describe for i32 {
+                fn describe(&self) -> String { format!("the number {self}") }
+            }
+
+            fn print_all(items: &[&dyn Describe]) {
+                for i in items {
+                    println!("{}", i.describe());
+                }
+            }
+
+            fn describe_twice(x: &impl Describe) -> String {
+                format!("{0}; {0}", x.describe())
+            }
+
+            fn main() {
+                let d = Dog { name: "Rex".into() };
+                let c = Car { model: "Civic".into(), year: 2019 };
+                print_all(&[&d, &c, &42]);
+                println!("{}", describe_twice(&7));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn number() {
+                    assert_eq!(5.describe(), "the number 5");
+                }
+            }
+          explain: The generic version is compiled separately for each type and is resolved at compile time; the dyn version works through a pointer table at run time. Both are idiomatic, and choosing between them is the topic of Chapter 18.
+        - t: Implement Display
+          p: 'Implement std::fmt::Display for a Money { cents: i64 } struct so it prints like $12.05 (and -$3.10 for negatives). Use it with println!("{}", m) and to_string().'
+          check: test
+          hints:
+            - "impl fmt::Display for Money { fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { ... } }"
+            - Split cents into dollars with / 100 and the rest with % 100, using abs() for the sign.
+            - "write!(f, \"{sign}${}.{:02}\", ...) pads the cents to two digits."
+          solution: |
+            use std::fmt;
+
+            struct Money {
+                cents: i64,
+            }
+
+            impl fmt::Display for Money {
+                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    let sign = if self.cents < 0 { "-" } else { "" };
+                    let c = self.cents.abs();
+                    write!(f, "{sign}${}.{:02}", c / 100, c % 100)
+                }
+            }
+
+            fn main() {
+                println!("{}", Money { cents: 1205 });
+                println!("{}", Money { cents: -310 });
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn formats() {
+                    assert_eq!(Money { cents: 5 }.to_string(), "$0.05");
+                    assert_eq!(Money { cents: -310 }.to_string(), "-$3.10");
+                }
+            }
+          explain: 'Implementing Display gives you to_string for free through a blanket implementation in the standard library, impl<T: Display> ToString for T. Storing money as whole cents avoids the rounding problems of floats.'
+    - id: "10.3"
+      t: Validating references with lifetimes
+      min: 75
+      learn: Why dangling references are rejected, lifetime annotations in function signatures, structs that hold references, the three elision rules, and the static lifetime.
+      example:
+        title: longest and a struct holding a reference
+        code: |
+          fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+              if x.len() > y.len() { x } else { y }
+          }
+
+          struct Excerpt<'a> {
+              part: &'a str,          // the struct cannot outlive the text it points into
+          }
+
+          impl<'a> Excerpt<'a> {
+              fn announce(&self, msg: &str) -> &str {   // elision: the result borrows from self
+                  println!("Attention: {msg}");
+                  self.part
+              }
+          }
+
+          fn main() {
+              let s1 = String::from("long string is long");
+              let result;
+              {
+                  let s2 = String::from("xyz");
+                  result = longest(s1.as_str(), s2.as_str());
+                  println!("longest: {result}");      // fine: both still alive here
+              }
+              let novel = String::from("Call me Ishmael. Some years ago...");
+              let first = novel.split('.').next().unwrap();
+              let e = Excerpt { part: first };
+              println!("{}", e.announce("excerpt"));
+              let s: &'static str = "lives for the whole program";
+              println!("{s}");
+          }
+        output: |
+          longest: long string is long
+          Attention: excerpt
+          Call me Ishmael
+          lives for the whole program
+        note: "'a does not change how long anything lives. It tells the compiler that the returned reference is valid only as long as both inputs are, so it can reject callers that use the result too late. Most of the time the elision rules fill lifetimes in for you: each reference parameter gets its own lifetime, a single input lifetime goes to all outputs, and a &self lifetime goes to all outputs of a method."
+      ex:
+        - t: First of two
+          p: 'Write fn first_nonempty<''a>(a: &''a str, b: &''a str) -> &''a str that returns a unless it is empty. Then write a main that uses the result after one of the strings is dropped, read the error, and fix it.'
+          hints:
+            - The body is if a.is_empty() { b } else { a }.
+            - Create one String inside an inner block, call the function there, and print the result after the block.
+            - The error is E0597, borrowed value does not live long enough. Print inside the block to fix it.
+          solution: |
+            fn first_nonempty<'a>(a: &'a str, b: &'a str) -> &'a str {
+                if a.is_empty() { b } else { a }
+            }
+
+            fn main() {
+                let outer = String::from("outer");
+                {
+                    let inner = String::from("");
+                    let r = first_nonempty(&inner, &outer);
+                    println!("{r}"); // used while both are alive
+                }
+                // Moving println!("{r}") here would fail with E0597,
+                // because r might point into inner, which is gone.
+            }
+          explain: The compiler does not run your code, so it cannot know which branch will be taken; it only knows the result might come from either input. That is exactly what the shared 'a says.
+        - t: A tokenizer struct
+          p: 'Create struct Words<''a> { text: &''a str } with a method next_word(&mut self) -> Option<&''a str> that returns the next space-separated word and advances.'
+          check: test
+          hints:
+            - Trim leading spaces from self.text first; if it is then empty, return None.
+            - Find the next space with find(' '); split the text there.
+            - The returned word must have lifetime 'a, the text's lifetime, not the lifetime of &mut self.
+          solution: |
+            struct Words<'a> {
+                text: &'a str,
+            }
+
+            impl<'a> Words<'a> {
+                fn next_word(&mut self) -> Option<&'a str> {
+                    let t = self.text.trim_start();
+                    if t.is_empty() {
+                        return None;
+                    }
+                    let end = t.find(' ').unwrap_or(t.len());
+                    let (word, rest) = t.split_at(end);
+                    self.text = rest;
+                    Some(word)
+                }
+            }
+
+            fn main() {
+                let mut w = Words { text: "  borrow  checker rules " };
+                while let Some(word) = w.next_word() {
+                    println!("[{word}]");
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn splits() {
+                    let mut w = Words { text: "a bb  c" };
+                    assert_eq!(w.next_word(), Some("a"));
+                    assert_eq!(w.next_word(), Some("bb"));
+                    assert_eq!(w.next_word(), Some("c"));
+                    assert_eq!(w.next_word(), None);
+                }
+            }
+          explain: Writing Option<&'a str> instead of letting elision tie the result to &mut self means callers can keep the words after the Words value changes or goes away. Chapter 13 turns this into a real Iterator.
+    - id: "10.4"
+      t: Generics, bounds and lifetimes together
+      min: 45
+      learn: Read and write signatures that combine generic type parameters, trait bounds and lifetimes, and use them to build small reusable helpers.
+      example:
+        title: All three in one signature
+        code: |
+          use std::fmt::Display;
+
+          fn longest_with_an_announcement<'a, T>(x: &'a str, y: &'a str, ann: T) -> &'a str
+          where
+              T: Display,
+          {
+              println!("Announcement! {ann}");
+              if x.len() > y.len() { x } else { y }
+          }
+
+          fn main() {
+              let r = longest_with_an_announcement("apples", "kiwi", 42);
+              println!("{r}");
+          }
+        output: |
+          Announcement! 42
+          apples
+        note: Lifetimes go first in the angle brackets, then type parameters. The where clause keeps long bounds out of the way so the signature stays readable.
+      ex:
+        - t: Max by a key
+          p: 'Write fn max_by<''a, T, K: PartialOrd>(items: &''a [T], key: impl Fn(&T) -> K) -> Option<&''a T> that returns the item with the largest key. Use it to find the longest word and the oldest person in a list.'
+          check: test
+          hints:
+            - Loop over items keeping the best item and its key so far.
+            - "impl Fn(&T) -> K accepts a closure such as |w| w.len()."
+            - Return None for an empty slice.
+          solution: |
+            fn max_by<'a, T, K: PartialOrd>(items: &'a [T], key: impl Fn(&T) -> K) -> Option<&'a T> {
+                let mut best: Option<(&T, K)> = None;
+                for item in items {
+                    let k = key(item);
+                    let better = match &best {
+                        None => true,
+                        Some((_, bk)) => k > *bk,
+                    };
+                    if better {
+                        best = Some((item, k));
+                    }
+                }
+                best.map(|(item, _)| item)
+            }
+
+            struct Person { name: &'static str, age: u32 }
+
+            fn main() {
+                let words = ["ox", "giraffe", "cat"];
+                println!("{:?}", max_by(&words, |w| w.len()));
+                let people = [Person { name: "Ada", age: 36 }, Person { name: "Grace", age: 85 }];
+                println!("{}", max_by(&people, |p| p.age).map(|p| p.name).unwrap_or("nobody"));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn empty_and_some() {
+                    let none: [i32; 0] = [];
+                    assert_eq!(max_by(&none, |x| *x), None);
+                    assert_eq!(max_by(&[3, 9, 2], |x| *x), Some(&9));
+                }
+            }
+          explain: The standard library already has items.iter().max_by_key(...), but writing it yourself shows how the three features fit together; the lifetime 'a promises the result points into items.
+        - t: Summaries for a list
+          p: 'Using the Summary trait idea, write fn digest<T: Summary>(items: &[T]) -> String that joins every summary with newlines, and implement Summary for a struct Email { from: String, subject: String }.'
+          check: test
+          hints:
+            - Define the trait with fn summarize(&self) -> String.
+            - "items.iter().map(|i| i.summarize()).collect::<Vec<_>>().join(\"\\n\")"
+            - Write one test with two emails.
+          solution: |
+            trait Summary {
+                fn summarize(&self) -> String;
+            }
+
+            struct Email {
+                from: String,
+                subject: String,
+            }
+
+            impl Summary for Email {
+                fn summarize(&self) -> String {
+                    format!("{}: {}", self.from, self.subject)
+                }
+            }
+
+            fn digest<T: Summary>(items: &[T]) -> String {
+                items.iter().map(|i| i.summarize()).collect::<Vec<_>>().join("\n")
+            }
+
+            fn main() {
+                let inbox = vec![
+                    Email { from: "Alice".into(), subject: "Invoice received".into() },
+                    Email { from: "GitHub".into(), subject: "New star".into() },
+                ];
+                println!("{}", digest(&inbox));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn joins() {
+                    let e = [Email { from: "a".into(), subject: "b".into() }, Email { from: "c".into(), subject: "d".into() }];
+                    assert_eq!(digest(&e), "a: b\nc: d");
+                }
+            }
+          explain: Because T is a single type parameter, digest accepts a slice of one type at a time. To mix emails and tweets in one list you would take &[&dyn Summary] instead, trading a little speed for flexibility.
+  quiz:
+    - q: 'Why does fn largest<T>(list: &[T]) -> &T fail to compile when it uses >?'
+      o: |
+        T has no bound saying its values can be compared
+        Generic functions cannot return references
+        Slices cannot be generic
+        You must write T: Copy
+      a: 0
+      x: 'Add T: PartialOrd so > is allowed.'
+    - q: What does monomorphisation mean for generic code?
+      o: |
+        The compiler generates a specific copy for each concrete type used
+        Generic code is interpreted at run time
+        Only one type can ever be used
+        Generics are converted to trait objects
+      a: 0
+      x: That is why generics have no run-time cost.
+    - q: 'Which signature is equivalent to fn notify(item: &impl Summary)?'
+      o: |
+        "fn notify<T: Summary>(item: &T)"
+        "fn notify(item: &dyn Summary)"
+        "fn notify(item: Summary)"
+        "fn notify<T>(item: &T) where Summary: T"
+      a: 0
+      x: impl Trait in argument position is sugar for a generic with a bound.
+    - q: 'What does the ''a in fn longest<''a>(x: &''a str, y: &''a str) -> &''a str promise?'
+      o: |
+        The result lives no longer than the shorter-lived input
+        Both strings live forever
+        The function extends the inputs' lifetimes
+        The result is a new String
+      a: 0
+      x: Lifetimes describe relationships; they never make anything live longer.
+    - q: The orphan rule says you can implement a trait for a type only if...
+      o: |
+        the trait or the type is defined in your crate
+        both are from the standard library
+        the type is a struct
+        the trait has default methods
+      a: 0
+      x: This keeps implementations from conflicting across crates.
+      pool: exam
+    - q: Which of these need no lifetime annotations thanks to elision?
+      type: multi
+      o: |
+        "fn first(s: &str) -> &str"
+        "fn name(&self) -> &str"
+        "fn pick(a: &str, b: &str) -> &str"
+        "fn len(s: &str) -> usize"
+      a: [0, 1, 3]
+      x: With two reference inputs and no self, the compiler cannot tell which one the output borrows from.
+      pool: exam
+    - q: What is a blanket implementation?
+      o: |
+        An impl of a trait for every type that satisfies a bound
+        An impl with only default methods
+        A trait without methods
+        An impl that covers all methods of a type
+      a: 0
+      x: 'For example, impl<T: Display> ToString for T.'
+      pool: exam
+    - q: What lifetime do string literals have?
+      o: |
+        "'static"
+        "'a"
+        The lifetime of the enclosing function
+        None
+      a: 0
+      x: They are stored in the program binary.
+      pool: exam
+  recap:
+    summary:
+      - Generics write code once for many types; trait bounds say what those types must be able to do.
+      - Generic code is monomorphised, so it is as fast as code written for each type.
+      - Traits define shared behaviour, can have default methods, and can be used as bounds, with impl Trait or where clauses.
+      - The orphan rule limits implementations to traits or types from your own crate.
+      - Lifetime annotations describe how references relate so the compiler can reject dangling ones; elision fills most in.
+      - "'static references live for the entire program, like string literals."
+    functions: |
+      fn f<T: Trait>(x: T) || A generic function with a trait bound.
+      impl<T> Type<T> { } || Methods for every T.
+      trait Name { fn m(&self); } || Define a trait.
+      impl Trait for Type { } || Implement a trait.
+      &impl Trait / -> impl Trait || Accept or return some type implementing a trait.
+      where T: A + B || Multiple bounds, written after the signature.
+      fn f<'a>(x: &'a str) -> &'a str || Annotate how long a returned reference is valid.
+    next: Chapter 11 shows how to write and organise automated tests, which you have already been using in exercises.
+
+- id: c11
+  n: "11"
+  book: 11
+  t: Writing automated tests
+  lv: 3
+  goal: Write unit and integration tests, control how they run, and organise them the way Rust projects expect.
+  res: |
+    Chapter 11 in the book | https://doc.rust-lang.org/book/ch11-00-testing.html
+    The Cargo Book, cargo test | https://doc.rust-lang.org/cargo/commands/cargo-test.html
+  items:
+    - id: "11.1"
+      t: How to write tests
+      min: 60
+      learn: The test attribute, assert!, assert_eq! and assert_ne!, custom failure messages, should_panic with expected text, and tests that return Result.
+      example:
+        title: A tested module
+        check: test
+        code: |
+          #[derive(Debug)]
+          pub struct Rectangle { width: u32, height: u32 }
+
+          impl Rectangle {
+              pub fn can_hold(&self, other: &Rectangle) -> bool {
+                  self.width > other.width && self.height > other.height
+              }
+          }
+
+          pub fn greeting(name: &str) -> String {
+              format!("Hello {name}!")
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              #[test]
+              fn larger_can_hold_smaller() {
+                  let larger = Rectangle { width: 8, height: 7 };
+                  let smaller = Rectangle { width: 5, height: 1 };
+                  assert!(larger.can_hold(&smaller));
+                  assert!(!smaller.can_hold(&larger));
+              }
+
+              #[test]
+              fn greeting_contains_name() {
+                  let result = greeting("Carol");
+                  assert!(result.contains("Carol"), "Greeting did not contain name, value was `{result}`");
+              }
+
+              #[test]
+              fn using_result() -> Result<(), String> {
+                  if 2 + 2 == 4 { Ok(()) } else { Err(String::from("math is broken")) }
+              }
+          }
+        output: |
+          running 3 tests
+          test tests::greeting_contains_name ... ok
+          test tests::larger_can_hold_smaller ... ok
+          test tests::using_result ... ok
+
+          test result: ok. 3 passed; 0 failed; 0 ignored
+        note: assert_eq! and assert_ne! print both values when they fail, which is why the values must implement PartialEq and Debug. A custom message after the condition makes failures far easier to understand when you come back to them later.
+      ex:
+        - t: Test a word counter
+          p: 'Write word_count(s: &str) -> usize and four tests, normal text, extra spaces, an empty string and newlines, each with a custom failure message.'
+          check: test
+          hints:
+            - split_whitespace handles spaces, tabs and newlines.
+            - "assert_eq!(word_count(\"  a  b \"), 2, \"extra spaces should not add words\");"
+            - Put the tests in mod tests with use super::*.
+          solution: |
+            pub fn word_count(s: &str) -> usize {
+                s.split_whitespace().count()
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+
+                #[test]
+                fn normal_text() {
+                    assert_eq!(word_count("the quick brown fox"), 4, "four plain words");
+                }
+                #[test]
+                fn extra_spaces() {
+                    assert_eq!(word_count("  a   b "), 2, "extra spaces should not add words");
+                }
+                #[test]
+                fn empty() {
+                    assert_eq!(word_count(""), 0, "an empty string has no words");
+                }
+                #[test]
+                fn newlines() {
+                    assert_eq!(word_count("one\ntwo\n\nthree"), 3, "newlines separate words too");
+                }
+            }
+          explain: Testing the edge cases (empty input, odd spacing) is where most bugs hide, which you know well from QA. Each test checks one behaviour, so a failure tells you exactly what broke.
+        - t: should_panic precisely
+          p: 'Write Grade::new(score: u8) that panics with "score above 100" for scores over 100 and "score is zero" for zero. Write two should_panic tests that each check the right message.'
+          check: test
+          hints:
+            - "Use if score > 100 { panic!(\"score above 100: {score}\") }."
+            - "#[should_panic(expected = \"score above 100\")] passes if the message contains that text."
+            - Without expected, a test would also pass if the code panicked for the wrong reason.
+          solution: |
+            pub struct Grade(u8);
+
+            impl Grade {
+                pub fn new(score: u8) -> Grade {
+                    if score > 100 {
+                        panic!("score above 100: {score}");
+                    }
+                    if score == 0 {
+                        panic!("score is zero");
+                    }
+                    Grade(score)
+                }
+                pub fn value(&self) -> u8 {
+                    self.0
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+
+                #[test]
+                #[should_panic(expected = "score above 100")]
+                fn too_high() {
+                    Grade::new(101);
+                }
+
+                #[test]
+                #[should_panic(expected = "score is zero")]
+                fn zero() {
+                    Grade::new(0);
+                }
+
+                #[test]
+                fn valid() {
+                    assert_eq!(Grade::new(80).value(), 80);
+                }
+            }
+          explain: The expected text guards against false passes, for example if a refactor made both cases panic with the same message. Prefer Result-returning constructors in real code, but should_panic is how you test panics when you need them.
+    - id: "11.2"
+      t: Controlling how tests are run
+      min: 30
+      learn: Running tests in parallel or one at a time, showing output from passing tests, running tests by name, and ignoring slow tests.
+      example:
+        title: cargo test options
+        lang: bash
+        check: none
+        code: |
+          $ cargo test                         # all tests, in parallel
+          $ cargo test -- --test-threads=1     # one at a time (shared files, ports...)
+          $ cargo test -- --show-output        # also print stdout of passing tests
+          $ cargo test add                     # only tests whose name contains "add"
+          $ cargo test -- --ignored            # only tests marked #[ignore]
+          $ cargo test -- --include-ignored    # everything
+        note: Options before -- go to cargo, options after it go to the test binary. Tests run in parallel threads by default, so tests that share a file or port must use different names or run with one thread.
+      ex:
+        - t: Mark a slow test
+          p: 'Add a test that sleeps for three seconds and mark it #[ignore = "slow"]. Run cargo test, then cargo test -- --ignored, and note the counts in the summary line.'
+          check: test
+          hints:
+            - std::thread::sleep(std::time::Duration::from_secs(3));
+            - The ignore attribute can carry a reason in quotes.
+            - The summary line shows passed, failed and ignored counts.
+          solution: |
+            #[cfg(test)]
+            mod tests {
+                #[test]
+                fn quick() {
+                    assert_eq!(1 + 1, 2);
+                }
+
+                #[test]
+                #[ignore = "slow"]
+                fn slow() {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    assert!(true);
+                }
+            }
+            // cargo test               -> 1 passed; 0 failed; 1 ignored
+            // cargo test -- --ignored  -> 1 passed (the slow one)
+          explain: Ignoring slow tests keeps the normal test run fast enough to use all the time, while CI can still run everything with --include-ignored.
+        - t: Filter by name
+          p: Write five tiny tests named add_one, add_two, sub_one, mul_two and div_by_zero_panics. Run only the add tests, then only div_by_zero_panics by its full name.
+          check: test
+          hints:
+            - cargo test add runs every test whose name contains add.
+            - The full name includes the module, tests::div_by_zero_panics, and --exact makes it match exactly.
+            - Use should_panic for the division test, dividing by a variable so it panics at run time.
+          solution: |
+            #[cfg(test)]
+            mod tests {
+                #[test] fn add_one() { assert_eq!(1 + 1, 2); }
+                #[test] fn add_two() { assert_eq!(2 + 2, 4); }
+                #[test] fn sub_one() { assert_eq!(3 - 1, 2); }
+                #[test] fn mul_two() { assert_eq!(3 * 2, 6); }
+
+                #[test]
+                #[should_panic(expected = "divide by zero")]
+                fn div_by_zero_panics() {
+                    let zero = std::hint::black_box(0);
+                    let _ = 1 / zero;
+                }
+            }
+            // cargo test add                                        -> 2 tests
+            // cargo test tests::div_by_zero_panics -- --exact       -> 1 test
+          explain: Good test names make filtering useful, so name tests after the behaviour they check. black_box stops the compiler from noticing the division by zero at compile time, which would otherwise be a compile error.
+    - id: "11.3"
+      t: Test organisation
+      min: 45
+      learn: Unit tests next to the code in a cfg(test) module, testing private functions, integration tests in the tests folder, shared helpers in tests/common/mod.rs, and why binaries need a library to be integration tested.
+      example:
+        title: Unit and integration tests
+        lang: text
+        check: none
+        code: |
+          adder/
+          ├── Cargo.toml
+          ├── src/
+          │   └── lib.rs        pub fn add_two(a: u64) -> u64 { internal_adder(a, 2) }
+          │                     fn internal_adder(a: u64, b: u64) -> u64 { a + b }
+          │                     #[cfg(test)] mod tests { use super::*;
+          │                         #[test] fn internal() { assert_eq!(internal_adder(2, 2), 4); } }
+          └── tests/
+              ├── common/
+              │   └── mod.rs    pub fn setup() { /* shared test setup */ }
+              └── integration_test.rs
+                                use adder::add_two;
+                                mod common;
+                                #[test] fn it_adds_two() { common::setup(); assert_eq!(add_two(2), 4); }
+        note: Unit tests live inside the crate, so they can test private functions. Integration tests sit in tests/, are compiled as separate crates and can only use your public API, exactly like a real user. Code in tests/common/mod.rs is shared but not treated as a test file.
+      ex:
+        - t: Add integration tests
+          p: Turn your word counter into a library crate called textstats with pub fn word_count and pub fn char_count, then add tests/api.rs with integration tests for both.
+          lang: text
+          check: none
+          hints:
+            - cargo new textstats --lib creates src/lib.rs.
+            - In tests/api.rs, start with use textstats::{word_count, char_count};
+            - cargo test runs unit tests, integration tests and doc tests in separate sections.
+          solution: |
+            // src/lib.rs
+            pub fn word_count(s: &str) -> usize {
+                s.split_whitespace().count()
+            }
+
+            pub fn char_count(s: &str) -> usize {
+                s.chars().count()
+            }
+
+            // tests/api.rs
+            use textstats::{char_count, word_count};
+
+            #[test]
+            fn counts_words() {
+                assert_eq!(word_count("hello brave new world"), 4);
+            }
+
+            #[test]
+            fn counts_unicode_chars() {
+                assert_eq!(char_count("café"), 4);
+            }
+          explain: Integration tests catch problems with your public API, such as something you forgot to make pub. They are the Rust equivalent of the end-to-end checks you would write as a QA lead, while unit tests check the internals.
+        - t: Shared fixtures
+          p: Add tests/common/mod.rs with a function sample_text() -> &'static str, and use it from two different integration test files.
+          lang: text
+          check: none
+          hints:
+            - Each file in tests/ that uses it needs mod common; at the top.
+            - Use the folder form common/mod.rs so cargo does not run it as its own test crate.
+            - Mark the helper pub.
+          solution: |
+            // tests/common/mod.rs
+            pub fn sample_text() -> &'static str {
+                "It was the best of times, it was the worst of times"
+            }
+
+            // tests/words.rs
+            mod common;
+            #[test]
+            fn sample_word_count() {
+                assert_eq!(textstats::word_count(common::sample_text()), 12);
+            }
+
+            // tests/chars.rs
+            mod common;
+            #[test]
+            fn sample_char_count() {
+                assert!(textstats::char_count(common::sample_text()) > 40);
+            }
+          explain: If you wrote tests/common.rs instead, cargo test would list it as a test file with zero tests, which is noisy and confusing. The mod.rs form avoids that.
+  quiz:
+    - q: Why do assert_eq! arguments need to implement Debug?
+      o: |
+        So both values can be printed when the assertion fails
+        So they can be compared
+        So they can be copied
+        They do not need it
+      a: 0
+      x: The failure message shows left and right using Debug.
+    - q: 'What does #[cfg(test)] on a module do?'
+      o: |
+        Compiles the module only when running tests
+        Marks every function in it as a test
+        Runs the module before main
+        Hides the module from documentation
+      a: 0
+      x: The code is left out of normal builds.
+    - q: Which command shows println! output from tests that pass?
+      o: |
+        cargo test -- --show-output
+        cargo test --verbose
+        cargo test -- --nocolor
+        cargo run --tests
+      a: 0
+      x: By default output from passing tests is captured.
+    - q: Where do integration tests live?
+      o: |
+        In the tests folder next to src
+        In src/tests.rs
+        Inside main.rs
+        In Cargo.toml
+      a: 0
+      x: Each file in tests/ is compiled as its own crate.
+    - q: Why can integration tests not call private functions?
+      o: |
+        They are separate crates that only see the public API
+        Rust forbids testing private code
+        Private functions are removed in test builds
+        They can, with use super::*
+      a: 0
+      x: Unit tests inside the crate can test private functions instead.
+      pool: exam
+    - q: What does should_panic(expected = "overflow") check?
+      o: |
+        That the test panics and the message contains overflow
+        That the test returns Err("overflow")
+        That the panic message is exactly overflow
+        That the test does not panic
+      a: 0
+      x: expected matches a substring of the panic message.
+      pool: exam
+    - q: Which are reasons to run tests with --test-threads=1?
+      type: multi
+      o: |
+        Tests write to the same file
+        Tests bind the same network port
+        To make tests compile faster
+        Tests depend on shared global state
+      a: [0, 1, 3]
+      x: Running in one thread avoids interference but does not speed up compiling.
+      pool: exam
+  recap:
+    summary:
+      - "Tests are functions marked #[test]; cargo test builds and runs them in parallel."
+      - assert!, assert_eq! and assert_ne! check results; add a message for clearer failures.
+      - should_panic with expected tests panics precisely; tests can also return Result.
+      - Arguments after -- control the test runner, such as --test-threads=1, --show-output and --ignored.
+      - Unit tests sit in a cfg(test) module next to the code; integration tests live in tests/ and use only the public API.
+    functions: |
+      #[test] || Mark a function as a test.
+      assert_eq!(left, right, "msg") || Check equality, printing both values on failure.
+      #[should_panic(expected = "text")] || Pass only if the code panics with that text.
+      #[ignore = "reason"] || Skip a test unless asked for.
+      #[cfg(test)] mod tests { use super::*; } || Unit tests that can see private items.
+      tests/name.rs || An integration test crate.
+      cargo test name -- --exact || Run one test by its full name.
+    next: Chapter 12 uses everything so far to build a real command-line tool, a small version of grep.

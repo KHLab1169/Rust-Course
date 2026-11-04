@@ -1,0 +1,2212 @@
+- id: c1
+  n: "01"
+  book: 1
+  t: Getting started
+  lv: 1
+  goal: Install Rust with rustup, compile a program by hand with rustc, and create, build and run projects with Cargo.
+  res: |
+    Chapter 1 in the book | https://doc.rust-lang.org/book/ch01-00-getting-started.html
+    Install Rust | https://www.rust-lang.org/tools/install
+    The Cargo Book | https://doc.rust-lang.org/cargo/
+  items:
+    - id: "1.1"
+      t: Install Rust and check the toolchain
+      min: 45
+      learn: Install Rust with rustup, check the versions of rustc and cargo, update the toolchain, and open the documentation that ships with it, even offline.
+      example:
+        title: Checking your installation
+        lang: bash
+        check: none
+        code: |
+          $ rustc --version
+          rustc 1.97.0 (2d8144b78 2026-07-07)
+          $ cargo --version
+          cargo 1.97.0
+          $ rustup update        # get the newest stable release
+          $ rustup doc --book    # open this book from your own computer
+        note: rustup is the installer and version manager, rustc is the compiler and cargo is the build tool and package manager. All three come in one install. On Windows, rustup also asks you to install the Visual Studio C++ build tools, which Rust needs to link programs.
+      ex:
+        - t: Install and report
+          p: Install Rust with rustup (or check your existing install), then run rustc --version, cargo --version and rustup --version. Write down the three versions in your notes.
+          lang: bash
+          check: none
+          hints:
+            - On Windows, download rustup-init.exe from rust-lang.org/tools/install. On macOS or Linux, run the curl command shown on that page.
+            - Close and reopen your terminal after installing so the new PATH is picked up.
+            - If a command is not found, run rustup show to see where the toolchain was installed.
+          solution: |
+            $ rustc --version
+            rustc 1.97.0 (2d8144b78 2026-07-07)
+            $ cargo --version
+            cargo 1.97.0
+            $ rustup --version
+            rustup 1.28.2
+          explain: The exact numbers will differ, and that is fine. What matters is that all three commands answer. If rustc works but cargo does not, the PATH is usually only half updated; reopening the terminal fixes it.
+        - t: Local documentation
+          p: Use rustup doc to open the standard library documentation on your computer, find the page for the String type, and note one method you have not seen before.
+          lang: bash
+          check: none
+          hints:
+            - rustup doc on its own opens an index page; rustup doc --std goes straight to the standard library.
+            - The search box at the top of the docs page works offline.
+            - Type String and choose the struct std::string::String.
+          solution: |
+            $ rustup doc --std
+            # In the search box type: String
+            # Open std::string::String and read the Methods section.
+            # Example of a method worth noting: String::with_capacity(n)
+          explain: The local docs match your installed version exactly, which is handy on a plane or when a newer online version describes something you do not have yet. Learning to search the docs early saves a lot of time later.
+    - id: "1.2"
+      t: Hello, world with rustc
+      min: 45
+      learn: Write a main function, print with the println! macro, compile a single file with rustc, and run the program that rustc produces.
+      example:
+        title: Your first program
+        code: |
+          // main.rs
+          fn main() {
+              println!("Hello, world!");
+              println!("Rust is {} years old as a stable language.", 2026 - 2015);
+          }
+        output: |
+          Hello, world!
+          Rust is 11 years old as a stable language.
+        note: Every program starts in fn main. println! ends with an exclamation mark because it is a macro, not a function; the {} in the text is filled with the next value. Compile with rustc main.rs, then run ./main (or .\main.exe on Windows).
+      ex:
+        - t: Introduce yourself
+          p: Write a program that prints three lines, your name, your city and one reason you are learning Rust. Compile it with rustc and run it.
+          hints:
+            - Each println! call prints one line.
+            - Text goes inside double quotes, and each statement ends with a semicolon.
+            - Compile with rustc hello.rs and run the program that appears next to the file.
+          solution: |
+            fn main() {
+                println!("Name: Kev");
+                println!("City: Montreal");
+                println!("Why Rust: fast, safe tools that I can trust in production.");
+            }
+          explain: rustc turns the .rs file into a native program that runs without Rust installed. Forgetting the semicolon or the ! after println is the most common first error; the compiler message points at the exact spot.
+        - t: Read a compiler error
+          p: Break your program on purpose by removing the closing quote of one string. Compile it, read the error, then fix it. Write in your notes which line and column the compiler reported.
+          hints:
+            - Remove the last double quote from one println! line.
+            - Read the line that starts with error, then the arrow that shows the file, line and column.
+            - Put the quote back and compile again to confirm the fix.
+          solution: |
+            // Broken version (does not compile):
+            //     println!("City: Montreal);
+            // rustc reports: error: unterminated double quote string
+            //   --> hello.rs:3:14
+            // Fixed version:
+            fn main() {
+                println!("Name: Kev");
+                println!("City: Montreal");
+            }
+          explain: Rust's compiler messages are unusually helpful, with arrows under the problem and often a suggested fix. Reading them carefully, top to bottom, is a skill you will use every day in Rust.
+    - id: "1.3"
+      t: Hello, Cargo
+      min: 60
+      learn: Create a project with cargo new, look at Cargo.toml and the src folder, and use cargo build, cargo run, cargo check and cargo build --release.
+      example:
+        title: A Cargo project from start to finish
+        lang: bash
+        check: none
+        code: |
+          $ cargo new hello_cargo
+              Creating binary (application) `hello_cargo` package
+          $ cd hello_cargo
+          $ cat Cargo.toml
+          [package]
+          name = "hello_cargo"
+          version = "0.1.0"
+          edition = "2024"
+
+          [dependencies]
+          $ cargo run
+             Compiling hello_cargo v0.1.0
+              Finished `dev` profile [unoptimized + debuginfo]
+               Running `target/debug/hello_cargo`
+          Hello, world!
+        note: cargo new makes the folder, a Cargo.toml manifest, src/main.rs and a git repository. cargo check only checks that the code compiles, which is much faster than a build, so use it while you write. cargo build --release turns on optimisations and puts the program in target/release.
+      ex:
+        - t: Your first Cargo project
+          p: Create a project called greeter with cargo new, change main.rs so it prints a greeting of your choice, and run it with cargo run. Then run cargo check and note how much faster it is.
+          hints:
+            - cargo new greeter, then cd greeter.
+            - Edit src/main.rs; the main function is already there.
+            - cargo run builds and runs in one step.
+          solution: |
+            // src/main.rs
+            fn main() {
+                println!("Bonjour from greeter!");
+            }
+
+            // Terminal:
+            //   cargo new greeter
+            //   cd greeter
+            //   cargo run      -> Bonjour from greeter!
+            //   cargo check    -> Finished in a fraction of the time
+          explain: Cargo is how almost every Rust project is built, even tiny ones, because it handles dependencies, profiles and tests for you. cargo check skips the slow code generation step, so it is the quickest way to see whether your code compiles.
+        - t: Debug versus release
+          p: Build the same project with cargo build and with cargo build --release. Find both programs inside the target folder and note the difference in file size.
+          lang: bash
+          check: none
+          hints:
+            - The debug build goes to target/debug and the release build to target/release.
+            - On macOS and Linux, ls -l shows file sizes; on Windows, use dir.
+            - Debug builds keep extra information for debuggers, so they are usually bigger.
+          solution: |
+            $ cargo build
+            $ cargo build --release
+            $ ls -l target/debug/greeter target/release/greeter
+            # Typical result: the debug program is larger and the release
+            # program is smaller and faster.
+          explain: Debug builds compile quickly and are easy to step through in a debugger; release builds take longer to compile but run much faster. Always measure speed with a release build, a mistake many people make when they first compare Rust to other languages.
+  quiz:
+    - q: Which tool installs Rust and switches between toolchain versions?
+      o: |
+        rustup
+        rustc
+        cargo
+        rustfmt
+      a: 0
+      x: rustup manages toolchains; rustc compiles and cargo builds projects.
+    - q: Why does println! end with an exclamation mark?
+      o: |
+        It is a macro
+        It prints in bold
+        It is unsafe
+        It flushes the output immediately
+      a: 0
+      x: Names that end in ! are macros, which expand into more code at compile time.
+    - q: What does cargo check do?
+      o: |
+        Checks that the code compiles without producing a program
+        Runs the tests
+        Formats the code
+        Checks for newer dependencies
+      a: 0
+      x: cargo check skips code generation, so it is the fastest way to find compile errors.
+    - q: Where does cargo build --release put the program?
+      o: |
+        target/release
+        target/debug
+        bin/release
+        the project folder
+      a: 0
+      x: Release builds go to target/release; normal builds go to target/debug.
+    - q: Which file lists a Cargo project's name, version, edition and dependencies?
+      o: |
+        Cargo.toml
+        Cargo.lock
+        src/main.rs
+        rust-toolchain
+      a: 0
+      x: Cargo.toml is the manifest; Cargo.lock records the exact versions that were resolved.
+      pool: exam
+    - q: Which statements about rustc are true?
+      type: multi
+      o: |
+        It produces a program that runs without Rust installed
+        It needs a Cargo.toml file
+        It compiles a single .rs file passed on the command line
+        It downloads dependencies
+      a: [0, 2]
+      x: rustc compiles source files to native programs; downloading dependencies is Cargo's job.
+      pool: exam
+    - q: In Rust, where does every program start running?
+      o: |
+        The main function
+        The first line of the file
+        A function called start
+        The lib.rs file
+      a: 0
+      x: The entry point of a binary is fn main.
+      pool: exam
+  recap:
+    summary:
+      - rustup installs and updates Rust; rustc compiles; cargo builds, runs, tests and manages dependencies.
+      - Every program starts in fn main, and println! is a macro that prints a line with {} placeholders.
+      - cargo new creates a project with Cargo.toml and src/main.rs; cargo run builds and runs it.
+      - cargo check is the fast way to find compile errors; cargo build --release makes the optimised program.
+      - Compiler errors show the file, line and column with arrows; read them top to bottom.
+    functions: |
+      rustup update || Update to the latest stable toolchain.
+      rustup doc || Open the documentation installed with Rust.
+      rustc file.rs || Compile one file into a program.
+      cargo new name || Create a new project.
+      cargo run || Build and run the project.
+      cargo check || Check that the code compiles without building a program.
+      cargo build --release || Build an optimised program into target/release.
+      println!("{}", x) || Print a line with values filled into the {} placeholders.
+    next: The next chapter builds a complete small game, so you see variables, input, crates and loops working together before each one is explained in detail.
+
+- id: c2
+  n: "02"
+  book: 2
+  t: Programming a guessing game
+  lv: 1
+  goal: Build a complete number-guessing game that reads input, uses an external crate for random numbers and loops until the player wins.
+  res: |
+    Chapter 2 in the book | https://doc.rust-lang.org/book/ch02-00-guessing-game-tutorial.html
+    rand crate docs | https://docs.rs/rand
+  items:
+    - id: "2.1"
+      t: Read the player's guess
+      min: 45
+      learn: Read a line from the keyboard with std::io::stdin, store it in a mutable String, and handle a possible failure with expect.
+      example:
+        title: Reading one line of input
+        code: |
+          use std::io;
+
+          fn main() {
+              println!("Guess the number!");
+              println!("Please input your guess.");
+
+              let mut guess = String::new();          // an empty, growable string
+              io::stdin()
+                  .read_line(&mut guess)              // append what the user types
+                  .expect("Failed to read line");     // stop with a message if it fails
+
+              println!("You guessed: {}", guess.trim());
+          }
+        output: |
+          Guess the number!
+          Please input your guess.
+          42
+          You guessed: 42
+        note: Variables are immutable by default, so guess needs mut. read_line returns a Result, which expect turns into a crash with your message if reading failed. trim removes the newline that pressing Enter adds.
+      ex:
+        - t: Echo with a name
+          p: Ask for the player's name, read it with read_line, and print "Welcome, NAME!" without the trailing newline.
+          check: build
+          hints:
+            - Start with use std::io; at the top of the file.
+            - Create the String with String::new() and pass &mut name to read_line.
+            - Call .trim() on the name when you print it.
+          solution: |
+            use std::io;
+
+            fn main() {
+                println!("What is your name?");
+                let mut name = String::new();
+                io::stdin()
+                    .read_line(&mut name)
+                    .expect("Failed to read line");
+                println!("Welcome, {}!", name.trim());
+            }
+          explain: Without trim, the newline from Enter is printed too, so the ! ends up on the next line. Passing &mut name lets read_line change your string without taking ownership of it, an idea Chapter 4 explains fully.
+        - t: Two answers
+          p: Ask for a first name and then a last name, read each into its own String, and print the full name on one line.
+          check: build
+          hints:
+            - You need two separate mutable Strings.
+            - Call read_line once for each.
+            - Use two {} placeholders in one println!.
+          solution: |
+            use std::io;
+
+            fn main() {
+                let mut first = String::new();
+                let mut last = String::new();
+
+                println!("First name?");
+                io::stdin().read_line(&mut first).expect("Failed to read line");
+                println!("Last name?");
+                io::stdin().read_line(&mut last).expect("Failed to read line");
+
+                println!("Full name: {} {}", first.trim(), last.trim());
+            }
+          explain: read_line appends to the string you give it, which is why each answer needs its own empty String. Reusing one String without clearing it would join both answers together.
+    - id: "2.2"
+      t: Generate a secret number with a crate
+      min: 45
+      learn: Add the rand crate to Cargo.toml, understand what Cargo.lock does, and generate a random number in a range.
+      example:
+        title: Adding and using rand
+        deps: ["rand@0.8"]
+        code: |
+          // Cargo.toml:  [dependencies]
+          //              rand = "0.8"
+          use rand::Rng;
+
+          fn main() {
+              let secret_number = rand::thread_rng().gen_range(1..=100);
+              println!("The secret number is: {secret_number}");
+          }
+        output: |
+          The secret number is: 57
+        note: cargo add rand (or editing Cargo.toml by hand) adds the dependency, and the next build downloads it. Cargo.lock then records the exact version so every build uses the same one. 1..=100 is a range that includes 100. Values can go straight inside the braces, as in {secret_number}.
+      ex:
+        - t: Roll the dice
+          p: Create a project, add rand, and print the results of rolling two six-sided dice and their total.
+          deps: ["rand@0.8"]
+          hints:
+            - cargo add rand@0.8 adds the dependency.
+            - gen_range(1..=6) gives a number from 1 to 6.
+            - Store each roll in its own variable and add them up.
+          solution: |
+            use rand::Rng;
+
+            fn main() {
+                let mut rng = rand::thread_rng();
+                let a = rng.gen_range(1..=6);
+                let b = rng.gen_range(1..=6);
+                println!("You rolled {a} and {b}, total {}", a + b);
+            }
+          explain: Keeping one rng in a variable is tidier than calling thread_rng twice. The range 1..=6 includes both ends; 1..6 would never roll a six, a classic off-by-one bug.
+        - t: Read the lock file
+          p: Open Cargo.lock in the dice project and find the exact version of rand that Cargo chose. Explain in your notes why the file should be committed for programs.
+          lang: text
+          check: none
+          hints:
+            - Search the file for name = "rand".
+            - The version line under it is the exact version.
+            - Think about what happens when a teammate builds the project six months from now.
+          solution: |
+            [[package]]
+            name = "rand"
+            version = "0.8.5"
+            ...
+            Commit Cargo.lock for programs (binaries) so everyone who builds
+            the project gets exactly the same dependency versions.
+          explain: Cargo.toml says which versions are acceptable; Cargo.lock says which exact ones were used. Committing the lock file makes builds repeatable, which matters a lot when you are tracking down a bug that only appears on one machine.
+    - id: "2.3"
+      t: Compare, loop and handle bad input
+      min: 60
+      learn: Turn text into a number with parse, compare with match and Ordering, repeat with loop, stop with break, and skip invalid input instead of crashing.
+      example:
+        title: The finished guessing game
+        deps: ["rand@0.8"]
+        check: build
+        code: |
+          use rand::Rng;
+          use std::cmp::Ordering;
+          use std::io;
+
+          fn main() {
+              let secret = rand::thread_rng().gen_range(1..=100);
+              loop {
+                  println!("Please input your guess.");
+                  let mut guess = String::new();
+                  io::stdin().read_line(&mut guess).expect("Failed to read line");
+
+                  // Shadowing: a new guess variable, this time a number
+                  let guess: u32 = match guess.trim().parse() {
+                      Ok(num) => num,
+                      Err(_) => continue,   // not a number: ask again
+                  };
+
+                  match guess.cmp(&secret) {
+                      Ordering::Less => println!("Too small!"),
+                      Ordering::Greater => println!("Too big!"),
+                      Ordering::Equal => {
+                          println!("You win!");
+                          break;
+                      }
+                  }
+              }
+          }
+        note: parse can fail, so it returns a Result; matching on Ok and Err lets you decide what to do instead of crashing. The type annotation u32 tells parse what kind of number to produce. match must cover every case, so you can never forget the Equal branch.
+      ex:
+        - t: Count the guesses
+          p: Change the game so it counts how many guesses the player needed and prints the count when they win.
+          deps: ["rand@0.8"]
+          check: build
+          hints:
+            - Create let mut attempts = 0; before the loop.
+            - Add 1 to it each time a valid number is read.
+            - Print it inside the Equal branch, before break.
+          solution: |
+            use rand::Rng;
+            use std::cmp::Ordering;
+            use std::io;
+
+            fn main() {
+                let secret = rand::thread_rng().gen_range(1..=100);
+                let mut attempts = 0;
+                loop {
+                    println!("Your guess?");
+                    let mut guess = String::new();
+                    io::stdin().read_line(&mut guess).expect("Failed to read line");
+                    let guess: u32 = match guess.trim().parse() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            println!("Please type a whole number.");
+                            continue;
+                        }
+                    };
+                    attempts += 1; // only valid guesses count
+                    match guess.cmp(&secret) {
+                        Ordering::Less => println!("Too small!"),
+                        Ordering::Greater => println!("Too big!"),
+                        Ordering::Equal => {
+                            println!("You win in {attempts} guesses!");
+                            break;
+                        }
+                    }
+                }
+            }
+          explain: Counting after the parse means typing "abc" does not use up a guess. attempts must be mut because it changes; Rust would refuse to compile += on an immutable variable.
+        - t: Limited lives
+          p: Give the player seven guesses. If they run out, print the secret number and end the game. Reject numbers outside 1 to 100 with a message.
+          deps: ["rand@0.8"]
+          check: build
+          hints:
+            - A for loop over 1..=7 gives you exactly seven turns.
+            - Use if guess < 1 || guess > 100 to reject out-of-range numbers, then continue.
+            - After the loop ends without a win, print the secret. A won flag or an early return helps.
+          solution: |
+            use rand::Rng;
+            use std::cmp::Ordering;
+            use std::io;
+
+            fn main() {
+                let secret: u32 = rand::thread_rng().gen_range(1..=100);
+                for turn in 1..=7 {
+                    println!("Guess {turn} of 7:");
+                    let mut line = String::new();
+                    io::stdin().read_line(&mut line).expect("Failed to read line");
+                    let guess: u32 = match line.trim().parse() {
+                        Ok(n) if (1..=100).contains(&n) => n,
+                        _ => {
+                            println!("Type a number from 1 to 100. That turn is lost.");
+                            continue;
+                        }
+                    };
+                    match guess.cmp(&secret) {
+                        Ordering::Less => println!("Too small!"),
+                        Ordering::Greater => println!("Too big!"),
+                        Ordering::Equal => {
+                            println!("You win!");
+                            return; // leave main straight away
+                        }
+                    }
+                }
+                println!("Out of guesses. The number was {secret}.");
+            }
+          explain: return inside main ends the program, so the line after the loop only runs when the player never won. The match guard if (1..=100).contains(&n) folds the range check into the parse step, a pattern you will see again in Chapter 19.
+  recap:
+    summary:
+      - use brings items such as std::io and rand::Rng into scope.
+      - Variables are immutable unless declared with mut; read_line needs a mutable String.
+      - Functions that can fail return Result; expect crashes with a message, match lets you handle each case.
+      - Crates are added under [dependencies] in Cargo.toml, and Cargo.lock pins the exact versions.
+      - loop repeats forever until break; continue jumps to the next round.
+      - Shadowing lets you reuse a name for a new value, often of a different type.
+    functions: |
+      io::stdin().read_line(&mut s) || Read a line of input and append it to s.
+      s.trim() || The string without spaces and newlines at either end.
+      s.parse::<u32>() || Turn text into a number; returns a Result.
+      rand::thread_rng().gen_range(1..=100) || A random number from 1 to 100.
+      a.cmp(&b) || Compare two values and get Less, Greater or Equal.
+      loop / break / continue || Repeat, stop, or skip to the next round.
+    explore:
+      - Add a difficulty setting that changes the range to 1 to 10, 1 to 100 or 1 to 1000.
+      - Show a hint such as "very close" when the guess is within 5 of the answer.
+    next: Chapter 3 slows down and explains each building block you just used, starting with variables and types.
+
+- id: c3
+  n: "03"
+  book: 3
+  t: Common programming concepts
+  lv: 1
+  goal: Use variables, constants, the built-in scalar and compound types, functions and control flow with confidence.
+  res: |
+    Chapter 3 in the book | https://doc.rust-lang.org/book/ch03-00-common-programming-concepts.html
+    Rust by Example, primitives | https://doc.rust-lang.org/rust-by-example/primitives.html
+  items:
+    - id: "3.1"
+      t: Variables, mutability and constants
+      min: 45
+      learn: Immutable variables by default, mut, constants with const, and shadowing to reuse a name for a new value or type.
+      example:
+        title: let, mut, const and shadowing
+        code: |
+          const SECONDS_PER_HOUR: u32 = 60 * 60;
+
+          fn main() {
+              let x = 5;
+              // x = 6;          // error: cannot assign twice to immutable variable
+              let mut y = 5;
+              y += 1;             // fine, y is mutable
+
+              let x = x * 2;      // shadowing: a new x that hides the old one
+              let spaces = "   ";
+              let spaces = spaces.len(); // same name, new type (usize)
+
+              println!("x = {x}, y = {y}, spaces = {spaces}, hour = {SECONDS_PER_HOUR}s");
+          }
+        output: |
+          x = 10, y = 6, spaces = 3, hour = 3600s
+        note: Immutability by default makes code easier to reason about, because a value cannot change behind your back. Constants must have a type and a value known at compile time. Shadowing creates a brand new variable, which is why it can change the type, while mut only lets you change the value.
+      ex:
+        - t: Fix the compile errors
+          p: "This code does not compile: let total = 0; total = total + 5; println!(\"{total}\");. Fix it in two different ways: once with mut and once with shadowing."
+          hints:
+            - The error says you cannot assign twice to an immutable variable.
+            - "Way one: declare it as let mut total."
+            - "Way two: write let total = total + 5; to make a new variable."
+          solution: |
+            fn main() {
+                // 1. With mut: the same variable changes
+                let mut total = 0;
+                total = total + 5;
+                println!("{total}");
+
+                // 2. With shadowing: a new variable with the same name
+                let count = 0;
+                let count = count + 5;
+                println!("{count}");
+            }
+          explain: Both print 5. Prefer shadowing when you are transforming a value once (especially to a new type) and mut when a value genuinely changes over time, like a counter in a loop.
+        - t: Unit converter constants
+          p: Define constants for centimetres per inch (2.54) and metres per mile (1609.344). Print how many centimetres are in 12 inches and how many metres are in 26.2 miles.
+          hints:
+            - "Constants need a type: const CM_PER_INCH: f64 = 2.54;"
+            - Constant names are written in SCREAMING_SNAKE_CASE.
+            - Multiply with * and print with {:.1} for one decimal place.
+          solution: |
+            const CM_PER_INCH: f64 = 2.54;
+            const METRES_PER_MILE: f64 = 1609.344;
+
+            fn main() {
+                let inches = 12.0;
+                let miles = 26.2;
+                println!("{inches} in = {:.1} cm", inches * CM_PER_INCH);
+                println!("{miles} mi = {:.1} m", miles * METRES_PER_MILE);
+            }
+          explain: "{:.1} formats a float with one decimal place. Writing 12 instead of 12.0 would make inches an integer, and Rust will not multiply an integer by an f64 without an explicit conversion."
+    - id: "3.2"
+      t: Scalar types
+      min: 60
+      learn: Signed and unsigned integers and their sizes, integer overflow, floating-point numbers, the numeric operators, booleans and the four-byte char.
+      example:
+        title: Numbers, booleans and characters
+        code: |
+          fn main() {
+              let big: i64 = 9_000_000_000;      // underscores help readability
+              let small: u8 = 255;                // u8 holds 0 to 255
+              let hex = 0xff;
+              let float = 2.0 * 3.5;               // f64 by default
+              let quotient = -7 / 2;               // integer division truncates: -3
+              let remainder = 7 % 3;
+              let is_fun: bool = true;
+              let heart = '❤';                     // char is a Unicode scalar value
+
+              println!("{big} {small} {hex} {float} {quotient} {remainder} {is_fun} {heart}");
+              println!("checked: {:?}", small.checked_add(1)); // None instead of overflow
+              println!("wrapping: {}", small.wrapping_add(1)); // 0
+          }
+        output: |
+          9000000000 255 255 7 -3 1 true ❤
+          checked: None
+          wrapping: 0
+        note: In a debug build, overflowing an integer panics; in a release build it wraps around. When overflow is possible, say what you want with checked_, wrapping_, saturating_ or overflowing_ methods. Integer division rounds toward zero.
+      ex:
+        - t: Explore the limits
+          p: Print the minimum and maximum values of i8, u8, i32 and u64 using the MIN and MAX constants.
+          hints:
+            - Every integer type has associated constants, for example i8::MIN.
+            - "Print with println!(\"i8: {} to {}\", i8::MIN, i8::MAX);"
+            - Notice that unsigned types always start at 0.
+          solution: |
+            fn main() {
+                println!("i8:  {} to {}", i8::MIN, i8::MAX);
+                println!("u8:  {} to {}", u8::MIN, u8::MAX);
+                println!("i32: {} to {}", i32::MIN, i32::MAX);
+                println!("u64: {} to {}", u64::MIN, u64::MAX);
+            }
+          explain: An n-bit signed type holds -(2^(n-1)) to 2^(n-1) - 1, and an unsigned one holds 0 to 2^n - 1. Picking the smallest type that fits is rarely worth it; i32 is a good default and usize is used for indexes and lengths.
+        - t: Safe arithmetic
+          p: 'Write a function safe_add(a: u8, b: u8) -> Option<u8> that returns None on overflow. Add tests that check 200 + 50 and 200 + 100.'
+          check: test
+          hints:
+            - u8 has a checked_add method that already returns an Option.
+            - "Tests go in a #[cfg(test)] mod tests block with #[test] functions."
+            - "assert_eq!(safe_add(200, 100), None); checks the overflow case."
+          solution: |
+            fn safe_add(a: u8, b: u8) -> Option<u8> {
+                a.checked_add(b)
+            }
+
+            fn main() {
+                println!("{:?}", safe_add(200, 50));
+                println!("{:?}", safe_add(200, 100));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+
+                #[test]
+                fn fits() {
+                    assert_eq!(safe_add(200, 50), Some(250));
+                }
+
+                #[test]
+                fn overflows() {
+                    assert_eq!(safe_add(200, 100), None);
+                }
+            }
+          explain: Option makes the failure part of the return type, so the caller cannot forget it. Run the tests with cargo test, or in the Playground choose Test. Chapter 6 covers Option and Chapter 11 covers tests in depth.
+    - id: "3.3"
+      t: Tuples and arrays
+      min: 45
+      learn: Group values of different types in a tuple and read them by destructuring or with .0, and store a fixed number of same-type values in an array.
+      example:
+        title: Tuples and arrays
+        code: |
+          fn main() {
+              let point: (i32, f64, char) = (500, 6.4, 'x');
+              let (a, b, c) = point;              // destructuring
+              println!("{a} {b} {c} / first again: {}", point.0);
+
+              let months = ["Jan", "Feb", "Mar"];
+              let zeros = [0; 5];                 // five zeros
+              println!("{} has {} items; zeros = {:?}", months[0], months.len(), zeros);
+
+              let i = 10;
+              match months.get(i) {               // get returns None instead of panicking
+                  Some(m) => println!("{m}"),
+                  None => println!("no month at index {i}"),
+              }
+          }
+        output: |
+          500 6.4 x / first again: 500
+          Jan has 3 items; zeros = [0, 0, 0, 0, 0]
+          no month at index 10
+        note: An array's length is part of its type, [i32; 5], so it never grows; use a Vec (Chapter 8) when you need that. Indexing past the end with months[10] panics at run time instead of reading random memory, which is one of Rust's safety guarantees.
+      ex:
+        - t: Swap with a tuple
+          p: 'Write a function swap(pair: (i32, String)) -> (String, i32) that returns the two values in the opposite order. Print the result for (7, "seven").'
+          hints:
+            - Destructure the parameter with let (n, s) = pair;
+            - Return (s, n) as the last expression, without a semicolon.
+            - Use String::from("seven") to make the String.
+          solution: |
+            fn swap(pair: (i32, String)) -> (String, i32) {
+                let (n, s) = pair;
+                (s, n)
+            }
+
+            fn main() {
+                let swapped = swap((7, String::from("seven")));
+                println!("{:?}", swapped);
+            }
+          explain: "{:?} prints with the Debug format, which tuples support out of the box. The function's last line has no semicolon, so its value is returned; that rule is explained in the next lesson."
+        - t: Weekly temperatures
+          p: Store seven daily temperatures in an array of f64, then print the highest, the lowest and the average.
+          hints:
+            - "let temps = [21.5, 19.0, ...]; with seven values."
+            - Start max at f64::MIN and min at f64::MAX, then loop with for t in temps.
+            - The average is the sum divided by temps.len() as f64.
+          solution: |
+            fn main() {
+                let temps = [21.5, 19.0, 23.1, 18.4, 25.0, 22.2, 20.7];
+                let mut max = f64::MIN;
+                let mut min = f64::MAX;
+                let mut sum = 0.0;
+                for t in temps {
+                    if t > max { max = t; }
+                    if t < min { min = t; }
+                    sum += t;
+                }
+                let avg = sum / temps.len() as f64;
+                println!("high {max}, low {min}, average {avg:.1}");
+            }
+          explain: as f64 converts the usize length so it can divide a float; Rust never converts number types silently. Later you will write the same thing with temps.iter().cloned().fold(f64::MIN, f64::max), but a plain loop is clear and fast.
+    - id: "3.4"
+      t: Functions, statements and expressions
+      min: 60
+      learn: Define functions with typed parameters and return types, the difference between statements and expressions, returning the last expression, and comments.
+      example:
+        title: Expressions are values
+        code: |
+          // Returns the area of a rectangle.
+          fn area(width: u32, height: u32) -> u32 {
+              width * height          // no semicolon: this is the return value
+          }
+
+          fn main() {
+              let y = {
+                  let x = 3;
+                  x + 1               // a block is an expression too
+              };
+              println!("y = {y}, area = {}", area(3, 4));
+          }
+        output: |
+          y = 4, area = 12
+        note: A statement does something and gives no value (let x = 3;). An expression produces a value (x + 1). Adding a semicolon to the last line of a function turns it into a statement, and the compiler reports mismatched types because the function now returns () instead of u32.
+      ex:
+        - t: Temperature function
+          p: 'Write celsius_to_fahrenheit(c: f64) -> f64 and print a small table for 0, 25, 37 and 100 degrees.'
+          check: test
+          hints:
+            - The formula is c * 9.0 / 5.0 + 32.0.
+            - The function body can be a single expression without a semicolon.
+            - Loop over an array of the four values in main.
+          solution: |
+            fn celsius_to_fahrenheit(c: f64) -> f64 {
+                c * 9.0 / 5.0 + 32.0
+            }
+
+            fn main() {
+                for c in [0.0, 25.0, 37.0, 100.0] {
+                    println!("{c:>5.1} C = {:>5.1} F", celsius_to_fahrenheit(c));
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn boiling_point() {
+                    assert_eq!(celsius_to_fahrenheit(100.0), 212.0);
+                }
+            }
+          explain: "{c:>5.1} right-aligns in five characters with one decimal place, so the table lines up. Writing 9 / 5 with integers would give 1, which is why every literal here has a decimal point."
+        - t: The semicolon bug
+          p: "Write fn double(n: i32) -> i32 { n * 2; } and read the error. Fix it, and in your notes explain what the compiler's help message suggested."
+          hints:
+            - Compile it and look for error[E0308] mismatched types.
+            - The help line suggests removing the semicolon.
+            - The fixed body is n * 2 with no semicolon.
+          solution: |
+            // Broken: fn double(n: i32) -> i32 { n * 2; }
+            // error[E0308]: mismatched types ... expected `i32`, found `()`
+            // help: remove this semicolon to return this value
+            fn double(n: i32) -> i32 {
+                n * 2
+            }
+
+            fn main() {
+                println!("{}", double(21));
+            }
+          explain: The semicolon turns the expression into a statement, so the body produces the unit value () instead of an i32. This is the single most common beginner error in Rust, and the compiler always points to the fix.
+    - id: "3.5"
+      t: Control flow
+      min: 60
+      learn: if and else, if as an expression in let, loop with a return value, loop labels, while, and for over arrays and ranges.
+      example:
+        title: Every kind of control flow
+        code: |
+          fn main() {
+              let n = 7;
+              let kind = if n % 2 == 0 { "even" } else { "odd" };
+              println!("{n} is {kind}");
+
+              let mut counter = 0;
+              let result = loop {
+                  counter += 1;
+                  if counter == 10 {
+                      break counter * 2;   // loop can return a value
+                  }
+              };
+              println!("result = {result}");
+
+              'outer: for i in 1..=3 {
+                  for j in 1..=3 {
+                      if i * j == 4 { break 'outer; } // leave both loops
+                      print!("{} ", i * j);
+                  }
+              }
+              println!();
+
+              for i in (1..4).rev() { print!("{i}... "); }
+              println!("liftoff!");
+          }
+        output: |
+          7 is odd
+          result = 20
+          1 2 3 2
+          3... 2... 1... liftoff!
+        note: The condition in an if must be a bool; Rust never treats numbers as true or false. Both branches of an if used as a value must have the same type. Prefer for over while with an index, because for cannot go out of bounds.
+      ex:
+        - t: FizzBuzz
+          p: Print the numbers 1 to 30, but print Fizz for multiples of 3, Buzz for multiples of 5 and FizzBuzz for multiples of both.
+          hints:
+            - Loop with for i in 1..=30.
+            - Check the multiple of 15 first, otherwise it never gets a chance.
+            - Use else if for the other two cases and else to print the number.
+          solution: |
+            fn main() {
+                for i in 1..=30 {
+                    if i % 15 == 0 {
+                        println!("FizzBuzz");
+                    } else if i % 3 == 0 {
+                        println!("Fizz");
+                    } else if i % 5 == 0 {
+                        println!("Buzz");
+                    } else {
+                        println!("{i}");
+                    }
+                }
+            }
+          explain: Order matters in an if-else chain because the first true condition wins. A neat alternative is match (i % 3, i % 5) { (0, 0) => ..., (0, _) => ..., (_, 0) => ..., _ => ... }, which you will meet in Chapter 6.
+        - t: Fibonacci with loop
+          p: 'Write fib(n: u32) -> u64 that returns the nth Fibonacci number using a loop (fib(0) = 0, fib(1) = 1). Print fib(10) and fib(50).'
+          check: test
+          hints:
+            - Keep two variables, a and b, starting at 0 and 1.
+            - Each step, the new pair is (b, a + b).
+            - Repeat n times with for _ in 0..n, then return a.
+          solution: |
+            fn fib(n: u32) -> u64 {
+                let (mut a, mut b) = (0u64, 1u64);
+                for _ in 0..n {
+                    let next = a + b;
+                    a = b;
+                    b = next;
+                }
+                a
+            }
+
+            fn main() {
+                println!("fib(10) = {}", fib(10));
+                println!("fib(50) = {}", fib(50));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn known_values() {
+                    assert_eq!(fib(0), 0);
+                    assert_eq!(fib(1), 1);
+                    assert_eq!(fib(10), 55);
+                }
+            }
+          explain: u64 matters here, because fib(50) is 12586269025, too big for a u32. The underscore in for _ in 0..n says you do not need the loop counter.
+  quiz:
+    - q: What happens when you compile this code?
+      code: |
+        let x = 5;
+        x = 6;
+      o: |
+        It fails to compile because x is immutable
+        x becomes 6
+        It panics at run time
+        It creates a second variable called x
+      a: 0
+      x: Variables are immutable by default; you need let mut x to change it.
+    - q: What does this program print?
+      code: |
+        let x = 5;
+        let x = x * 2;
+        {
+            let x = x + 1;
+            println!("{x}");
+        }
+        println!("{x}");
+      o: |
+        11 then 10
+        11 then 11
+        6 then 10
+        It does not compile
+      a: 0
+      x: Shadowing inside the block only lasts until the end of that block.
+    - q: What is the value of -7 / 2 for i32 values?
+      o: |
+        -3
+        -4
+        -3.5
+        It does not compile
+      a: 0
+      x: Integer division truncates toward zero.
+    - q: Why does this function fail to compile?
+      code: |
+        fn five() -> i32 {
+            5;
+        }
+      o: |
+        The semicolon makes the body return () instead of i32
+        Functions cannot return literals
+        five needs a parameter
+        i32 is the wrong type for 5
+      a: 0
+      x: With the semicolon the last line is a statement, so nothing is returned.
+    - q: What does this print?
+      code: |
+        let mut c = 0;
+        let r = loop {
+            c += 3;
+            if c > 10 { break c; }
+        };
+        println!("{r}");
+      o: |
+        12
+        9
+        10
+        13
+      a: 0
+      x: c goes 3, 6, 9, 12, and break c returns 12 from the loop.
+      pool: exam
+    - q: Which statements are true?
+      type: multi
+      o: |
+        A char is four bytes and holds a Unicode scalar value
+        The condition of an if can be any integer
+        An array's length is part of its type
+        Constants must have a type annotation
+      a: [0, 2, 3]
+      x: if conditions must be bool; Rust never treats integers as true or false.
+      pool: exam
+    - q: What happens when an index is past the end of an array, as in a[10] for a five-item array?
+      o: |
+        The program panics
+        It returns 0
+        It reads whatever memory comes next
+        It returns None
+      a: 0
+      x: Rust checks the index and panics; use a.get(10) to get an Option instead.
+      pool: exam
+    - q: In a debug build, what does 255u8 + 1 do at run time?
+      o: |
+        Panics with an overflow error
+        Wraps to 0
+        Becomes 256
+        Saturates at 255
+      a: 0
+      x: Debug builds panic on overflow; release builds wrap unless you use checked or saturating methods.
+      pool: exam
+  recap:
+    summary:
+      - Variables are immutable by default; mut allows change, and shadowing makes a new variable with the same name.
+      - Constants use const, need a type, and are named in SCREAMING_SNAKE_CASE.
+      - Scalar types are integers (i8 to i128, u8 to u128, isize, usize), f32 and f64, bool and char.
+      - Tuples group mixed types; arrays hold a fixed number of one type and check every index.
+      - Functions declare parameter and return types; the last expression without a semicolon is the return value.
+      - if needs a bool and can be used as a value; loop can return a value with break; for is the safest way to loop.
+    functions: |
+      let mut x = 0; || A variable you can change.
+      const MAX: u32 = 100; || A compile-time constant.
+      x.checked_add(y) || Add and get None on overflow.
+      (a, b) = tuple / tuple.0 || Destructure a tuple or read one field.
+      [0; 5] / arr.len() / arr.get(i) || Repeat a value, count items, index without panicking.
+      break value / 'label || Return a value from loop; break out of an outer loop.
+      for i in (1..4).rev() || Loop over a range backwards.
+    next: Chapter 4 explains ownership, the idea that makes Rust different from every language you have used before. Take it slowly.
+
+- id: c4
+  n: "04"
+  book: 4
+  t: Understanding ownership
+  lv: 2
+  goal: Understand ownership, moves, borrowing and slices well enough to predict what the borrow checker will accept.
+  res: |
+    Chapter 4 in the book | https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html
+    Rust by Example, scoping rules | https://doc.rust-lang.org/rust-by-example/scope.html
+  items:
+    - id: "4.1"
+      t: Ownership, moves and clones
+      min: 75
+      learn: The three ownership rules, the stack and the heap, how String differs from a string literal, why assigning a String moves it, clone for deep copies, and Copy types.
+      example:
+        title: Moves, clones and copies
+        code: |
+          fn main() {
+              let s1 = String::from("hello");   // s1 owns heap memory
+              let s2 = s1;                       // ownership moves to s2
+              // println!("{s1}");               // error: borrow of moved value
+              let s3 = s2.clone();               // a real copy of the heap data
+              println!("{s2} {s3}");
+
+              let a = 5;
+              let b = a;                         // integers are Copy: both stay valid
+              println!("{a} {b}");
+          }                                      // s3, then s2 are dropped here
+        output: |
+          hello hello
+          5 5
+        note: "The rules: each value has one owner, there is only one owner at a time, and the value is dropped when its owner goes out of scope. Moving instead of copying means two variables can never free the same memory. Simple values that live entirely on the stack, like integers, bool and char, implement Copy and are duplicated instead of moved."
+      ex:
+        - t: Predict, then compile
+          p: "Write down whether each line compiles before you try it: (1) let a = String::from(\"x\"); let b = a; println!(\"{a}\"); (2) the same with let b = a.clone(); (3) let n = 3; let m = n; println!(\"{n}\");. Then fix any that fail."
+          hints:
+            - A String moves when assigned; an integer is copied.
+            - Case 1 fails with borrow of moved value.
+            - Clone or print b instead of a to fix case 1.
+          solution: |
+            fn main() {
+                // (1) fails: a was moved into b. Fixed by printing b:
+                let a = String::from("x");
+                let b = a;
+                println!("{b}");
+
+                // (2) compiles: clone makes a separate copy
+                let c = String::from("x");
+                let d = c.clone();
+                println!("{c} {d}");
+
+                // (3) compiles: i32 is Copy
+                let n = 3;
+                let m = n;
+                println!("{n} {m}");
+            }
+          explain: Predicting before compiling is the fastest way to build a mental model of ownership. Reach for clone when you truly need two independent values, but not just to silence the compiler; often a reference (next lesson) is the better fix.
+        - t: Who drops what
+          p: Create a struct Noisy(&'static str) and implement Drop for it so it prints "dropping NAME". Create three values in nested scopes and predict the order of the messages.
+          hints:
+            - "impl Drop for Noisy { fn drop(&mut self) { println!(\"dropping {}\", self.0); } }"
+            - Values are dropped at the end of the scope that owns them.
+            - Within one scope, values are dropped in the reverse order they were created.
+          solution: |
+            struct Noisy(&'static str);
+
+            impl Drop for Noisy {
+                fn drop(&mut self) {
+                    println!("dropping {}", self.0);
+                }
+            }
+
+            fn main() {
+                let _a = Noisy("a");
+                {
+                    let _b = Noisy("b");
+                    println!("inner scope ends");
+                }
+                let _c = Noisy("c");
+                println!("main ends");
+            }
+            // Output: inner scope ends, dropping b, main ends, dropping c, dropping a
+          explain: Drop is how Rust frees memory, closes files and releases locks automatically. Reverse order matters because later values may depend on earlier ones. Chapter 15 returns to Drop in detail.
+    - id: "4.2"
+      t: Ownership and functions
+      min: 45
+      learn: Passing a value to a function moves or copies it just like assignment, and returning a value moves ownership back to the caller.
+      example:
+        title: Giving and taking ownership
+        code: |
+          fn takes_ownership(s: String) {
+              println!("got {s}");
+          } // s is dropped here
+
+          fn gives_back(s: String) -> String {
+              s // ownership moves out to the caller
+          }
+
+          fn main() {
+              let s = String::from("hello");
+              takes_ownership(s);
+              // println!("{s}"); // error: s was moved into the function
+
+              let t = String::from("world");
+              let t = gives_back(t);
+              println!("still have {t}");
+          }
+        output: |
+          got hello
+          still have world
+        note: Handing ownership in and back out works but is clumsy, especially when a function wants to return something else as well. That is exactly the problem references solve in the next lesson.
+      ex:
+        - t: Length and the string back
+          p: 'Write calculate_length(s: String) -> (String, usize) that returns the string and its length, so the caller can keep using the string.'
+          hints:
+            - s.len() gives the length in bytes.
+            - Compute the length before you move s into the tuple.
+            - In main, destructure with let (s, len) = calculate_length(s);
+          solution: |
+            fn calculate_length(s: String) -> (String, usize) {
+                let length = s.len();
+                (s, length)
+            }
+
+            fn main() {
+                let s = String::from("ownership");
+                let (s, len) = calculate_length(s);
+                println!("'{s}' is {len} bytes long");
+            }
+          explain: 'This works, but notice how awkward it is to thread the String back out. In the next lesson the same function becomes fn calculate_length(s: &String) -> usize.'
+        - t: Build a greeting
+          p: "Write make_greeting(name: String) -> String that returns \"Hello, NAME!\". Call it twice with different names and print both results."
+          hints:
+            - format! works like println! but returns a String.
+            - The parameter moves in; the new String moves out.
+            - Each call needs its own String argument.
+          solution: |
+            fn make_greeting(name: String) -> String {
+                format!("Hello, {name}!")
+            }
+
+            fn main() {
+                let a = make_greeting(String::from("Ada"));
+                let b = make_greeting(String::from("Linus"));
+                println!("{a}\n{b}");
+            }
+          explain: format! builds a brand new String, so returning it hands ownership to the caller with no copying of the original. The name String is dropped at the end of make_greeting.
+    - id: "4.3"
+      t: References and borrowing
+      min: 75
+      learn: Borrow a value with & without taking ownership, change it through &mut, the rule of one mutable or many shared references, and why dangling references cannot exist.
+      example:
+        title: Shared and mutable borrows
+        code: |
+          fn calculate_length(s: &String) -> usize {
+              s.len()                 // read through the reference
+          }
+
+          fn add_world(s: &mut String) {
+              s.push_str(", world");  // change through the mutable reference
+          }
+
+          fn main() {
+              let mut s = String::from("hello");
+              let len = calculate_length(&s);
+              add_world(&mut s);
+              println!("{s} ({len} before)");
+
+              let r1 = &s;
+              let r2 = &s;            // many shared borrows are fine
+              println!("{r1} {r2}");
+              let r3 = &mut s;        // fine: r1 and r2 are no longer used
+              r3.push('!');
+              println!("{r3}");
+          }
+        output: |
+          hello, world (5 before)
+          hello, world hello, world
+          hello, world!
+        note: At any moment you can have either one mutable reference or any number of shared ones, never both. This rule stops data races at compile time. A borrow lasts until its last use, not until the end of the block, which is why r3 is allowed above.
+      ex:
+        - t: Borrow instead of move
+          p: Rewrite calculate_length from the last lesson so it takes &String and returns just the length. Show that the caller can still use the string afterwards.
+          check: test
+          hints:
+            - Change the parameter type to &String.
+            - Call it with calculate_length(&s).
+            - Later, idiomatic Rust takes &str instead; you will see why in the slices lesson.
+          solution: |
+            fn calculate_length(s: &String) -> usize {
+                s.len()
+            }
+
+            fn main() {
+                let s = String::from("borrowing");
+                let len = calculate_length(&s);
+                println!("'{s}' has {len} bytes");
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn counts_bytes() {
+                    assert_eq!(calculate_length(&String::from("abc")), 3);
+                }
+            }
+          explain: The function borrows the String, reads it and gives it back automatically when it returns. No ownership changes hands, so there is nothing to return.
+        - t: Mutate through a reference
+          p: 'Write shout(s: &mut String) that turns the string into upper case and adds "!". Then show the compile error you get when you hold a shared reference while calling it, and fix the order.'
+          hints:
+            - "*s = s.to_uppercase(); replaces the contents; then s.push('!')."
+            - Create let r = &text; then call shout(&mut text); then use r, and read the error.
+            - Use r before the mutable borrow and the error disappears.
+          solution: |
+            fn shout(s: &mut String) {
+                *s = s.to_uppercase();
+                s.push('!');
+            }
+
+            fn main() {
+                let mut text = String::from("hello");
+                let r = &text;
+                println!("before: {r}");   // last use of r
+                shout(&mut text);          // now a mutable borrow is allowed
+                println!("after: {text}");
+                // If you print r after shout, rustc reports E0502:
+                // cannot borrow `text` as mutable because it is also borrowed as immutable
+            }
+          explain: "The * in *s = ... writes through the reference to the String itself. Moving the last use of r earlier is usually the right fix; the borrow checker cares about where references are used, not where they are declared."
+    - id: "4.4"
+      t: The slice type
+      min: 60
+      learn: Refer to part of a String with a string slice &str, why string literals are slices, using &str parameters, and slices of arrays.
+      example:
+        title: first_word with slices
+        code: |
+          fn first_word(s: &str) -> &str {
+              for (i, &b) in s.as_bytes().iter().enumerate() {
+                  if b == b' ' {
+                      return &s[..i];
+                  }
+              }
+              &s[..]
+          }
+
+          fn main() {
+              let sentence = String::from("hello world");
+              let word = first_word(&sentence);      // &String coerces to &str
+              let lit = first_word("ownership rules"); // a literal is already &str
+              println!("{word} / {lit}");
+
+              let nums = [1, 2, 3, 4, 5];
+              let middle: &[i32] = &nums[1..4];
+              println!("{middle:?}");
+          }
+        output: |
+          hello / ownership
+          [2, 3, 4]
+        note: A slice is a reference to a range inside existing data, so it can never outlive that data, and the String cannot be cleared while a slice into it is in use. Taking &str instead of &String lets one function accept both Strings and literals.
+      ex:
+        - t: Last word
+          p: 'Write last_word(s: &str) -> &str that returns the last word of a sentence. Test it with "the quick brown fox" and with a single word.'
+          check: test
+          hints:
+            - rfind(' ') finds the last space and gives an Option<usize>.
+            - If there is a space at index i, the word starts at i + 1.
+            - If there is no space, the whole string is the word.
+          solution: |
+            fn last_word(s: &str) -> &str {
+                match s.rfind(' ') {
+                    Some(i) => &s[i + 1..],
+                    None => s,
+                }
+            }
+
+            fn main() {
+                println!("{}", last_word("the quick brown fox"));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn sentence() {
+                    assert_eq!(last_word("the quick brown fox"), "fox");
+                }
+                #[test]
+                fn single() {
+                    assert_eq!(last_word("rust"), "rust");
+                }
+            }
+          explain: Slicing by byte index is safe here because a space is a single byte. Slicing in the middle of a multi-byte character such as é panics, which is why Chapter 8 introduces chars().
+        - t: Sum part of an array
+          p: 'Write sum(values: &[i32]) -> i32 and use it to add up the whole array [3, 1, 4, 1, 5, 9] and just its first three items.'
+          check: test
+          hints:
+            - A slice parameter &[i32] accepts any part of an array or vector.
+            - Loop with for v in values and add *v, or use values.iter().sum().
+            - Pass &arr for the whole array and &arr[..3] for the first three.
+          solution: |
+            fn sum(values: &[i32]) -> i32 {
+                let mut total = 0;
+                for v in values {
+                    total += v;
+                }
+                total
+            }
+
+            fn main() {
+                let arr = [3, 1, 4, 1, 5, 9];
+                println!("all: {}, first three: {}", sum(&arr), sum(&arr[..3]));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn sums() {
+                    assert_eq!(sum(&[3, 1, 4, 1, 5, 9]), 23);
+                    assert_eq!(sum(&[]), 0);
+                }
+            }
+          explain: "Writing the parameter as a slice instead of [i32; 6] makes the function work for any length, including an empty slice. total += v works because Rust implements += between i32 and &i32."
+  quiz:
+    - q: What does this code do?
+      code: |
+        let s1 = String::from("hi");
+        let s2 = s1;
+        println!("{s1}");
+      o: |
+        Fails to compile because s1 was moved
+        Prints hi
+        Prints an empty line
+        Panics at run time
+      a: 0
+      x: Assigning a String moves it; s1 can no longer be used.
+    - q: Which types are Copy?
+      type: multi
+      o: |
+        i32
+        bool
+        String
+        (i32, char)
+      a: [0, 1, 3]
+      x: Tuples are Copy when every element is Copy; String owns heap data so it is not.
+    - q: Why does this fail to compile?
+      code: |
+        let mut s = String::from("x");
+        let a = &s;
+        let b = &mut s;
+        println!("{a} {b}");
+      o: |
+        A shared and a mutable borrow are alive at the same time
+        You cannot borrow a String twice
+        b must be declared mut
+        println! cannot print references
+      a: 0
+      x: a is still used after b is created, so the two borrows overlap.
+    - q: What is the type of a string literal such as "hello"?
+      o: |
+        &'static str
+        String
+        &String
+        char[]
+      a: 0
+      x: Literals are string slices baked into the program, valid for the whole run.
+    - q: 'Why is fn f(s: &str) usually better than fn f(s: &String)?'
+      o: |
+        It accepts both String values and literals
+        It is faster to copy
+        It lets f change the string
+        It avoids lifetimes
+      a: 0
+      x: "&String coerces to &str, so a &str parameter accepts more callers."
+      pool: exam
+    - q: When is the memory owned by a String freed?
+      o: |
+        When its owner goes out of scope
+        When the garbage collector runs
+        When you call free
+        At the end of the program
+      a: 0
+      x: Rust calls drop when the owner goes out of scope; there is no garbage collector.
+      pool: exam
+    - q: What does &nums[1..3] give you for nums = [10, 20, 30, 40]?
+      o: |
+        [20, 30]
+        [10, 20, 30]
+        [20, 30, 40]
+        [10, 20]
+      a: 0
+      x: Ranges include the start and exclude the end.
+      pool: exam
+    - q: Why can a function not return a reference to a String it created inside itself?
+      o: |
+        The String is dropped when the function ends so the reference would dangle
+        Functions cannot return references
+        References are always mutable
+        Strings cannot be borrowed
+      a: 0
+      x: The borrow checker refuses dangling references; return the String itself instead.
+      pool: exam
+  recap:
+    summary:
+      - Each value has exactly one owner, and the value is dropped when the owner goes out of scope.
+      - Assigning or passing a heap value such as String moves it; clone makes a deep copy; Copy types are duplicated.
+      - References borrow without owning; &T is shared and read-only, &mut T is exclusive and can change the value.
+      - You may have one mutable reference or many shared ones at a time, never both; borrows end at their last use.
+      - Slices (&str, &[T]) refer to part of existing data; prefer &str and &[T] parameters.
+    functions: |
+      String::from("x") || Create an owned, growable string.
+      s.clone() || Deep copy of a value.
+      &s / &mut s || Borrow shared or mutably.
+      *r = value || Write through a mutable reference.
+      &s[a..b] || Slice part of a string or array.
+      s.as_bytes() || View a string as bytes.
+      impl Drop || Run code when a value goes out of scope.
+    next: With ownership in hand, Chapter 5 shows how to group related data into your own types with structs.
+
+- id: c5
+  n: "05"
+  book: 5
+  t: Using structs
+  lv: 2
+  goal: Define structs, create and update instances, derive Debug, and add methods and associated functions with impl.
+  res: |
+    Chapter 5 in the book | https://doc.rust-lang.org/book/ch05-00-structs.html
+    Rust by Example, structures | https://doc.rust-lang.org/rust-by-example/custom_types/structs.html
+  items:
+    - id: "5.1"
+      t: Defining and instantiating structs
+      min: 45
+      learn: Named-field structs, field init shorthand, struct update syntax, tuple structs, unit-like structs, and owning data in fields.
+      example:
+        title: Structs in every shape
+        code: |
+          #[derive(Debug)]
+          struct User {
+              active: bool,
+              username: String,
+              email: String,
+              sign_in_count: u64,
+          }
+
+          struct Color(u8, u8, u8);   // tuple struct
+          struct AlwaysEqual;         // unit-like struct
+
+          fn build_user(email: String, username: String) -> User {
+              User { active: true, username, email, sign_in_count: 1 } // shorthand
+          }
+
+          fn main() {
+              let u1 = build_user("ada@example.com".into(), "ada".into());
+              let u2 = User { email: String::from("grace@example.com"), ..u1 };
+              let black = Color(0, 0, 0);
+              let _marker = AlwaysEqual;
+              println!("{} {} {}", u2.username, u2.email, black.0);
+              println!("{u2:?}");
+          }
+        output: |
+          ada grace@example.com 0
+          User { active: true, username: "ada", email: "grace@example.com", sign_in_count: 1 }
+        note: ..u1 copies the remaining fields from u1. Because username is a String, it moves into u2, so u1 can no longer be used as a whole. Fields hold owned types like String, so the struct owns its data; holding references needs lifetimes, covered in Chapter 10.
+      ex:
+        - t: A Book struct
+          p: Define a Book struct with title, author (both String) and pages (u32). Derive Debug, create two books, and print one with {:?} and the other with {:#?}.
+          hints:
+            - "Put #[derive(Debug)] on the line above struct Book."
+            - "Create one with Book { title: String::from(...), author: ..., pages: 300 }."
+            - "{:#?} prints each field on its own line."
+          solution: |
+            #[derive(Debug)]
+            struct Book {
+                title: String,
+                author: String,
+                pages: u32,
+            }
+
+            fn main() {
+                let a = Book {
+                    title: String::from("The Rust Programming Language"),
+                    author: String::from("Klabnik, Nichols, Krycho"),
+                    pages: 560,
+                };
+                let b = Book { title: String::from("Rust in Action"), author: String::from("McNamara"), pages: 456 };
+                println!("{a:?}");
+                println!("{b:#?}");
+            }
+          explain: Debug is a trait; derive writes the implementation for you. {:#?} is the pretty-printed form and is much easier to read for structs with several fields.
+        - t: Newtypes for safety
+          p: Create tuple structs Meters(f64) and Feet(f64), and a function to_feet(m Meters) -> Feet. Show that passing a Feet where Meters is expected does not compile.
+          hints:
+            - "struct Meters(f64); and struct Feet(f64);"
+            - Read the inner number with m.0.
+            - One metre is about 3.28084 feet.
+          solution: |
+            #[derive(Debug)]
+            struct Meters(f64);
+            #[derive(Debug)]
+            struct Feet(f64);
+
+            fn to_feet(m: Meters) -> Feet {
+                Feet(m.0 * 3.28084)
+            }
+
+            fn main() {
+                let height = Meters(1.8);
+                println!("{:?}", to_feet(height));
+                // to_feet(Feet(6.0)); // error[E0308]: expected `Meters`, found `Feet`
+            }
+          explain: Both types hold an f64, but the compiler treats them as different, so you cannot mix units by accident. This newtype pattern costs nothing at run time and comes back in Chapter 20.
+    - id: "5.2"
+      t: An example program with structs
+      min: 45
+      learn: Refactor a rectangle-area program from loose variables to a tuple to a struct, and use dbg! and derived Debug to inspect values.
+      example:
+        title: Rectangles with a struct and dbg!
+        code: |
+          #[derive(Debug)]
+          struct Rectangle {
+              width: u32,
+              height: u32,
+          }
+
+          fn area(rect: &Rectangle) -> u32 {
+              rect.width * rect.height
+          }
+
+          fn main() {
+              let scale = 2;
+              let rect = Rectangle {
+                  width: dbg!(30 * scale), // prints the file, line and value
+                  height: 50,
+              };
+              dbg!(&rect);
+              println!("area = {}", area(&rect));
+          }
+        output: |
+          [src/main.rs:13:16] 30 * scale = 60
+          [src/main.rs:16:5] &rect = Rectangle {
+              width: 60,
+              height: 50,
+          }
+          area = 3000
+        note: dbg! prints to standard error with the file and line, returns the value, and takes ownership unless you pass a reference. It is the quickest way to peek at a value while debugging. Passing &Rectangle lets area read the struct without taking it.
+      ex:
+        - t: Perimeter and square check
+          p: 'Add functions perimeter(r: &Rectangle) -> u32 and is_square(r: &Rectangle) -> bool, and print both for a 10 by 10 and a 3 by 7 rectangle.'
+          check: test
+          hints:
+            - The perimeter is 2 * (width + height).
+            - is_square compares width and height with ==.
+            - Pass references so main can keep using the rectangles.
+          solution: |
+            struct Rectangle {
+                width: u32,
+                height: u32,
+            }
+
+            fn perimeter(r: &Rectangle) -> u32 {
+                2 * (r.width + r.height)
+            }
+
+            fn is_square(r: &Rectangle) -> bool {
+                r.width == r.height
+            }
+
+            fn main() {
+                for r in [Rectangle { width: 10, height: 10 }, Rectangle { width: 3, height: 7 }] {
+                    println!("{}x{}: perimeter {}, square {}", r.width, r.height, perimeter(&r), is_square(&r));
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn square() {
+                    let r = Rectangle { width: 4, height: 4 };
+                    assert!(is_square(&r));
+                    assert_eq!(perimeter(&r), 16);
+                }
+            }
+          explain: Free functions taking &Rectangle work, but they are scattered. The next lesson moves them into an impl block so they read as r.perimeter() and r.is_square().
+        - t: Debug with dbg!
+          p: Write a program that computes the total area of three rectangles stored in an array, and use dbg! to print each intermediate area without changing the result.
+          hints:
+            - Loop over the array and add up the areas.
+            - Wrap the area expression in dbg!(...); it returns the value.
+            - Run it and notice dbg! output goes to standard error.
+          solution: |
+            #[derive(Debug)]
+            struct Rectangle {
+                width: u32,
+                height: u32,
+            }
+
+            fn main() {
+                let rects = [
+                    Rectangle { width: 2, height: 3 },
+                    Rectangle { width: 4, height: 5 },
+                    Rectangle { width: 6, height: 1 },
+                ];
+                let mut total = 0;
+                for r in &rects {
+                    total += dbg!(r.width * r.height);
+                }
+                println!("total area = {total}");
+            }
+          explain: Because dbg! returns its argument, you can drop it into the middle of an expression and remove it later without restructuring code. Remember to delete dbg! calls before committing; clippy can warn about leftovers.
+    - id: "5.3"
+      t: Methods and associated functions
+      min: 60
+      learn: Methods in impl blocks with &self, &mut self and self, methods with extra parameters, associated functions such as constructors with Self, and multiple impl blocks.
+      example:
+        title: Rectangle with methods
+        code: |
+          #[derive(Debug)]
+          struct Rectangle {
+              width: u32,
+              height: u32,
+          }
+
+          impl Rectangle {
+              fn square(size: u32) -> Self {         // associated function
+                  Self { width: size, height: size }
+              }
+              fn area(&self) -> u32 {
+                  self.width * self.height
+              }
+              fn can_hold(&self, other: &Rectangle) -> bool {
+                  self.width > other.width && self.height > other.height
+              }
+              fn grow(&mut self, by: u32) {
+                  self.width += by;
+                  self.height += by;
+              }
+          }
+
+          fn main() {
+              let mut big = Rectangle { width: 30, height: 50 };
+              let small = Rectangle::square(10);
+              println!("area {}, holds small: {}", big.area(), big.can_hold(&small));
+              big.grow(5);
+              println!("{big:?}");
+          }
+        output: |
+          area 1500, holds small: true
+          Rectangle { width: 35, height: 55 }
+        note: "&self is short for self: &Self. Rust adds the & or &mut for you when you call a method, so big.grow(5) borrows big mutably without you writing &mut big. Associated functions without self, like square, are called with Type::name and are often used as constructors."
+      ex:
+        - t: A bank account
+          p: 'Create an Account struct with owner (String) and balance (i64). Add new(owner: &str) -> Self, deposit(&mut self, amount), withdraw(&mut self, amount) -> bool that refuses to overdraw, and balance(&self).'
+          check: test
+          hints:
+            - "new returns Self { owner: owner.to_string(), balance: 0 }."
+            - withdraw checks amount <= self.balance before subtracting.
+            - Return true when the withdrawal happens and false otherwise.
+          solution: |
+            struct Account {
+                owner: String,
+                balance: i64,
+            }
+
+            impl Account {
+                fn new(owner: &str) -> Self {
+                    Self { owner: owner.to_string(), balance: 0 }
+                }
+                fn deposit(&mut self, amount: i64) {
+                    self.balance += amount;
+                }
+                fn withdraw(&mut self, amount: i64) -> bool {
+                    if amount <= self.balance {
+                        self.balance -= amount;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                fn balance(&self) -> i64 {
+                    self.balance
+                }
+            }
+
+            fn main() {
+                let mut acc = Account::new("Kev");
+                acc.deposit(100);
+                println!("withdraw 30: {}", acc.withdraw(30));
+                println!("withdraw 500: {}", acc.withdraw(500));
+                println!("{} has {}", acc.owner, acc.balance());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn no_overdraft() {
+                    let mut a = Account::new("t");
+                    a.deposit(10);
+                    assert!(!a.withdraw(20));
+                    assert_eq!(a.balance(), 10);
+                }
+            }
+          explain: A method and a field can share a name (balance); acc.balance() calls the method and acc.balance reads the field. Keeping the field private and exposing a method is how Rust does encapsulation, which Chapter 7 makes enforceable with pub.
+        - t: Consume with self
+          p: Add a method into_report(self) -> String to Account that formats the owner and balance and consumes the account. Show that the account cannot be used after the call.
+          hints:
+            - A method that takes self (not &self) takes ownership.
+            - "Return format!(\"{}: {}\", self.owner, self.balance)."
+            - Try calling acc.balance() afterwards and read the move error.
+          solution: |
+            struct Account {
+                owner: String,
+                balance: i64,
+            }
+
+            impl Account {
+                fn into_report(self) -> String {
+                    format!("{}: {}", self.owner, self.balance)
+                }
+            }
+
+            fn main() {
+                let acc = Account { owner: String::from("Kev"), balance: 70 };
+                let report = acc.into_report();
+                println!("{report}");
+                // println!("{}", acc.balance); // error: value used after move
+            }
+          explain: Methods that take self are used when the object is transformed into something else, which is why their names often start with into_. The compiler then guarantees nobody uses the old value by mistake.
+  quiz:
+    - q: 'What does the shorthand User { email, username, active: true, sign_in_count: 1 } rely on?'
+      o: |
+        Variables named the same as the fields
+        A Default implementation
+        The order of fields in the struct
+        A derive attribute
+      a: 0
+      x: Field init shorthand works when a variable has the same name as the field.
+    - q: Which attribute lets you print a struct with {:?}?
+      o: |
+        #[derive(Debug)]
+        #[derive(Display)]
+        #[debug]
+        #[print]
+      a: 0
+      x: Debug can be derived; Display has to be written by hand.
+    - q: How do you call an associated function named new on a type Point?
+      o: |
+        Point::new()
+        Point.new()
+        new Point()
+        Point->new()
+      a: 0
+      x: 'Associated functions without self are called with the :: path syntax.'
+    - q: What does &self mean in a method signature?
+      o: |
+        The method borrows the instance immutably
+        The method takes ownership
+        The method can change the instance
+        The method is static
+      a: 0
+      x: "&self is self: &Self, a shared borrow of the instance."
+    - q: 'After let u2 = User { email: new_email, ..u1 } where username is a String, what is true?'
+      o: |
+        u1 can no longer be used as a whole because username moved
+        u1 is unchanged and fully usable
+        u2 shares memory with u1
+        It does not compile
+      a: 0
+      x: Struct update moves non-Copy fields; you could still use u1.email because it was not moved.
+      pool: exam
+    - q: Which method signature lets a method change the struct's fields?
+      o: |
+        fn grow(&mut self)
+        fn grow(&self)
+        fn grow(self: Copy)
+        fn grow()
+      a: 0
+      x: Changing fields requires a mutable borrow.
+      pool: exam
+    - q: What does dbg!(x) return?
+      o: |
+        The value it was given
+        Nothing
+        A String with the debug text
+        A Result
+      a: 0
+      x: dbg! prints to stderr and hands the value back, so it fits inside expressions.
+      pool: exam
+  recap:
+    summary:
+      - Structs group named fields; tuple structs have unnamed fields; unit-like structs have none.
+      - Field init shorthand and ..other update syntax reduce repetition; update syntax can move fields.
+      - "#[derive(Debug)] enables {:?} and {:#?}; dbg! prints a value with its location and returns it."
+      - Methods live in impl blocks and take &self, &mut self or self; associated functions have no self.
+      - Self is an alias for the type inside its impl block, often used in constructors like new.
+    functions: |
+      struct Name { field: Type } || Define a struct with named fields.
+      struct Meters(f64); || Define a tuple struct (newtype).
+      Name { ..other } || Fill the remaining fields from another instance.
+      #[derive(Debug)] || Generate Debug formatting.
+      dbg!(expr) || Print an expression and its value to stderr.
+      impl Name { fn m(&self) } || Add methods to a type.
+      Name::new() || Call an associated function.
+    next: Chapter 6 introduces enums, Rust's way of saying a value is one of several possibilities, and match to handle each one.
+
+- id: c6
+  n: "06"
+  book: 6
+  t: Enums and pattern matching
+  lv: 2
+  goal: Model choices with enums, use Option instead of null, and handle every case with match, if let and let...else.
+  res: |
+    Chapter 6 in the book | https://doc.rust-lang.org/book/ch06-00-enums.html
+    std::option | https://doc.rust-lang.org/std/option/
+  items:
+    - id: "6.1"
+      t: Defining enums and Option
+      min: 60
+      learn: Enums whose variants hold different data, methods on enums, and the Option enum that replaces null.
+      example:
+        title: Messages and Option
+        code: |
+          #[derive(Debug)]
+          enum Message {
+              Quit,
+              Move { x: i32, y: i32 },
+              Write(String),
+              ChangeColor(u8, u8, u8),
+          }
+
+          impl Message {
+              fn describe(&self) -> String {
+                  format!("{self:?}")
+              }
+          }
+
+          fn main() {
+              let msgs = [
+                  Message::Write(String::from("hi")),
+                  Message::Move { x: 1, y: 2 },
+                  Message::ChangeColor(0, 128, 255),
+                  Message::Quit,
+              ];
+              for m in &msgs {
+                  println!("{}", m.describe());
+              }
+              let some_number: Option<i32> = Some(5);
+              let absent: Option<i32> = None;
+              println!("{some_number:?} {absent:?}");
+          }
+        output: |
+          Write("hi")
+          Move { x: 1, y: 2 }
+          ChangeColor(0, 128, 255)
+          Quit
+          Some(5) None
+        note: Each variant can carry its own kind of data, so one type covers several shapes. Option<T> is either Some(value) or None, and because Option<i32> is a different type from i32, the compiler makes you deal with the missing case before you can use the number.
+      ex:
+        - t: Shapes
+          p: Create an enum Shape with Circle(f64) for the radius, Rectangle(f64, f64) and Triangle(f64, f64) for base and height. Add an area(&self) method and print the area of one of each.
+          check: test
+          hints:
+            - Inside area, match self and handle each variant.
+            - "A circle's area is std::f64::consts::PI * r * r."
+            - A triangle's area is base * height / 2.0.
+          solution: |
+            use std::f64::consts::PI;
+
+            enum Shape {
+                Circle(f64),
+                Rectangle(f64, f64),
+                Triangle(f64, f64),
+            }
+
+            impl Shape {
+                fn area(&self) -> f64 {
+                    match self {
+                        Shape::Circle(r) => PI * r * r,
+                        Shape::Rectangle(w, h) => w * h,
+                        Shape::Triangle(b, h) => b * h / 2.0,
+                    }
+                }
+            }
+
+            fn main() {
+                let shapes = [Shape::Circle(1.0), Shape::Rectangle(2.0, 3.0), Shape::Triangle(4.0, 5.0)];
+                for s in &shapes {
+                    println!("{:.2}", s.area());
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn rectangle() {
+                    assert_eq!(Shape::Rectangle(2.0, 3.0).area(), 6.0);
+                }
+            }
+          explain: If you add a new variant later, every match on Shape stops compiling until you handle it. That compiler-enforced completeness is one of the main reasons Rust programmers model their data with enums.
+        - t: Find a user
+          p: 'Write find_age(name: &str) -> Option<u32> that knows three people''s ages and returns None for anyone else. Print the result for a known and an unknown name.'
+          hints:
+            - Use match name with string literal patterns such as "ada" => Some(36).
+            - The catch-all _ => None handles everyone else.
+            - "Print with {:?} to see Some(36) or None."
+          solution: |
+            fn find_age(name: &str) -> Option<u32> {
+                match name {
+                    "ada" => Some(36),
+                    "grace" => Some(85),
+                    "linus" => Some(56),
+                    _ => None,
+                }
+            }
+
+            fn main() {
+                println!("{:?}", find_age("grace"));
+                println!("{:?}", find_age("nobody"));
+            }
+          explain: Returning Option makes "not found" part of the function's type. Callers must decide what to do with None, so there is no equivalent of a null pointer exception waiting to happen.
+    - id: "6.2"
+      t: The match control flow construct
+      min: 60
+      learn: match arms and patterns, binding values from variants, matching on Option, exhaustiveness, and the catch-all patterns other and _.
+      example:
+        title: Coins and Option with match
+        code: |
+          #[derive(Debug)]
+          enum Province { Quebec, Ontario }
+
+          enum Coin {
+              Penny,
+              Nickel,
+              Dime,
+              Quarter(Province),
+          }
+
+          fn value_in_cents(coin: Coin) -> u8 {
+              match coin {
+                  Coin::Penny => 1,
+                  Coin::Nickel => 5,
+                  Coin::Dime => 10,
+                  Coin::Quarter(p) => {
+                      println!("Quarter from {p:?}");
+                      25
+                  }
+              }
+          }
+
+          fn plus_one(x: Option<i32>) -> Option<i32> {
+              match x {
+                  None => None,
+                  Some(i) => Some(i + 1),
+              }
+          }
+
+          fn main() {
+              println!("{}", value_in_cents(Coin::Quarter(Province::Quebec)));
+              println!("{:?} {:?}", plus_one(Some(5)), plus_one(None));
+              let roll = 9;
+              match roll {
+                  3 => println!("hat"),
+                  7 => println!("lose hat"),
+                  other => println!("move {other} spaces"),
+              }
+          }
+        output: |
+          Quarter from Quebec
+          25
+          Some(6) None
+          move 9 spaces
+        note: match checks arms from top to bottom and runs the first one that fits. It must be exhaustive, so leaving out None or a coin is a compile error. other binds the value; _ matches anything and ignores it.
+      ex:
+        - t: Traffic light
+          p: Make an enum Light { Red, Yellow, Green } with a method next(&self) -> Light and a method seconds(&self) -> u32. Print a full cycle starting from Red.
+          hints:
+            - Derive Debug and Clone, Copy so you can print and reuse lights easily.
+            - next matches self and returns the following light.
+            - Loop three times, printing the light and its time, then moving to next().
+          solution: |
+            #[derive(Debug, Clone, Copy)]
+            enum Light {
+                Red,
+                Yellow,
+                Green,
+            }
+
+            impl Light {
+                fn next(&self) -> Light {
+                    match self {
+                        Light::Red => Light::Green,
+                        Light::Green => Light::Yellow,
+                        Light::Yellow => Light::Red,
+                    }
+                }
+                fn seconds(&self) -> u32 {
+                    match self {
+                        Light::Red => 30,
+                        Light::Yellow => 4,
+                        Light::Green => 25,
+                    }
+                }
+            }
+
+            fn main() {
+                let mut light = Light::Red;
+                for _ in 0..3 {
+                    println!("{light:?} for {}s", light.seconds());
+                    light = light.next();
+                }
+            }
+          explain: Deriving Copy lets light = light.next() replace the value freely. A state machine like this, where every transition is spelled out in a match, is impossible to leave half-handled.
+        - t: Option arithmetic
+          p: 'Write divide(a: i32, b: i32) -> Option<i32> that returns None when b is 0, then a function describe(r: Option<i32>) -> String that returns "result N" or "cannot divide by zero".'
+          check: test
+          hints:
+            - In divide, if b == 0 return None, otherwise Some(a / b).
+            - In describe, match r with Some(n) and None.
+            - "format!(\"result {n}\") builds the text."
+          solution: |
+            fn divide(a: i32, b: i32) -> Option<i32> {
+                if b == 0 { None } else { Some(a / b) }
+            }
+
+            fn describe(r: Option<i32>) -> String {
+                match r {
+                    Some(n) => format!("result {n}"),
+                    None => String::from("cannot divide by zero"),
+                }
+            }
+
+            fn main() {
+                println!("{}", describe(divide(10, 2)));
+                println!("{}", describe(divide(1, 0)));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn zero() {
+                    assert_eq!(divide(1, 0), None);
+                    assert_eq!(describe(None), "cannot divide by zero");
+                }
+            }
+          explain: Option also has helper methods such as map and unwrap_or that replace many matches, for example divide(10, 2).map(|n| n * 2). You will meet them in Chapter 13 once closures are introduced.
+    - id: "6.3"
+      t: if let and let...else
+      min: 45
+      learn: Use if let when you only care about one pattern, and let...else to pull a value out or leave the function early.
+      example:
+        title: Shorter matches
+        code: |
+          fn parse_port(s: &str) -> Option<u16> {
+              let Ok(port) = s.parse::<u16>() else {
+                  return None;                  // let...else must leave the block
+              };
+              Some(port)
+          }
+
+          fn main() {
+              let config_max: Option<u8> = Some(3);
+              if let Some(max) = config_max {
+                  println!("The maximum is configured to be {max}");
+              } else {
+                  println!("No maximum");
+              }
+
+              println!("{:?} {:?}", parse_port("8080"), parse_port("eighty"));
+          }
+        output: |
+          The maximum is configured to be 3
+          Some(8080) None
+        note: if let trades the exhaustiveness check of match for less code. let...else keeps the happy path unindented, which reads well when a function needs several values that might be missing.
+      ex:
+        - t: Only the errors
+          p: Given an array of Option<&str> results, use if let to print only the values that are Some, and count how many were None.
+          hints:
+            - "Loop with for r in results."
+            - "if let Some(v) = r { println!(...) } else { missing += 1 }"
+            - Print the count after the loop.
+          solution: |
+            fn main() {
+                let results = [Some("ok"), None, Some("done"), None, None];
+                let mut missing = 0;
+                for r in results {
+                    if let Some(v) = r {
+                        println!("got {v}");
+                    } else {
+                        missing += 1;
+                    }
+                }
+                println!("{missing} missing");
+            }
+          explain: if let with else is equivalent to a two-arm match. Use it when one case is interesting and the other is a simple fallback.
+        - t: Parse a key=value line
+          p: 'Write parse_line(line: &str) -> Option<(String, i32)> that reads lines like "timeout=30" using let...else for each step that could fail.'
+          check: test
+          hints:
+            - "split_once('=') returns Option<(&str, &str)>."
+            - "let Some((key, value)) = line.split_once('=') else { return None; };"
+            - Use let...else again for value.trim().parse::<i32>().
+          solution: |
+            fn parse_line(line: &str) -> Option<(String, i32)> {
+                let Some((key, value)) = line.split_once('=') else {
+                    return None;
+                };
+                let Ok(n) = value.trim().parse::<i32>() else {
+                    return None;
+                };
+                Some((key.trim().to_string(), n))
+            }
+
+            fn main() {
+                println!("{:?}", parse_line("timeout = 30"));
+                println!("{:?}", parse_line("no equals sign"));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn good_and_bad() {
+                    assert_eq!(parse_line("retries=3"), Some((String::from("retries"), 3)));
+                    assert_eq!(parse_line("retries=three"), None);
+                    assert_eq!(parse_line("retries"), None);
+                }
+            }
+          explain: Each let...else either binds the value or returns early, so by the last line every piece is known to be valid. Chapter 9 shows the ? operator, which shortens this even more.
+  quiz:
+    - q: What is wrong with this match?
+      code: |
+        let x: Option<i32> = Some(3);
+        match x {
+            Some(n) => println!("{n}"),
+        }
+      o: |
+        It is not exhaustive because None is not handled
+        Some(n) needs a type
+        match cannot be used on Option
+        Nothing
+      a: 0
+      x: match must cover every possibility, including None.
+    - q: Why can you not add an Option<i32> to an i32 directly?
+      o: |
+        They are different types; you must handle None first
+        Option is always heap allocated
+        i32 does not implement Add
+        You need to clone the Option
+      a: 0
+      x: The type system forces you to deal with the missing case.
+    - q: What does the pattern other match in match roll { 3 => ..., other => ... }?
+      o: |
+        Any value not matched earlier and binds it to other
+        Only the value 0
+        Nothing; it is a syntax error
+        Only negative numbers
+      a: 0
+      x: A variable name as a pattern matches anything and binds it.
+    - q: What must the else block of a let...else do?
+      o: |
+        Diverge, for example with return, break, continue or panic!
+        Provide a default value
+        Nothing special
+        Print an error
+      a: 0
+      x: The else branch cannot fall through, because the binding would not exist.
+    - q: Which can an enum variant hold?
+      type: multi
+      o: |
+        Nothing
+        Unnamed fields like a tuple
+        Named fields like a struct
+        Another enum
+      a: [0, 1, 2, 3]
+      x: Variants can be unit-like, tuple-like or struct-like and hold any types.
+      pool: exam
+    - q: What does this print?
+      code: |
+        let v = Some(7);
+        if let Some(n) = v {
+            println!("{}", n * 2);
+        } else {
+            println!("none");
+        }
+      o: |
+        14
+        7
+        none
+        Some(14)
+      a: 0
+      x: The pattern binds n to 7.
+      pool: exam
+    - q: When is if let a better choice than match?
+      o: |
+        When you only care about one pattern and can ignore the rest
+        When you need exhaustiveness checking
+        When matching integers
+        Never
+      a: 0
+      x: if let is shorter but gives up the exhaustiveness check.
+      pool: exam
+  recap:
+    summary:
+      - Enums list every possible variant of a value; each variant can carry its own data.
+      - Option<T> is Some(T) or None and replaces null; you must handle None before using the value.
+      - match compares a value against patterns in order and must be exhaustive.
+      - Patterns can bind parts of a value; _ ignores, and a name catches everything else.
+      - if let handles one pattern concisely; let...else binds or exits early.
+    functions: |
+      enum E { A, B(i32), C { x: i32 } } || Define an enum with different variant shapes.
+      Some(v) / None || The two variants of Option.
+      match value { pattern => expr } || Handle each possible pattern.
+      _ => || Catch-all arm that ignores the value.
+      if let Some(x) = opt || Run code only when the pattern matches.
+      let Some(x) = opt else { return } || Bind or leave early.
+      s.split_once('=') || Split a string at the first separator; returns an Option.
+    next: Chapter 7 shows how to organise a growing program into modules, crates and packages.

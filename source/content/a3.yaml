@@ -1,0 +1,2096 @@
+- id: a9
+  n: A09
+  t: Macros and metaprogramming
+  lv: 4
+  goal: Write robust declarative macros, understand and build a procedural derive macro, and design small domain-specific languages.
+  res: |
+    The Little Book of Rust Macros | https://veykril.github.io/tlborm/
+    The Rust Reference, macros by example | https://doc.rust-lang.org/reference/macros-by-example.html
+    syn | https://docs.rs/syn
+    quote | https://docs.rs/quote
+  items:
+    - id: A9.1
+      t: Declarative macros in depth
+      min: 60
+      learn: All the fragment specifiers (expr, ident, ty, tt, pat, literal, block), nested repetition, recursive and internal rules, hygiene, $crate paths, and exporting macros from a library.
+      example:
+        title: Generating enums with string conversion
+        code: |
+          macro_rules! string_enum {
+              ($(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
+                  $(#[$meta])*
+                  $vis enum $name { $($variant),+ }
+
+                  impl $name {
+                      pub fn as_str(&self) -> &'static str {
+                          match self { $(Self::$variant => $text),+ }
+                      }
+                      pub fn parse(s: &str) -> Option<Self> {
+                          match s { $($text => Some(Self::$variant),)+ _ => None }
+                      }
+                      pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+                  }
+              };
+          }
+
+          string_enum! {
+              #[derive(Debug, Clone, Copy, PartialEq)]
+              pub enum Severity { Low => "low", Medium => "medium", High => "high", Critical => "critical" }
+          }
+
+          fn main() {
+              println!("{:?} {}", Severity::parse("high"), Severity::Critical.as_str());
+              println!("{} levels: {:?}", Severity::ALL.len(), Severity::ALL);
+          }
+        output: |
+          Some(High) critical
+          4 levels: [Low, Medium, High, Critical]
+        note: "$vis captures pub or nothing, $(#[$meta])* forwards attributes such as derive, and one repetition drives three different expansions. Macro hygiene means variables a macro creates cannot clash with the caller's. In a library, add #[macro_export] and refer to your own items as $crate::path."
+      ex:
+        - t: A test-table macro
+          p: "Write a macro test_cases! that turns lines like add_small: (1, 2) => 3 into separate #[test] functions calling a function add, so each case shows up by name in cargo test."
+          check: test
+          hints:
+            - 'Match $($name:ident: ($a:expr, $b:expr) => $expected:expr),* $(,)?'
+            - 'Each repetition expands to a #[test] fn $name() { assert_eq!(add($a, $b), $expected); }'
+            - Invoke the macro inside mod tests.
+          solution: |
+            pub fn add(a: i32, b: i32) -> i32 {
+                a + b
+            }
+
+            macro_rules! test_cases {
+                ($($name:ident: ($a:expr, $b:expr) => $expected:expr),* $(,)?) => {
+                    $(
+                        #[test]
+                        fn $name() {
+                            assert_eq!(add($a, $b), $expected, "add({}, {})", $a, $b);
+                        }
+                    )*
+                };
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                test_cases! {
+                    add_small: (1, 2) => 3,
+                    add_negative: (-5, 2) => -3,
+                    add_zero: (0, 0) => 0,
+                }
+            }
+          explain: Each case becomes its own named test, so a failure report says exactly which input broke. Crates such as rstest and test-case offer this as attribute macros.
+        - t: A counting macro with internal rules
+          p: "Write count! that counts its arguments at compile time (count!(a, b, c) == 3) using an internal rule, then use it inside a macro that builds a fixed-size array type [T; count!(...)]."
+          check: test
+          hints:
+            - "An internal rule like (@one $x:tt) => (1usize) turns each item into 1."
+            - "count!($($x:tt),*) => (0usize $(+ count!(@one $x))*)"
+            - The result is a constant expression, so it can be an array length.
+          solution: |
+            macro_rules! count {
+                (@one $x:tt) => (1usize);
+                ($($x:tt),* $(,)?) => (0usize $(+ count!(@one $x))*);
+            }
+
+            macro_rules! fixed_list {
+                ($($x:expr),* $(,)?) => {{
+                    let arr: [i32; count!($($x),*)] = [$($x),*];
+                    arr
+                }};
+            }
+
+            fn main() {
+                const N: usize = count!(a, b, c, d);
+                let list = fixed_list![10, 20, 30];
+                println!("{N} {} {:?}", list.len(), list);
+            }
+
+            #[cfg(test)]
+            mod tests {
+                #[test]
+                fn counts() {
+                    assert_eq!(count!(), 0);
+                    assert_eq!(count!(x, y), 2);
+                }
+            }
+          explain: Internal rules beginning with @ are a convention for helper patterns callers are not meant to use. Because count! expands to a constant expression, it works anywhere a compile-time number is needed.
+    - id: A9.2
+      t: Procedural macros and custom derive
+      min: 75
+      learn: How a proc-macro crate works, parsing input with syn, generating code with quote, writing a derive macro, and reporting good compile errors with syn::Error.
+      example:
+        title: A Describe derive macro (two crates)
+        lang: rust
+        check: none
+        code: |
+          // --- describe_derive/Cargo.toml ---
+          // [lib]
+          // proc-macro = true
+          // [dependencies]
+          // syn = "2"
+          // quote = "1"
+          // proc-macro2 = "1"
+
+          // --- describe_derive/src/lib.rs ---
+          use proc_macro::TokenStream;
+          use quote::quote;
+          use syn::{parse_macro_input, Data, DeriveInput, Fields};
+
+          #[proc_macro_derive(Describe)]
+          pub fn derive_describe(input: TokenStream) -> TokenStream {
+              let ast = parse_macro_input!(input as DeriveInput);
+              let name = &ast.ident;
+              let fields: Vec<String> = match &ast.data {
+                  Data::Struct(s) => match &s.fields {
+                      Fields::Named(named) => named.named.iter().map(|f| f.ident.as_ref().unwrap().to_string()).collect(),
+                      _ => vec![],
+                  },
+                  _ => {
+                      return syn::Error::new_spanned(name, "Describe only supports structs")
+                          .to_compile_error()
+                          .into();
+                  }
+              };
+              let list = fields.join(", ");
+              quote! {
+                  impl #name {
+                      pub fn describe() -> String {
+                          format!("{} {{ {} }}", stringify!(#name), #list)
+                      }
+                  }
+              }
+              .into()
+          }
+
+          // --- app/src/main.rs ---  (depends on describe_derive)
+          // use describe_derive::Describe;
+          // #[derive(Describe)]
+          // struct User { id: u32, email: String }
+          // fn main() { println!("{}", User::describe()); } // User { id, email }
+        note: 'A procedural macro is a function from tokens to tokens that runs inside the compiler, so it lives in its own crate with proc-macro = true. syn parses the tokens into a syntax tree, and quote turns Rust-like templates back into tokens, with #name splicing in values. Errors created with syn::Error point at the user''s code.'
+      ex:
+        - t: Build the derive
+          p: Create a workspace with describe_derive (proc-macro) and app crates, implement the Describe derive from the example, and add a test in app that checks the output for a struct with three fields. Then try it on an enum and read the error.
+          lang: text
+          check: none
+          hints:
+            - The workspace Cargo.toml lists both members; app depends on describe_derive by path.
+            - cargo expand (cargo install cargo-expand) shows the generated code.
+            - The enum case should show your "Describe only supports structs" message underlined at the enum's name.
+          solution: |
+            # Cargo.toml (workspace)
+            [workspace]
+            resolver = "3"
+            members = ["describe_derive", "app"]
+
+            # app/Cargo.toml
+            [dependencies]
+            describe_derive = { path = "../describe_derive" }
+
+            // app/src/main.rs
+            use describe_derive::Describe;
+
+            #[derive(Describe)]
+            struct Ticket { id: u32, title: String, open: bool }
+
+            fn main() {
+                println!("{}", Ticket::describe());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn lists_fields() {
+                    assert_eq!(Ticket::describe(), "Ticket { id, title, open }");
+                }
+            }
+
+            // #[derive(Describe)] enum Status { Open }  ->
+            // error: Describe only supports structs
+            //  --> app/src/main.rs:  enum Status { Open }
+            //                             ^^^^^^
+          explain: cargo expand is the essential debugging tool for macros, because it shows exactly what your macro produced. Good error spans are the difference between a pleasant macro and a frustrating one.
+        - t: A builder derive (stretch)
+          p: 'Extend the proc-macro crate with #[derive(Builder)] that generates a FooBuilder with an Option field and a setter per field, and a build() returning Result<Foo, String> that names the first missing field.'
+          lang: text
+          check: none
+          hints:
+            - "Generate the builder name with quote::format_ident!(\"{}Builder\", name)."
+            - "For each field emit #fname: Option<#fty> in the builder struct and a setter fn #fname(mut self, v: #fty) -> Self."
+            - In build, use ok_or(concat!("missing ", stringify!(#fname)))?
+          solution: |
+            #[proc_macro_derive(Builder)]
+            pub fn derive_builder(input: TokenStream) -> TokenStream {
+                let ast = parse_macro_input!(input as DeriveInput);
+                let name = &ast.ident;
+                let builder = quote::format_ident!("{}Builder", name);
+                let Data::Struct(data) = &ast.data else {
+                    return syn::Error::new_spanned(name, "Builder only supports structs").to_compile_error().into();
+                };
+                let Fields::Named(fields) = &data.fields else {
+                    return syn::Error::new_spanned(name, "Builder needs named fields").to_compile_error().into();
+                };
+                let names: Vec<_> = fields.named.iter().map(|f| f.ident.clone().unwrap()).collect();
+                let types: Vec<_> = fields.named.iter().map(|f| f.ty.clone()).collect();
+                quote! {
+                    #[derive(Default)]
+                    pub struct #builder { #( #names: Option<#types>, )* }
+                    impl #builder {
+                        #( pub fn #names(mut self, v: #types) -> Self { self.#names = Some(v); self } )*
+                        pub fn build(self) -> Result<#name, String> {
+                            Ok(#name { #( #names: self.#names.ok_or(concat!("missing ", stringify!(#names)))?, )* })
+                        }
+                    }
+                    impl #name {
+                        pub fn builder() -> #builder { #builder::default() }
+                    }
+                }
+                .into()
+            }
+
+            // usage:
+            // #[derive(Builder)] struct Server { host: String, port: u16 }
+            // let s = Server::builder().host("localhost".into()).port(8080).build()?;
+          explain: "This is the famous exercise from David Tolnay's proc-macro workshop. #( ... )* in quote repeats once per element of the iterators used inside it, the code-generation mirror of macro_rules repetition."
+    - id: A9.3
+      t: Domain-specific languages with macros
+      min: 45
+      learn: When a macro DSL is worth it, designing readable syntax with tt munching, keeping DSLs type-checked by expanding to ordinary Rust, and alternatives such as builder APIs.
+      example:
+        title: A tiny routing DSL
+        code: |
+          type Handler = fn(&str) -> String;
+
+          macro_rules! routes {
+              ($($method:ident $path:literal => $handler:expr),* $(,)?) => {{
+                  let mut table: Vec<(&'static str, &'static str, Handler)> = Vec::new();
+                  $( table.push((stringify!($method), $path, $handler)); )*
+                  table
+              }};
+          }
+
+          fn dispatch(table: &[(&str, &str, Handler)], method: &str, path: &str, body: &str) -> String {
+              table.iter()
+                  .find(|(m, p, _)| *m == method && *p == path)
+                  .map(|(_, _, h)| h(body))
+                  .unwrap_or_else(|| String::from("404 not found"))
+          }
+
+          fn main() {
+              let table = routes! {
+                  GET "/health" => |_| String::from("ok"),
+                  POST "/echo" => |b| format!("you said {b}"),
+              };
+              println!("{}", dispatch(&table, "GET", "/health", ""));
+              println!("{}", dispatch(&table, "POST", "/echo", "hi"));
+              println!("{}", dispatch(&table, "GET", "/nope", ""));
+          }
+        output: |
+          ok
+          you said hi
+          404 not found
+        note: The macro only rearranges syntax; the handlers are ordinary closures, so the compiler still checks their types. A good DSL makes the common case read like a configuration file, while staying plain Rust underneath.
+      ex:
+        - t: An HTML DSL
+          p: "Write html! so html!(div { p { \"Hello\" } p { \"World\" } }) produces the string <div><p>Hello</p><p>World</p></div>. Support nested tags and string literals."
+          check: test
+          hints:
+            - One rule matches a literal and returns it as a String.
+            - "Another matches $tag:ident { $($inner:tt)* } and wraps the inner HTML in the tag."
+            - "Inner content is a sequence of items; handle it with a rule that munches one item at a time: (@items $($rest:tt)*)."
+          solution: |
+            macro_rules! html {
+                ($text:literal) => { String::from($text) };
+                ($tag:ident { $($inner:tt)* }) => {
+                    format!("<{0}>{1}</{0}>", stringify!($tag), html!(@items $($inner)*))
+                };
+                (@items) => { String::new() };
+                (@items $text:literal $($rest:tt)*) => {
+                    String::from($text) + &html!(@items $($rest)*)
+                };
+                (@items $tag:ident { $($inner:tt)* } $($rest:tt)*) => {
+                    html!($tag { $($inner)* }) + &html!(@items $($rest)*)
+                };
+            }
+
+            fn main() {
+                println!("{}", html!(div { p { "Hello" } p { "World" } }));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                #[test]
+                fn nests() {
+                    assert_eq!(html!(ul { li { "a" } li { "b" } }), "<ul><li>a</li><li>b</li></ul>");
+                    assert_eq!(html!("plain"), "plain");
+                }
+            }
+          explain: The @items rules process the contents one token tree at a time, the tt-munching technique behind most complex macro DSLs. Real crates such as maud and leptos's view! use procedural macros for better errors.
+        - t: Macro or builder
+          p: "For each case decide whether you would write a macro, a builder API or a plain function, and give a one-sentence reason: (1) defining 40 similar error variants with messages, (2) configuring an HTTP client with optional settings, (3) a test table with 30 input/output pairs, (4) formatting a log line."
+          lang: text
+          check: none
+          hints:
+            - Macros shine when you need to generate items (types, functions, impls).
+            - Builders shine for optional configuration that IDEs can autocomplete.
+            - Prefer the simplest tool that removes the repetition.
+          solution: |
+            1. Macro (or thiserror's derive): it generates many items with a
+               fixed shape, which functions cannot do.
+            2. Builder: optional settings read clearly as chained methods and
+               get autocompletion and type checking.
+            3. Macro: each pair becomes its own named #[test] function.
+            4. Function: format! inside a plain function is simple, debuggable
+               and needs no metaprogramming.
+          explain: Macros are powerful but cost readability, compile errors and tooling support. Use them to generate items or remove heavy repetition, and reach for functions and builders first otherwise.
+  quiz:
+    - q: Which fragment specifier matches any single token tree?
+      o: |
+        tt
+        expr
+        ident
+        ty
+      a: 0
+      x: tt is the most flexible and is used for munching.
+    - q: Why must a procedural macro live in its own crate?
+      o: |
+        It runs inside the compiler at build time, so it is compiled separately with proc-macro = true
+        For licensing reasons
+        Because it uses unsafe code
+        It does not; it can be in any crate
+      a: 0
+      x: The compiler loads proc-macro crates as plugins.
+    - q: What does $crate refer to inside an exported macro_rules macro?
+      o: |
+        The crate where the macro is defined
+        The crate where it is used
+        The standard library
+        The current module
+      a: 0
+      x: It keeps paths correct wherever the macro is invoked.
+    - q: What does macro hygiene prevent?
+      o: |
+        Variables created inside a macro clashing with the caller's variables
+        Macros calling other macros
+        Using macros in tests
+        Recursion in macros
+      a: 0
+      x: Names introduced by the macro live in their own syntax context.
+      pool: exam
+    - q: Which tools help when writing procedural macros?
+      type: multi
+      o: |
+        syn
+        quote
+        cargo expand
+        rustfmt only
+      a: [0, 1, 2]
+      x: syn parses, quote generates, cargo expand shows the result.
+      pool: exam
+    - q: When is a macro a better choice than a function?
+      o: |
+        When you need to generate items such as types, impls or tests
+        When you need to add two numbers
+        Whenever code repeats twice
+        When you want better error messages
+      a: 0
+      x: Functions give better errors and tooling; macros generate code.
+      pool: exam
+  recap:
+    summary:
+      - macro_rules! macros match token patterns with fragment specifiers and repetitions, and expand to ordinary code.
+      - Internal @rules, recursion and tt munching handle complex inputs; $crate keeps exported macros robust.
+      - Procedural macros live in proc-macro crates, parse input with syn and generate code with quote.
+      - Good macros report errors with precise spans; cargo expand shows what they generate.
+      - Use macros to generate items or define DSLs, and prefer functions and builders otherwise.
+    functions: |
+      $x:expr / $i:ident / $t:ty / $t:tt || Common fragment specifiers.
+      $( ... ),* / $( ... )+ || Zero-or-more and one-or-more repetitions.
+      #[macro_export] / $crate::path || Export a macro and refer to your own crate.
+      #[proc_macro_derive(Name)] || Define a derive macro.
+      parse_macro_input!(input as DeriveInput) || Parse tokens with syn.
+      quote! { ... #var ... } || Generate tokens.
+      cargo expand || Show macro-expanded code.
+    next: A10 covers testing strategy, debugging and performance work.
+
+- id: a10
+  n: A10
+  t: Testing, debugging and performance
+  lv: 4
+  goal: Design testable code with trait-based mocks, find edge cases with property-based testing, debug with logs and debuggers, and measure performance properly.
+  res: |
+    proptest book | https://proptest-rs.github.io/proptest/
+    criterion.rs | https://bheisler.github.io/criterion.rs/book/
+    tracing | https://docs.rs/tracing
+    The Rust Performance Book | https://nnethercote.github.io/perf-book/
+  items:
+    - id: A10.1
+      t: Testable design and mocking
+      min: 60
+      learn: Depend on traits instead of concrete services, inject fakes and mocks in tests, test time and randomness deterministically, and organise unit, integration and doc tests.
+      example:
+        title: Injecting a clock and a mailer
+        check: test
+        code: |
+          use std::cell::RefCell;
+
+          pub trait Clock { fn hour(&self) -> u32; }
+          pub trait Mailer { fn send(&self, to: &str, body: &str); }
+
+          pub struct Reminder<C: Clock, M: Mailer> { clock: C, mailer: M }
+
+          impl<C: Clock, M: Mailer> Reminder<C, M> {
+              pub fn new(clock: C, mailer: M) -> Self { Reminder { clock, mailer } }
+              /// Sends the daily reminder, but never outside 8:00 to 20:00.
+              pub fn run(&self, user: &str) -> bool {
+                  let h = self.clock.hour();
+                  if !(8..20).contains(&h) { return false; }
+                  self.mailer.send(user, "Time to study Rust!");
+                  true
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              struct FixedClock(u32);
+              impl Clock for FixedClock { fn hour(&self) -> u32 { self.0 } }
+
+              #[derive(Default)]
+              struct SpyMailer { sent: RefCell<Vec<(String, String)>> }
+              impl Mailer for &SpyMailer {
+                  fn send(&self, to: &str, body: &str) { self.sent.borrow_mut().push((to.into(), body.into())); }
+              }
+
+              #[test]
+              fn sends_during_the_day() {
+                  let spy = SpyMailer::default();
+                  assert!(Reminder::new(FixedClock(9), &spy).run("kev"));
+                  assert_eq!(spy.sent.borrow()[0].0, "kev");
+              }
+
+              #[test]
+              fn silent_at_night() {
+                  let spy = SpyMailer::default();
+                  assert!(!Reminder::new(FixedClock(23), &spy).run("kev"));
+                  assert!(spy.sent.borrow().is_empty());
+              }
+          }
+        note: The real program passes a system clock and an SMTP mailer; tests pass a fixed clock and a spy that records calls. Implementing the trait for &SpyMailer lets the test keep ownership of the spy and inspect it afterwards. Crates like mockall generate such mocks, but hand-written fakes are often clearer.
+      ex:
+        - t: Test a retrying client
+          p: "Write trait Transport { fn get(&self, url: &str) -> Result<String, String>; } and fetch_with_retry(t: &impl Transport, url: &str, attempts: u32). Test it with a fake transport that fails a set number of times before succeeding, and assert how many calls were made."
+          check: test
+          hints:
+            - The fake holds a Cell<u32> counting calls and a failures_before_success number.
+            - Return Err while calls <= failures, then Ok.
+            - Write tests for success after retries and for giving up.
+          solution: |
+            use std::cell::Cell;
+
+            pub trait Transport {
+                fn get(&self, url: &str) -> Result<String, String>;
+            }
+
+            pub fn fetch_with_retry(t: &impl Transport, url: &str, attempts: u32) -> Result<String, String> {
+                let mut last = Err(String::from("no attempts made"));
+                for _ in 0..attempts {
+                    last = t.get(url);
+                    if last.is_ok() {
+                        break;
+                    }
+                }
+                last
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+
+                struct Flaky { calls: Cell<u32>, failures: u32 }
+                impl Transport for Flaky {
+                    fn get(&self, _url: &str) -> Result<String, String> {
+                        self.calls.set(self.calls.get() + 1);
+                        if self.calls.get() <= self.failures { Err("503".into()) } else { Ok("body".into()) }
+                    }
+                }
+
+                #[test]
+                fn succeeds_after_two_failures() {
+                    let t = Flaky { calls: Cell::new(0), failures: 2 };
+                    assert_eq!(fetch_with_retry(&t, "u", 5), Ok("body".into()));
+                    assert_eq!(t.calls.get(), 3);
+                }
+
+                #[test]
+                fn gives_up() {
+                    let t = Flaky { calls: Cell::new(0), failures: 10 };
+                    assert!(fetch_with_retry(&t, "u", 3).is_err());
+                    assert_eq!(t.calls.get(), 3);
+                }
+            }
+          explain: Cell is enough for a counter behind &self in single-threaded tests. Asserting the number of calls verifies the retry policy itself, not just the final result, which is the kind of check that catches subtle regressions.
+        - t: Deterministic randomness
+          p: 'Write a shuffle-based function pick_winners(names: &[&str], n: usize, rng: &mut impl rand::Rng) -> Vec<String>, and test it with a seeded StdRng so the result is repeatable.'
+          deps: ['rand = "0.8"']
+          check: test
+          hints:
+            - "use rand::seq::SliceRandom; names.choose_multiple(rng, n)"
+            - In tests, StdRng::seed_from_u64(42) gives the same sequence every run.
+            - Check properties too, such as no duplicates and the right count.
+          solution: |
+            use rand::seq::SliceRandom;
+            use rand::Rng;
+
+            pub fn pick_winners(names: &[&str], n: usize, rng: &mut impl Rng) -> Vec<String> {
+                names.choose_multiple(rng, n).map(|s| s.to_string()).collect()
+            }
+
+            fn main() {
+                let mut rng = rand::thread_rng();
+                println!("{:?}", pick_winners(&["a", "b", "c", "d"], 2, &mut rng));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                use rand::{rngs::StdRng, SeedableRng};
+                use std::collections::HashSet;
+
+                #[test]
+                fn repeatable_with_seed() {
+                    let names = ["ana", "bo", "cy", "dee", "eli"];
+                    let a = pick_winners(&names, 3, &mut StdRng::seed_from_u64(42));
+                    let b = pick_winners(&names, 3, &mut StdRng::seed_from_u64(42));
+                    assert_eq!(a, b);
+                    assert_eq!(a.iter().collect::<HashSet<_>>().len(), 3);
+                }
+            }
+          explain: Passing the random number generator in, instead of calling thread_rng inside, is dependency injection again. Seeded tests stay reproducible, so a failure in CI can be replayed locally.
+    - id: A10.2
+      t: Property-based testing
+      min: 60
+      learn: Describe properties that must hold for all inputs, let proptest generate and shrink failing cases, write round-trip and oracle properties, and keep regression files.
+      example:
+        title: Properties of a run-length encoder
+        deps: ['proptest = "1"']
+        check: test
+        code: |
+          pub fn encode(s: &str) -> Vec<(char, usize)> {
+              let mut out: Vec<(char, usize)> = Vec::new();
+              for c in s.chars() {
+                  match out.last_mut() {
+                      Some((last, n)) if *last == c => *n += 1,
+                      _ => out.push((c, 1)),
+                  }
+              }
+              out
+          }
+
+          pub fn decode(runs: &[(char, usize)]) -> String {
+              runs.iter().map(|&(c, n)| c.to_string().repeat(n)).collect()
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              use proptest::prelude::*;
+
+              proptest! {
+                  #[test]
+                  fn round_trip(s in ".*") {
+                      prop_assert_eq!(decode(&encode(&s)), s);
+                  }
+
+                  #[test]
+                  fn neighbours_differ(s in "[ab]{0,40}") {
+                      let runs = encode(&s);
+                      for w in runs.windows(2) {
+                          prop_assert_ne!(w[0].0, w[1].0);
+                      }
+                  }
+              }
+          }
+        note: Instead of picking examples, you state a rule ("decoding an encoding gives back the input") and proptest tries hundreds of random inputs, including strange Unicode. When a test fails it shrinks the input to the smallest failing case and saves it in proptest-regressions/ so it is retried every run.
+      ex:
+        - t: Properties for a sort
+          p: "Write my_sort(v: &mut Vec<i32>) using insertion sort and test three properties with proptest: the output is ordered, it has the same length, and it matches the standard sort (an oracle)."
+          deps: ['proptest = "1"']
+          check: test
+          hints:
+            - "Generate inputs with prop::collection::vec(any::<i32>(), 0..100)."
+            - "Ordered means every window of two satisfies w[0] <= w[1]."
+            - For the oracle, clone the input, call sort(), and compare.
+          solution: |
+            pub fn my_sort(v: &mut Vec<i32>) {
+                for i in 1..v.len() {
+                    let mut j = i;
+                    while j > 0 && v[j - 1] > v[j] {
+                        v.swap(j - 1, j);
+                        j -= 1;
+                    }
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                use proptest::prelude::*;
+
+                proptest! {
+                    #[test]
+                    fn sorted_and_same_as_std(input in prop::collection::vec(any::<i32>(), 0..100)) {
+                        let mut mine = input.clone();
+                        my_sort(&mut mine);
+                        prop_assert_eq!(mine.len(), input.len());
+                        prop_assert!(mine.windows(2).all(|w| w[0] <= w[1]));
+                        let mut expected = input;
+                        expected.sort();
+                        prop_assert_eq!(mine, expected);
+                    }
+                }
+            }
+          explain: Comparing against a trusted implementation (the oracle) is one of the strongest properties you can write. Property tests complement example tests rather than replace them.
+        - t: Find the bug proptest finds
+          p: "This parser has a bug: fn parse_csv_line(s: &str) -> Vec<String> { s.split(',').map(|x| x.trim().to_string()).collect() } paired with fn join(fields: &[String]) -> String { fields.join(\",\") }. Write a round-trip property, let proptest find a failing input, and explain the bug."
+          deps: ['proptest = "1"']
+          check: test
+          hints:
+            - Generate vectors of strings with prop::collection::vec(".*", 1..5).
+            - Fields containing commas or leading spaces break the round trip.
+            - The fix in the test is to restrict inputs, or better, to quote fields properly in join.
+          solution: |
+            pub fn parse_csv_line(s: &str) -> Vec<String> {
+                s.split(',').map(|x| x.trim().to_string()).collect()
+            }
+
+            pub fn join(fields: &[String]) -> String {
+                fields.join(",")
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                use proptest::prelude::*;
+
+                // The unrestricted property fails quickly, for example with
+                // fields = [","] (a comma inside a field) or [" a"] (trim removes
+                // the space). This version documents the inputs the simple
+                // format really supports:
+                proptest! {
+                    #[test]
+                    fn round_trip_simple_fields(fields in prop::collection::vec("[a-z0-9]{0,8}", 1..5)) {
+                        prop_assert_eq!(parse_csv_line(&join(&fields)), fields);
+                    }
+                }
+
+                #[test]
+                fn known_counterexample() {
+                    let fields = vec!["a,b".to_string()];
+                    assert_ne!(parse_csv_line(&join(&fields)), fields);
+                }
+            }
+          explain: Proptest shrinks the failure to something tiny like a single comma, which immediately explains the bug. In production you would use the csv crate, which quotes fields correctly.
+    - id: A10.3
+      t: Debugging, logging and benchmarking
+      min: 60
+      learn: Structured logs with tracing, stepping through code with rust-gdb or rust-lldb (or the editor debugger), benchmarks with criterion, and finding hot spots with flamegraphs.
+      example:
+        title: Instrumented code with tracing
+        deps: ['tracing = "0.1"', 'tracing-subscriber = "0.3"']
+        code: |
+          use tracing::{debug, info, instrument, warn};
+
+          #[instrument]                          // logs entry with the arguments
+          fn charge(customer: &str, cents: u64) -> Result<u64, String> {
+              debug!("validating amount");
+              if cents == 0 {
+                  warn!(customer, "zero charge rejected");
+                  return Err("amount must be positive".into());
+              }
+              info!(cents, "charged");
+              Ok(cents)
+          }
+
+          fn main() {
+              tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).with_target(false).without_time().init();
+              let _ = charge("kev", 1999);
+              let _ = charge("sam", 0);
+          }
+        output: |
+          DEBUG charge{customer="kev" cents=1999}: validating amount
+           INFO charge{customer="kev" cents=1999}: charged cents=1999
+          DEBUG charge{customer="sam" cents=0}: validating amount
+           WARN charge{customer="sam" cents=0}: zero charge rejected customer="sam"
+        note: 'tracing records structured fields, not just text, and #[instrument] adds a span so every log line inside a function carries its arguments. For interactive debugging, rust-gdb and rust-lldb (or VS Code with CodeLLDB) understand Rust types. For performance, cargo bench with criterion gives statistically sound timings, and cargo flamegraph shows where time goes.'
+      ex:
+        - t: A criterion benchmark
+          p: Benchmark two implementations of counting vowels (a loop with match and a filter with contains) using criterion, and report which is faster on a 10 KB string.
+          lang: text
+          check: none
+          hints:
+            - "Add criterion = \"0.5\" under [dev-dependencies] and a [[bench]] section with harness = false."
+            - Put the benchmark in benches/vowels.rs using criterion_group! and criterion_main!.
+            - Wrap inputs in std::hint::black_box.
+          solution: |
+            # Cargo.toml
+            [dev-dependencies]
+            criterion = "0.5"
+
+            [[bench]]
+            name = "vowels"
+            harness = false
+
+            // benches/vowels.rs
+            use criterion::{criterion_group, criterion_main, Criterion};
+            use std::hint::black_box;
+
+            fn by_match(s: &str) -> usize {
+                s.bytes().filter(|b| matches!(b, b'a' | b'e' | b'i' | b'o' | b'u')).count()
+            }
+
+            fn by_contains(s: &str) -> usize {
+                s.chars().filter(|c| "aeiou".contains(*c)).count()
+            }
+
+            fn bench(c: &mut Criterion) {
+                let text = "the quick brown fox jumps over the lazy dog ".repeat(230);
+                c.bench_function("match bytes", |b| b.iter(|| by_match(black_box(&text))));
+                c.bench_function("contains chars", |b| b.iter(|| by_contains(black_box(&text))));
+            }
+
+            criterion_group!(benches, bench);
+            criterion_main!(benches);
+
+            // $ cargo bench
+            // match bytes      time: [~3 µs ...]
+            // contains chars   time: [~15 µs ...]
+          explain: Criterion runs each function many times, warms up, detects outliers and reports confidence intervals, much like a proper load-test report rather than a single stopwatch reading. Byte matching wins here because it skips UTF-8 decoding.
+        - t: Debug a wrong answer
+          p: "This function should return the second largest value but returns the wrong result for [5, 5, 3]: fn second_largest(v: &[i32]) -> Option<i32> { let mut s = v.to_vec(); s.sort(); s.get(s.len() - 2).copied() }. Use dbg! or a debugger to find why, then fix it and add tests, including an empty slice."
+          check: test
+          hints:
+            - dbg!(&s) after sorting shows [3, 5, 5].
+            - The second-to-last element is still the largest value when it is duplicated.
+            - "Also note s.len() - 2 underflows for slices shorter than two: use checked_sub or dedup."
+          solution: |
+            fn second_largest(v: &[i32]) -> Option<i32> {
+                let mut s = v.to_vec();
+                s.sort_unstable();
+                s.dedup(); // [5, 5, 3] -> [3, 5]
+                let i = s.len().checked_sub(2)?;
+                s.get(i).copied()
+            }
+
+            fn main() {
+                println!("{:?}", second_largest(&[5, 5, 3]));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn cases() {
+                    assert_eq!(second_largest(&[5, 5, 3]), Some(3));
+                    assert_eq!(second_largest(&[1, 9, 4]), Some(4));
+                    assert_eq!(second_largest(&[7]), None);
+                    assert_eq!(second_largest(&[]), None);
+                }
+            }
+          explain: The original had two bugs, duplicates and an overflow that panics in debug builds for short inputs. A good bug report always adds the regression tests that would have caught both.
+  quiz:
+    - q: Why make a component depend on a trait such as Clock instead of the system clock directly?
+      o: |
+        So tests can inject a fake and control time
+        Traits are faster than functions
+        The system clock is not available in Rust
+        To avoid lifetimes
+      a: 0
+      x: Dependency injection makes behaviour deterministic in tests.
+    - q: What does proptest do when it finds a failing input?
+      o: |
+        Shrinks it to a minimal failing case and saves it for future runs
+        Retries until it passes
+        Ignores it
+        Reports only the first random input
+      a: 0
+      x: Saved cases live in proptest-regressions/.
+    - q: 'What does #[instrument] from tracing add?'
+      o: |
+        A span recording the function call and its arguments
+        A benchmark
+        A breakpoint
+        A unit test
+      a: 0
+      x: Every event inside the function is tagged with the span.
+    - q: Why use criterion instead of timing once with Instant?
+      o: |
+        It repeats measurements, warms up and reports statistics
+        It runs faster code
+        It works in debug builds only
+        It is required by cargo
+      a: 0
+      x: Single measurements are noisy.
+      pool: exam
+    - q: Which are good properties to test?
+      type: multi
+      o: |
+        decode(encode(x)) == x
+        A fast function agrees with a simple trusted one
+        The output of sort is ordered
+        The function returns 42 for input 7
+      a: [0, 1, 2]
+      x: The last is an example test, not a property.
+      pool: exam
+    - q: What does a seeded StdRng give a test?
+      o: |
+        The same random sequence on every run
+        True randomness
+        Faster random numbers
+        Thread safety
+      a: 0
+      x: Reproducibility makes failures debuggable.
+      pool: exam
+  recap:
+    summary:
+      - Depend on traits for clocks, randomness, network and mail so tests can inject fakes, spies and seeded generators.
+      - Property-based tests state rules for all inputs; proptest generates, shrinks and remembers failing cases.
+      - Round-trip and oracle properties are the most productive to start with.
+      - tracing gives structured, span-aware logs; rust-gdb, rust-lldb and editor debuggers understand Rust types.
+      - Benchmark with criterion and profile with flamegraphs before optimising.
+    functions: |
+      trait Clock { fn now(&self) } || A seam for injecting test doubles.
+      proptest! { fn p(x in strategy) } || A property-based test.
+      prop::collection::vec(any::<T>(), 0..n) || Generate vectors.
+      StdRng::seed_from_u64(n) || A reproducible random generator.
+      #[instrument] / info!(field, "msg") || Structured tracing.
+      criterion_group! / criterion_main! || Define benchmarks.
+      cargo flamegraph || Profile where time is spent.
+    next: A11 tours the ecosystem crates for data, command lines and HTTP.
+
+- id: a11
+  n: A11
+  t: "Ecosystem I: data, CLIs and HTTP"
+  lv: 3
+  goal: Serialise data with serde, build polished command-line tools with clap, and call web APIs with reqwest.
+  res: |
+    serde.rs | https://serde.rs/
+    clap | https://docs.rs/clap
+    reqwest | https://docs.rs/reqwest
+    Command Line Applications in Rust | https://rust-cli.github.io/book/
+  items:
+    - id: A11.1
+      t: Serialisation with serde
+      min: 60
+      learn: Derive Serialize and Deserialize, read and write JSON and TOML, rename fields, defaults and optional fields, enums with tags, and handling unknown or invalid data.
+      example:
+        title: JSON and TOML from the same types
+        deps: ['serde = { version = "1", features = ["derive"] }', 'serde_json = "1"', 'toml = "0.8"']
+        code: |
+          use serde::{Deserialize, Serialize};
+
+          #[derive(Debug, Serialize, Deserialize)]
+          #[serde(rename_all = "camelCase")]
+          struct TestRun {
+              suite_name: String,
+              #[serde(default)]
+              retries: u32,
+              tags: Option<Vec<String>>,
+              result: Outcome,
+          }
+
+          #[derive(Debug, Serialize, Deserialize)]
+          #[serde(tag = "status", rename_all = "lowercase")]
+          enum Outcome {
+              Passed { duration_ms: u64 },
+              Failed { reason: String },
+          }
+
+          fn main() -> Result<(), Box<dyn std::error::Error>> {
+              let json = r#"{"suiteName":"login","result":{"status":"failed","reason":"timeout"}}"#;
+              let run: TestRun = serde_json::from_str(json)?;
+              println!("{run:?}");
+
+              let ok = TestRun { suite_name: "pay".into(), retries: 1, tags: Some(vec!["smoke".into()]), result: Outcome::Passed { duration_ms: 420 } };
+              println!("{}", serde_json::to_string(&ok)?);
+              print!("{}", toml::to_string(&ok)?);
+              Ok(())
+          }
+        output: |
+          TestRun { suite_name: "login", retries: 0, tags: None, result: Failed { reason: "timeout" } }
+          {"suiteName":"pay","retries":1,"tags":["smoke"],"result":{"status":"passed","duration_ms":420}}
+          suiteName = "pay"
+          retries = 1
+          tags = ["smoke"]
+
+          [result]
+          status = "passed"
+          duration_ms = 420
+        note: 'One derive works with every format serde supports (JSON, TOML, YAML, CBOR, MessagePack and more). Option fields may be missing, #[serde(default)] fills missing values, and tagged enums map cleanly onto API shapes. Invalid input becomes a descriptive error, never a panic.'
+      ex:
+        - t: Load a config file
+          p: Define a Config with server (host, port), a list of upstream URLs and an optional log_level defaulting to "info", load it from TOML, and test both a full file and a minimal one.
+          deps: ['serde = { version = "1", features = ["derive"] }', 'toml = "0.8"']
+          check: test
+          hints:
+            - Nested tables in TOML map to nested structs.
+            - "#[serde(default = \"default_level\")] calls a function for the default."
+            - toml::from_str returns a Result with a helpful message on errors.
+          solution: |
+            use serde::Deserialize;
+
+            #[derive(Debug, Deserialize, PartialEq)]
+            struct Server { host: String, port: u16 }
+
+            fn default_level() -> String { "info".into() }
+
+            #[derive(Debug, Deserialize, PartialEq)]
+            struct Config {
+                server: Server,
+                #[serde(default)]
+                upstreams: Vec<String>,
+                #[serde(default = "default_level")]
+                log_level: String,
+            }
+
+            fn load(text: &str) -> Result<Config, toml::de::Error> {
+                toml::from_str(text)
+            }
+
+            fn main() {
+                let c = load("upstreams = [\"http://a\"]\n[server]\nhost = \"0.0.0.0\"\nport = 8080\n").unwrap();
+                println!("{c:?}");
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn minimal_uses_defaults() {
+                    let c = load("[server]\nhost = \"h\"\nport = 1\n").unwrap();
+                    assert_eq!(c.log_level, "info");
+                    assert!(c.upstreams.is_empty());
+                }
+                #[test]
+                fn bad_port_is_error() {
+                    assert!(load("[server]\nhost = \"h\"\nport = 99999\n").is_err());
+                }
+            }
+          explain: The port check comes for free because u16 cannot hold 99999, and serde reports exactly which key failed. Typed configuration catches mistakes at start-up instead of deep inside the program.
+        - t: Process a JSON API response
+          p: Parse a JSON array of issues (id, title, labels, an optional assignee) from a string, ignoring unknown fields, then print the titles of unassigned issues labelled "bug".
+          deps: ['serde = { version = "1", features = ["derive"] }', 'serde_json = "1"']
+          check: test
+          hints:
+            - Fields not listed in the struct are ignored by default.
+            - Use Option<String> for assignee.
+            - Filter with issue.assignee.is_none() && issue.labels.iter().any(|l| l == "bug").
+          solution: |
+            use serde::Deserialize;
+
+            #[derive(Debug, Deserialize)]
+            struct Issue {
+                id: u64,
+                title: String,
+                #[serde(default)]
+                labels: Vec<String>,
+                assignee: Option<String>,
+            }
+
+            fn unassigned_bugs(json: &str) -> serde_json::Result<Vec<String>> {
+                let issues: Vec<Issue> = serde_json::from_str(json)?;
+                Ok(issues
+                    .into_iter()
+                    .filter(|i| i.assignee.is_none() && i.labels.iter().any(|l| l == "bug"))
+                    .map(|i| format!("#{} {}", i.id, i.title))
+                    .collect())
+            }
+
+            fn main() {
+                let json = r#"[
+                  {"id": 1, "title": "Crash on login", "labels": ["bug"], "assignee": null, "url": "x"},
+                  {"id": 2, "title": "Dark mode", "labels": ["feature"]},
+                  {"id": 3, "title": "Typo", "labels": ["bug", "docs"], "assignee": "kev"}
+                ]"#;
+                println!("{:?}", unassigned_bugs(json).unwrap());
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn filters() {
+                    let j = r#"[{"id":5,"title":"x","labels":["bug"]}]"#;
+                    assert_eq!(unassigned_bugs(j).unwrap(), vec!["#5 x"]);
+                }
+            }
+          explain: 'Ignoring unknown fields means your code keeps working when the API adds new ones. Add #[serde(deny_unknown_fields)] instead when you want strictness, for example for configuration files.'
+    - id: A11.2
+      t: Command-line tools with clap
+      min: 60
+      learn: Define arguments, options, flags and subcommands with clap's derive API, generate help and version output, validate values, and read configuration from environment variables.
+      example:
+        title: A todo CLI skeleton
+        deps: ['clap = { version = "4", features = ["derive", "env"] }']
+        check: build
+        code: |
+          use clap::{Parser, Subcommand, ValueEnum};
+
+          /// A tiny todo manager
+          #[derive(Parser, Debug)]
+          #[command(version, about)]
+          struct Cli {
+              /// Path to the todo file
+              #[arg(short, long, env = "TODO_FILE", default_value = "todo.json")]
+              file: String,
+              /// Print more details
+              #[arg(short, long)]
+              verbose: bool,
+              #[command(subcommand)]
+              command: Command,
+          }
+
+          #[derive(Subcommand, Debug)]
+          enum Command {
+              /// Add a task
+              Add { text: String, #[arg(short, long, value_enum, default_value_t = Priority::Normal)] priority: Priority },
+              /// List tasks
+              List { #[arg(long)] all: bool },
+              /// Mark a task as done
+              Done { id: u32 },
+          }
+
+          #[derive(ValueEnum, Clone, Debug)]
+          enum Priority { Low, Normal, High }
+
+          fn main() {
+              let cli = Cli::parse();
+              match &cli.command {
+                  Command::Add { text, priority } => println!("add {text:?} ({priority:?}) to {}", cli.file),
+                  Command::List { all } => println!("list (all: {all})"),
+                  Command::Done { id } => println!("done #{id}"),
+              }
+          }
+        output: |
+          $ todo add "write tests" -p high
+          add "write tests" (High) to todo.json
+          $ todo --help
+          A tiny todo manager
+
+          Usage: todo [OPTIONS] <COMMAND>
+
+          Commands:
+            add   Add a task
+            list  List tasks
+            done  Mark a task as done
+          ...
+        note: Doc comments become help text, types become validation (Done needs a number, priority must be low, normal or high), and errors and --help come for free. env = "TODO_FILE" lets the environment supply a default.
+      ex:
+        - t: A file statistics CLI
+          p: Build a clap CLI fstat with a list of file paths, a --format option accepting text or json, and a --top N option showing the N longest lines. Test the argument parsing with Cli::try_parse_from.
+          deps: ['clap = { version = "4", features = ["derive"] }']
+          check: test
+          hints:
+            - "#[arg(required = true)] paths: Vec<PathBuf> collects one or more paths."
+            - A ValueEnum enum gives the allowed formats.
+            - "try_parse_from([\"fstat\", \"a.txt\", \"--top\", \"3\"]) lets tests parse without a real command line."
+          solution: |
+            use clap::{Parser, ValueEnum};
+            use std::path::PathBuf;
+
+            #[derive(ValueEnum, Clone, Debug, PartialEq)]
+            enum Format { Text, Json }
+
+            /// Show statistics about text files
+            #[derive(Parser, Debug)]
+            #[command(name = "fstat", version)]
+            struct Cli {
+                /// Files to inspect
+                #[arg(required = true)]
+                paths: Vec<PathBuf>,
+                /// Output format
+                #[arg(long, value_enum, default_value_t = Format::Text)]
+                format: Format,
+                /// Show the N longest lines
+                #[arg(long, default_value_t = 0)]
+                top: usize,
+            }
+
+            fn main() {
+                let cli = Cli::parse();
+                for p in &cli.paths {
+                    let text = std::fs::read_to_string(p).unwrap_or_default();
+                    let mut lines: Vec<&str> = text.lines().collect();
+                    lines.sort_by_key(|l| std::cmp::Reverse(l.len()));
+                    match cli.format {
+                        Format::Text => println!("{}: {} lines", p.display(), text.lines().count()),
+                        Format::Json => println!("{{\"path\":{:?},\"lines\":{}}}", p.display().to_string(), text.lines().count()),
+                    }
+                    for l in lines.iter().take(cli.top) {
+                        println!("  {l}");
+                    }
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn parses() {
+                    let c = Cli::try_parse_from(["fstat", "a.txt", "b.txt", "--format", "json", "--top", "3"]).unwrap();
+                    assert_eq!(c.paths.len(), 2);
+                    assert_eq!(c.format, Format::Json);
+                    assert_eq!(c.top, 3);
+                }
+                #[test]
+                fn needs_a_path() {
+                    assert!(Cli::try_parse_from(["fstat"]).is_err());
+                }
+                #[test]
+                fn rejects_bad_format() {
+                    assert!(Cli::try_parse_from(["fstat", "a", "--format", "xml"]).is_err());
+                }
+            }
+          explain: try_parse_from makes the command-line interface itself testable, a step many tools skip. In real JSON output use serde_json rather than hand-building strings.
+        - t: Exit codes and stderr
+          p: Make a CLI that validates an email list file and exits with code 0 if all are valid, 1 if some are invalid (printing them to stderr), and 2 for usage or I/O errors. Explain why distinct exit codes matter in scripts and CI.
+          check: test
+          hints:
+            - std::process::ExitCode lets main return a code cleanly.
+            - Use eprintln! for invalid entries and errors.
+            - Keep the validation in a separate function you can test.
+          solution: |
+            use std::process::ExitCode;
+
+            fn invalid_lines(text: &str) -> Vec<&str> {
+                text.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .filter(|l| !(l.contains('@') && l.split('@').nth(1).is_some_and(|d| d.contains('.'))))
+                    .collect()
+            }
+
+            fn main() -> ExitCode {
+                let Some(path) = std::env::args().nth(1) else {
+                    eprintln!("usage: checkmail FILE");
+                    return ExitCode::from(2);
+                };
+                let text = match std::fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("cannot read {path}: {e}");
+                        return ExitCode::from(2);
+                    }
+                };
+                let bad = invalid_lines(&text);
+                for b in &bad {
+                    eprintln!("invalid: {b}");
+                }
+                if bad.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(1) }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn finds_invalid() {
+                    assert_eq!(invalid_lines("a@b.com\nnope\nx@y\n\n"), vec!["nope", "x@y"]);
+                }
+            }
+          explain: Scripts and CI pipelines decide what to do next from the exit code, so "some data was invalid" (1) and "the tool could not run" (2) should be distinguishable, the same convention grep and many Unix tools use.
+    - id: A11.3
+      t: HTTP clients with reqwest
+      min: 45
+      learn: Make GET and POST requests with reqwest, decode JSON responses into structs, set headers, timeouts and query parameters, handle HTTP errors with error_for_status, and know what hyper does underneath.
+      example:
+        title: Calling a JSON API
+        deps: ['reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }', 'tokio = { version = "1", features = ["full"] }', 'serde = { version = "1", features = ["derive"] }']
+        check: build
+        code: |
+          use serde::Deserialize;
+          use std::time::Duration;
+
+          #[derive(Debug, Deserialize)]
+          struct Release {
+              tag_name: String,
+              published_at: String,
+          }
+
+          #[tokio::main]
+          async fn main() -> Result<(), reqwest::Error> {
+              let client = reqwest::Client::builder()
+                  .user_agent("rust-course-example")
+                  .timeout(Duration::from_secs(10))
+                  .build()?;
+              let latest: Release = client
+                  .get("https://api.github.com/repos/rust-lang/rust/releases/latest")
+                  .send()
+                  .await?
+                  .error_for_status()?        // turn 4xx/5xx into an Err
+                  .json()
+                  .await?;
+              println!("Rust {} published {}", latest.tag_name, latest.published_at);
+              Ok(())
+          }
+        output: |
+          Rust 1.97.0 published 2026-07-09T...
+        note: Reuse one Client for many requests, since it pools connections. error_for_status is easy to forget; without it a 404 response is treated as success. reqwest is built on hyper, the low-level HTTP library that also powers axum. reqwest::blocking exists for simple scripts without async.
+      ex:
+        - t: A JSON API client
+          p: Write an async function that fetches https://httpbin.org/get?course=rust with a custom header X-Student, parses the JSON echo into a struct, and returns the header value the server saw. Handle a timeout of 5 seconds.
+          deps: ['reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }', 'tokio = { version = "1", features = ["full"] }', 'serde = { version = "1", features = ["derive"] }']
+          check: build
+          hints:
+            - ".query(&[(\"course\", \"rust\")]) adds query parameters safely."
+            - httpbin echoes request headers under "headers" and query values under "args".
+            - Use a HashMap<String, String> for headers in the response struct.
+          solution: |
+            use serde::Deserialize;
+            use std::collections::HashMap;
+            use std::time::Duration;
+
+            #[derive(Debug, Deserialize)]
+            struct Echo {
+                args: HashMap<String, String>,
+                headers: HashMap<String, String>,
+            }
+
+            async fn whoami(student: &str) -> Result<(String, String), reqwest::Error> {
+                let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build()?;
+                let echo: Echo = client
+                    .get("https://httpbin.org/get")
+                    .query(&[("course", "rust")])
+                    .header("X-Student", student)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                Ok((
+                    echo.args.get("course").cloned().unwrap_or_default(),
+                    echo.headers.get("X-Student").cloned().unwrap_or_default(),
+                ))
+            }
+
+            #[tokio::main]
+            async fn main() {
+                match whoami("kev").await {
+                    Ok((course, who)) => println!("server saw course={course}, student={who}"),
+                    Err(e) if e.is_timeout() => eprintln!("timed out"),
+                    Err(e) => eprintln!("request failed: {e}"),
+                }
+            }
+          explain: Using .query instead of formatting the URL yourself handles escaping correctly. Checking e.is_timeout() lets a tool give a specific message, or retry, only for timeouts.
+        - t: Parallel requests with a limit
+          p: Fetch the status codes of 10 URLs concurrently with at most 3 requests in flight, using futures::stream::iter(...).buffer_unordered(3), and print a status line per URL.
+          deps: ['reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }', 'tokio = { version = "1", features = ["full"] }', 'futures = "0.3"']
+          check: build
+          hints:
+            - Map each URL to an async block that returns (url, Result<StatusCode, Error>).
+            - buffer_unordered(3) runs at most three of those futures at once.
+            - Collect with .collect::<Vec<_>>().await.
+          solution: |
+            use futures::stream::{self, StreamExt};
+
+            #[tokio::main]
+            async fn main() {
+                let client = reqwest::Client::new();
+                let urls: Vec<String> = (200..210).map(|code| format!("https://httpbin.org/status/{code}")).collect();
+                let results: Vec<_> = stream::iter(urls)
+                    .map(|url| {
+                        let client = client.clone(); // cheap: shares the connection pool
+                        async move {
+                            let status = client.get(&url).send().await.map(|r| r.status());
+                            (url, status)
+                        }
+                    })
+                    .buffer_unordered(3)
+                    .collect()
+                    .await;
+                for (url, status) in results {
+                    match status {
+                        Ok(s) => println!("{s} {url}"),
+                        Err(e) => println!("ERR {url}: {e}"),
+                    }
+                }
+            }
+          explain: buffer_unordered is the stream equivalent of a semaphore-limited JoinSet, and a compact way to be polite to the server you are calling. Cloning a reqwest Client is cheap because it shares one connection pool.
+  quiz:
+    - q: 'What does #[serde(default)] on a field do when the key is missing?'
+      o: |
+        Uses the type's Default value
+        Returns an error
+        Uses null
+        Skips the whole struct
+      a: 0
+      x: Use default = "path" for a custom function.
+    - q: How does clap's derive API turn doc comments into output?
+      o: |
+        They become the help text for the command and each argument
+        They are ignored
+        They become log messages
+        They are only for rustdoc
+      a: 0
+      x: Running --help shows them.
+    - q: Why call error_for_status() on a reqwest response?
+      o: |
+        To turn 4xx and 5xx responses into errors
+        To retry failed requests
+        To parse JSON
+        To set a timeout
+      a: 0
+      x: Otherwise a 404 counts as a successful request.
+    - q: Which are true about serde?
+      type: multi
+      o: |
+        One derive works with many formats such as JSON and TOML
+        Unknown fields are ignored unless you deny them
+        Invalid input causes a panic
+        Enums can be tagged with #[serde(tag = "...")]
+      a: [0, 1, 3]
+      x: Invalid input returns a descriptive error.
+      pool: exam
+    - q: Why should one reqwest::Client be reused across requests?
+      o: |
+        It keeps a connection pool, avoiding new TLS handshakes
+        Clients cannot be created twice
+        It caches responses forever
+        It is required for JSON
+      a: 0
+      x: Clone it freely; clones share the pool.
+      pool: exam
+    - q: What does ExitCode::from(2) from main communicate?
+      o: |
+        A specific failure code that scripts and CI can test
+        That the program succeeded
+        That two errors occurred
+        Nothing; the code is ignored
+      a: 0
+      x: Exit codes are how command-line programs report outcomes.
+      pool: exam
+  recap:
+    summary:
+      - serde derives turn structs and enums into JSON, TOML and many other formats, with rename, default, optional and tagged forms.
+      - clap's derive API builds arguments, options, subcommands, validation and help from types and doc comments.
+      - Make CLIs testable with try_parse_from, and report outcomes with stderr and exit codes.
+      - reqwest makes HTTP calls with JSON decoding, timeouts and headers; reuse one Client and call error_for_status.
+      - buffer_unordered limits concurrent requests in a stream.
+    functions: |
+      #[derive(Serialize, Deserialize)] || Make a type serialisable.
+      serde_json::from_str / to_string || JSON in and out.
+      toml::from_str || Parse TOML configuration.
+      #[derive(Parser)] / Cli::parse() || Define and parse a CLI with clap.
+      Cli::try_parse_from([...]) || Parse arguments in tests.
+      std::process::ExitCode || Return an exit status from main.
+      client.get(url).send().await?.error_for_status()?.json().await? || The usual reqwest chain.
+      stream::iter(xs).map(f).buffer_unordered(n) || Bounded concurrent futures.
+    next: A12 covers web servers, databases, unsafe code with FFI, and WebAssembly.
+
+- id: a12
+  n: A12
+  t: "Ecosystem II: web, databases, FFI and WebAssembly"
+  lv: 4
+  goal: Build a JSON web API with axum, store data in SQLite, call and expose C functions safely, and compile Rust to WebAssembly for the browser.
+  res: |
+    axum | https://docs.rs/axum
+    rusqlite | https://docs.rs/rusqlite
+    sqlx | https://docs.rs/sqlx
+    The Rustonomicon, FFI | https://doc.rust-lang.org/nomicon/ffi.html
+    Rust and WebAssembly | https://rustwasm.github.io/docs/book/
+  items:
+    - id: A12.1
+      t: Web APIs with axum
+      min: 75
+      lv: 4
+      learn: Routes and handlers, extractors for paths, queries and JSON bodies, shared state with State, returning status codes and JSON, and testing handlers without a network.
+      example:
+        title: A notes API
+        deps: ['axum = "0.8"', 'tokio = { version = "1", features = ["full"] }', 'serde = { version = "1", features = ["derive"] }', 'tower = { version = "0.5", features = ["util"] }', 'http-body-util = "0.1"']
+        check: test
+        code: |
+          use axum::{
+              extract::{Path, State},
+              http::StatusCode,
+              routing::{get, post},
+              Json, Router,
+          };
+          use serde::{Deserialize, Serialize};
+          use std::sync::{Arc, Mutex};
+
+          #[derive(Clone, Serialize, Deserialize)]
+          struct Note { id: u32, text: String }
+
+          #[derive(Deserialize)]
+          struct NewNote { text: String }
+
+          type Db = Arc<Mutex<Vec<Note>>>;
+
+          async fn list(State(db): State<Db>) -> Json<Vec<Note>> {
+              Json(db.lock().unwrap().clone())
+          }
+
+          async fn create(State(db): State<Db>, Json(input): Json<NewNote>) -> (StatusCode, Json<Note>) {
+              let mut notes = db.lock().unwrap();
+              let note = Note { id: notes.len() as u32 + 1, text: input.text };
+              notes.push(note.clone());
+              (StatusCode::CREATED, Json(note))
+          }
+
+          async fn get_one(State(db): State<Db>, Path(id): Path<u32>) -> Result<Json<Note>, StatusCode> {
+              db.lock().unwrap().iter().find(|n| n.id == id).cloned().map(Json).ok_or(StatusCode::NOT_FOUND)
+          }
+
+          fn app(db: Db) -> Router {
+              Router::new()
+                  .route("/notes", get(list).post(create))
+                  .route("/notes/{id}", get(get_one))
+                  .with_state(db)
+          }
+
+          #[tokio::main]
+          async fn main() {
+              let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await.unwrap();
+              axum::serve(listener, app(Db::default())).await.unwrap();
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              use axum::body::Body;
+              use axum::http::Request;
+              use http_body_util::BodyExt;
+              use tower::ServiceExt;
+
+              #[tokio::test]
+              async fn create_then_get() {
+                  let db = Db::default();
+                  let res = app(db.clone())
+                      .oneshot(Request::post("/notes").header("content-type", "application/json").body(Body::from(r#"{"text":"learn axum"}"#)).unwrap())
+                      .await.unwrap();
+                  assert_eq!(res.status(), StatusCode::CREATED);
+                  let res = app(db).oneshot(Request::get("/notes/1").body(Body::empty()).unwrap()).await.unwrap();
+                  let body = res.into_body().collect().await.unwrap().to_bytes();
+                  assert!(String::from_utf8_lossy(&body).contains("learn axum"));
+              }
+          }
+        note: Handlers are plain async functions whose parameters are extractors; axum parses and validates the request before your code runs, and a malformed JSON body gets a 4xx automatically. Anything implementing IntoResponse can be returned, including a (StatusCode, Json) tuple or a Result. oneshot sends a request straight to the router, so tests need no open port.
+      ex:
+        - t: Add update and delete
+          p: Extend the notes API with PUT /notes/{id} (replace the text, 404 if missing) and DELETE /notes/{id} (204 on success, 404 if missing), with tests for both.
+          deps: ['axum = "0.8"', 'tokio = { version = "1", features = ["full"] }', 'serde = { version = "1", features = ["derive"] }', 'tower = { version = "0.5", features = ["util"] }']
+          check: test
+          hints:
+            - ".route(\"/notes/{id}\", get(get_one).put(update).delete(remove))"
+            - Return StatusCode::NO_CONTENT for a successful delete.
+            - Use iter_mut().find(...) to update in place, and position + remove to delete.
+          solution: |
+            use axum::{extract::{Path, State}, http::StatusCode, routing::get, Json, Router};
+            use serde::{Deserialize, Serialize};
+            use std::sync::{Arc, Mutex};
+
+            #[derive(Clone, Serialize, Deserialize)]
+            struct Note { id: u32, text: String }
+            #[derive(Deserialize)]
+            struct NewNote { text: String }
+            type Db = Arc<Mutex<Vec<Note>>>;
+
+            async fn update(State(db): State<Db>, Path(id): Path<u32>, Json(input): Json<NewNote>) -> Result<Json<Note>, StatusCode> {
+                let mut notes = db.lock().unwrap();
+                let note = notes.iter_mut().find(|n| n.id == id).ok_or(StatusCode::NOT_FOUND)?;
+                note.text = input.text;
+                Ok(Json(note.clone()))
+            }
+
+            async fn remove(State(db): State<Db>, Path(id): Path<u32>) -> StatusCode {
+                let mut notes = db.lock().unwrap();
+                match notes.iter().position(|n| n.id == id) {
+                    Some(i) => {
+                        notes.remove(i);
+                        StatusCode::NO_CONTENT
+                    }
+                    None => StatusCode::NOT_FOUND,
+                }
+            }
+
+            fn app(db: Db) -> Router {
+                Router::new().route("/notes/{id}", get(|| async { "use the full API" }).put(update).delete(remove)).with_state(db)
+            }
+
+            #[tokio::main]
+            async fn main() {
+                let db: Db = Arc::new(Mutex::new(vec![Note { id: 1, text: "first".into() }]));
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await.unwrap();
+                axum::serve(listener, app(db)).await.unwrap();
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                use axum::{body::Body, http::Request};
+                use tower::ServiceExt;
+
+                fn seeded() -> Db {
+                    Arc::new(Mutex::new(vec![Note { id: 1, text: "a".into() }]))
+                }
+
+                #[tokio::test]
+                async fn put_updates_and_404s() {
+                    let db = seeded();
+                    let req = |id: u32| Request::put(format!("/notes/{id}")).header("content-type", "application/json").body(Body::from(r#"{"text":"b"}"#)).unwrap();
+                    assert_eq!(app(db.clone()).oneshot(req(1)).await.unwrap().status(), StatusCode::OK);
+                    assert_eq!(db.lock().unwrap()[0].text, "b");
+                    assert_eq!(app(db).oneshot(req(9)).await.unwrap().status(), StatusCode::NOT_FOUND);
+                }
+
+                #[tokio::test]
+                async fn delete_twice() {
+                    let db = seeded();
+                    let req = || Request::delete("/notes/1").body(Body::empty()).unwrap();
+                    assert_eq!(app(db.clone()).oneshot(req()).await.unwrap().status(), StatusCode::NO_CONTENT);
+                    assert_eq!(app(db).oneshot(req()).await.unwrap().status(), StatusCode::NOT_FOUND);
+                }
+            }
+          explain: The ? inside update returns the 404 straight from the handler, because Result<Json<Note>, StatusCode> implements IntoResponse. Testing status codes for both the happy and missing paths is the core of API test coverage.
+        - t: Validation and error responses
+          p: Make create reject empty or longer-than-280-character text with 422 Unprocessable Entity and a JSON body {"error":"..."}, by introducing an ApiError enum that implements IntoResponse.
+          deps: ['axum = "0.8"', 'tokio = { version = "1", features = ["full"] }', 'serde = { version = "1", features = ["derive"] }', 'serde_json = "1"']
+          check: test
+          hints:
+            - "impl IntoResponse for ApiError { fn into_response(self) -> Response { (status, Json(json!({\"error\": msg}))).into_response() } }"
+            - Handlers then return Result<(StatusCode, Json<Note>), ApiError>.
+            - Check the length with text.trim().is_empty() and text.chars().count() > 280.
+          solution: |
+            use axum::{http::StatusCode, response::{IntoResponse, Response}, Json};
+            use serde::Deserialize;
+            use serde_json::json;
+
+            enum ApiError {
+                Validation(String),
+            }
+
+            impl IntoResponse for ApiError {
+                fn into_response(self) -> Response {
+                    match self {
+                        ApiError::Validation(msg) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": msg }))).into_response(),
+                    }
+                }
+            }
+
+            #[derive(Deserialize)]
+            struct NewNote { text: String }
+
+            fn validate(n: &NewNote) -> Result<(), ApiError> {
+                if n.text.trim().is_empty() {
+                    return Err(ApiError::Validation("text must not be empty".into()));
+                }
+                if n.text.chars().count() > 280 {
+                    return Err(ApiError::Validation("text must be at most 280 characters".into()));
+                }
+                Ok(())
+            }
+
+            async fn create(Json(input): Json<NewNote>) -> Result<(StatusCode, String), ApiError> {
+                validate(&input)?;
+                Ok((StatusCode::CREATED, input.text))
+            }
+
+            #[tokio::main]
+            async fn main() {
+                let app = axum::Router::new().route("/notes", axum::routing::post(create));
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await.unwrap();
+                axum::serve(listener, app).await.unwrap();
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn rules() {
+                    assert!(validate(&NewNote { text: "  ".into() }).is_err());
+                    assert!(validate(&NewNote { text: "x".repeat(281) }).is_err());
+                    assert!(validate(&NewNote { text: "ok".into() }).is_ok());
+                }
+                #[test]
+                fn status_code() {
+                    let r = ApiError::Validation("bad".into()).into_response();
+                    assert_eq!(r.status(), StatusCode::UNPROCESSABLE_ENTITY);
+                }
+            }
+          explain: One error type that knows how to become a response keeps every handler consistent, and ? converts lower-level errors once From impls are added. Counting chars rather than bytes keeps the limit fair for accented text.
+    - id: A12.2
+      t: Databases with rusqlite and sqlx
+      min: 60
+      learn: Open a SQLite database, create tables, insert with parameters (never string formatting), query rows into structs, use transactions, and how sqlx offers async and compile-time checked queries for Postgres and others.
+      example:
+        title: Bugs in SQLite with rusqlite
+        deps: ['rusqlite = { version = "0.32", features = ["bundled"] }']
+        code: |
+          use rusqlite::{params, Connection, Result};
+
+          #[derive(Debug)]
+          struct Bug { id: i64, title: String, severity: String }
+
+          fn main() -> Result<()> {
+              let conn = Connection::open_in_memory()?;      // or Connection::open("bugs.db")
+              conn.execute_batch(
+                  "CREATE TABLE bugs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, severity TEXT NOT NULL);",
+              )?;
+
+              let mut tx = conn.unchecked_transaction()?;
+              for (t, s) in [("Crash on login", "high"), ("Typo on page", "low"), ("Robert'); DROP TABLE bugs;--", "low")] {
+                  tx.execute("INSERT INTO bugs (title, severity) VALUES (?1, ?2)", params![t, s])?; // safe parameters
+              }
+              tx.commit()?;
+              tx = conn.unchecked_transaction()?;
+              tx.rollback()?;
+
+              let mut stmt = conn.prepare("SELECT id, title, severity FROM bugs WHERE severity = ?1 ORDER BY id")?;
+              let low: Vec<Bug> = stmt
+                  .query_map(["low"], |r| Ok(Bug { id: r.get(0)?, title: r.get(1)?, severity: r.get(2)? }))?
+                  .collect::<Result<_>>()?;
+              println!("{low:#?}");
+              let n: i64 = conn.query_row("SELECT COUNT(*) FROM bugs", [], |r| r.get(0))?;
+              println!("{n} bugs total; the table survived the injection attempt");
+              Ok(())
+          }
+        output: |
+          [
+              Bug {
+                  id: 2,
+                  title: "Typo on page",
+                  severity: "low",
+              },
+              Bug {
+                  id: 3,
+                  title: "Robert'); DROP TABLE bugs;--",
+                  severity: "low",
+              },
+          ]
+          3 bugs total; the table survived the injection attempt
+        note: Parameters (?1, ?2) are sent separately from the SQL, so input can never change the query, which is how SQL injection is prevented. The bundled feature compiles SQLite into your program, so there is nothing to install. For servers, sqlx gives async access to Postgres, MySQL and SQLite, and its query! macro checks your SQL against a real database at compile time.
+      ex:
+        - t: A repository over SQLite
+          p: Write a BugRepo struct wrapping a Connection with add(title, severity) -> i64, by_severity(sev) -> Vec<Bug> and close(id) -> bool (sets a closed flag). Test it with an in-memory database.
+          deps: ['rusqlite = { version = "0.32", features = ["bundled"] }']
+          check: test
+          hints:
+            - Create the table in BugRepo::new, including closed INTEGER NOT NULL DEFAULT 0.
+            - conn.last_insert_rowid() gives the new id.
+            - execute returns the number of rows changed; close returns true when it is 1.
+          solution: |
+            use rusqlite::{params, Connection, Result};
+
+            #[derive(Debug, PartialEq)]
+            pub struct Bug { pub id: i64, pub title: String, pub closed: bool }
+
+            pub struct BugRepo { conn: Connection }
+
+            impl BugRepo {
+                pub fn new(conn: Connection) -> Result<Self> {
+                    conn.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS bugs (
+                            id INTEGER PRIMARY KEY,
+                            title TEXT NOT NULL,
+                            severity TEXT NOT NULL,
+                            closed INTEGER NOT NULL DEFAULT 0
+                        );",
+                    )?;
+                    Ok(BugRepo { conn })
+                }
+                pub fn add(&self, title: &str, severity: &str) -> Result<i64> {
+                    self.conn.execute("INSERT INTO bugs (title, severity) VALUES (?1, ?2)", params![title, severity])?;
+                    Ok(self.conn.last_insert_rowid())
+                }
+                pub fn by_severity(&self, sev: &str) -> Result<Vec<Bug>> {
+                    let mut stmt = self.conn.prepare("SELECT id, title, closed FROM bugs WHERE severity = ?1 ORDER BY id")?;
+                    let rows = stmt.query_map([sev], |r| Ok(Bug { id: r.get(0)?, title: r.get(1)?, closed: r.get(2)? }))?;
+                    rows.collect()
+                }
+                pub fn close(&self, id: i64) -> Result<bool> {
+                    Ok(self.conn.execute("UPDATE bugs SET closed = 1 WHERE id = ?1 AND closed = 0", [id])? == 1)
+                }
+            }
+
+            fn main() -> Result<()> {
+                let repo = BugRepo::new(Connection::open_in_memory()?)?;
+                let id = repo.add("Login loop", "high")?;
+                repo.close(id)?;
+                println!("{:?}", repo.by_severity("high")?);
+                Ok(())
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn add_query_close() {
+                    let repo = BugRepo::new(Connection::open_in_memory().unwrap()).unwrap();
+                    let id = repo.add("a", "low").unwrap();
+                    repo.add("b", "high").unwrap();
+                    assert_eq!(repo.by_severity("low").unwrap().len(), 1);
+                    assert!(repo.close(id).unwrap());
+                    assert!(!repo.close(id).unwrap(), "closing twice changes nothing");
+                    assert!(repo.by_severity("low").unwrap()[0].closed);
+                }
+            }
+          explain: rusqlite converts SQLite integers to bool automatically. An in-memory database makes each test fast and isolated, and the AND closed = 0 condition makes close idempotent, a nice property to test.
+        - t: Transactions keep data consistent
+          p: 'Write transfer(conn: &mut Connection, from: i64, to: i64, amount: i64) -> Result<()> over an accounts table that debits and credits inside one transaction and rolls back if the balance would go negative. Test that a failed transfer changes nothing.'
+          deps: ['rusqlite = { version = "0.32", features = ["bundled"] }']
+          check: test
+          hints:
+            - let tx = conn.transaction()?; then run both UPDATEs on tx and tx.commit()?
+            - Read the balance inside the transaction first and return an error if it is too low.
+            - Returning early drops tx, which rolls back automatically.
+          solution: |
+            use rusqlite::{params, Connection};
+
+            fn setup() -> Connection {
+                let c = Connection::open_in_memory().unwrap();
+                c.execute_batch("CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance INTEGER NOT NULL);
+                                 INSERT INTO accounts VALUES (1, 100), (2, 0);").unwrap();
+                c
+            }
+
+            fn transfer(conn: &mut Connection, from: i64, to: i64, amount: i64) -> Result<(), String> {
+                let tx = conn.transaction().map_err(|e| e.to_string())?;
+                let bal: i64 = tx.query_row("SELECT balance FROM accounts WHERE id = ?1", [from], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if bal < amount {
+                    return Err(format!("insufficient funds: {bal} < {amount}")); // tx dropped: rollback
+                }
+                tx.execute("UPDATE accounts SET balance = balance - ?1 WHERE id = ?2", params![amount, from]).map_err(|e| e.to_string())?;
+                tx.execute("UPDATE accounts SET balance = balance + ?1 WHERE id = ?2", params![amount, to]).map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())
+            }
+
+            fn balance(c: &Connection, id: i64) -> i64 {
+                c.query_row("SELECT balance FROM accounts WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+            }
+
+            fn main() {
+                let mut c = setup();
+                println!("{:?}", transfer(&mut c, 1, 2, 30));
+                println!("{} {}", balance(&c, 1), balance(&c, 2));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn failed_transfer_changes_nothing() {
+                    let mut c = setup();
+                    assert!(transfer(&mut c, 1, 2, 500).is_err());
+                    assert_eq!((balance(&c, 1), balance(&c, 2)), (100, 0));
+                    transfer(&mut c, 1, 2, 40).unwrap();
+                    assert_eq!((balance(&c, 1), balance(&c, 2)), (60, 40));
+                }
+            }
+          explain: rusqlite's Transaction rolls back in its Drop unless commit is called, so every early return is safe. This RAII behaviour makes it very hard to leave half-finished updates in the database.
+    - id: A12.3
+      t: Unsafe Rust and FFI
+      min: 60
+      lv: 5
+      learn: Call C functions through extern blocks, convert strings with CString and CStr, expose Rust functions to C with extern "C" and no_mangle, raw pointers across the boundary, and wrapping it all in a safe API.
+      example:
+        title: Calling C's strlen and qsort safely
+        code: |
+          use std::ffi::{c_char, c_int, c_void, CStr, CString};
+
+          unsafe extern "C" {
+              fn strlen(s: *const c_char) -> usize;
+              fn qsort(base: *mut c_void, n: usize, size: usize, cmp: extern "C" fn(*const c_void, *const c_void) -> c_int);
+          }
+
+          /// Safe wrapper: a CString always ends with a NUL byte.
+          fn c_len(s: &str) -> usize {
+              let c = CString::new(s).expect("no interior NUL bytes");
+              // SAFETY: c is a valid, NUL-terminated string that lives for the call.
+              unsafe { strlen(c.as_ptr()) }
+          }
+
+          extern "C" fn cmp_i32(a: *const c_void, b: *const c_void) -> c_int {
+              // SAFETY: qsort passes pointers to elements of our i32 slice.
+              let (a, b) = unsafe { (*(a as *const i32), *(b as *const i32)) };
+              a.cmp(&b) as c_int
+          }
+
+          fn c_sort(v: &mut [i32]) {
+              // SAFETY: the pointer, length and element size describe v exactly.
+              unsafe { qsort(v.as_mut_ptr().cast(), v.len(), std::mem::size_of::<i32>(), cmp_i32) }
+          }
+
+          #[unsafe(no_mangle)]
+          pub extern "C" fn rust_add(a: c_int, b: c_int) -> c_int { a + b }   // callable from C
+
+          fn main() {
+              println!("{}", c_len("héllo"));
+              let mut v = [5, -2, 9, 0];
+              c_sort(&mut v);
+              println!("{v:?}");
+              let owned = CString::new("back from C").unwrap();
+              let view: &CStr = owned.as_c_str();
+              println!("{} {}", view.to_str().unwrap(), rust_add(2, 3));
+          }
+        output: |
+          6
+          [-2, 0, 5, 9]
+          back from C 5
+        note: C strings are NUL-terminated bytes, so CString adds the terminator and CStr reads one. Every crossing of the boundary is unsafe because the compiler cannot check C's promises, which is why each call sits in a tiny safe wrapper with a SAFETY comment. strlen counts bytes, so é counts as two. Tools such as bindgen generate extern blocks from C headers, and cbindgen generates headers for Rust libraries.
+      ex:
+        - t: Wrap getenv safely
+          p: 'Call C''s getenv through an extern block and write a safe wrapper fn c_getenv(name: &str) -> Option<String> that handles null pointers and invalid UTF-8. Compare its result with std::env::var for PATH.'
+          check: test
+          hints:
+            - "fn getenv(name: *const c_char) -> *mut c_char;"
+            - Check for null with ptr.is_null() before using CStr::from_ptr.
+            - to_str() returns a Result because the bytes may not be UTF-8.
+          solution: |
+            use std::ffi::{c_char, CStr, CString};
+
+            unsafe extern "C" {
+                fn getenv(name: *const c_char) -> *mut c_char;
+            }
+
+            fn c_getenv(name: &str) -> Option<String> {
+                let key = CString::new(name).ok()?;
+                // SAFETY: key is a valid NUL-terminated string. The returned
+                // pointer is either null or points to a NUL-terminated value
+                // owned by the C library, which we copy before returning.
+                unsafe {
+                    let p = getenv(key.as_ptr());
+                    if p.is_null() {
+                        return None;
+                    }
+                    CStr::from_ptr(p).to_str().ok().map(String::from)
+                }
+            }
+
+            fn main() {
+                println!("{:?}", c_getenv("PATH").map(|p| p.len()));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn matches_std() {
+                    assert_eq!(c_getenv("PATH"), std::env::var("PATH").ok());
+                    assert_eq!(c_getenv("SURELY_NOT_SET_12345"), None);
+                    assert_eq!(c_getenv("A\0B"), None, "interior NUL is rejected");
+                }
+            }
+          explain: The wrapper turns every C failure mode (null, bad bytes, interior NUL) into None, so callers never touch unsafe code. Copying into a String matters because the C library may change its environment memory later.
+        - t: Expose Rust to C
+          p: "Write a Rust library function exported to C, extern \"C\" fn word_count(text: *const c_char) -> usize, that returns 0 for a null pointer, and a small C program header line declaring it. Explain how you would build it as a shared library."
+          check: test
+          hints:
+            - "Mark it #[unsafe(no_mangle)] pub extern \"C\" fn so the symbol keeps its name."
+            - Convert with CStr::from_ptr inside an unsafe block after the null check.
+            - "In Cargo.toml: [lib] crate-type = [\"cdylib\"] builds a .so, .dylib or .dll."
+          solution: |
+            use std::ffi::{c_char, CStr};
+
+            /// Counts whitespace-separated words in a NUL-terminated C string.
+            ///
+            /// # Safety
+            /// `text` must be null or point to a valid NUL-terminated string.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn word_count(text: *const c_char) -> usize {
+                if text.is_null() {
+                    return 0;
+                }
+                // SAFETY: the caller guarantees a valid NUL-terminated string.
+                let s = unsafe { CStr::from_ptr(text) };
+                String::from_utf8_lossy(s.to_bytes()).split_whitespace().count()
+            }
+
+            // C side:   size_t word_count(const char *text);
+            // Cargo:    [lib] crate-type = ["cdylib"]
+            // Build:    cargo build --release  -> target/release/libwords.so
+            // Link:     cc main.c -L target/release -lwords
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                use std::ffi::CString;
+                #[test]
+                fn counts() {
+                    let c = CString::new("one two  three").unwrap();
+                    assert_eq!(unsafe { word_count(c.as_ptr()) }, 3);
+                    assert_eq!(unsafe { word_count(std::ptr::null()) }, 0);
+                }
+            }
+          explain: Marking the function unsafe with a Safety section documents the contract C callers must keep. from_utf8_lossy makes the function robust to non-UTF-8 input instead of panicking across the FFI boundary, which would be undefined behaviour in older Rust versions.
+    - id: A12.4
+      t: WebAssembly with wasm-bindgen
+      min: 60
+      lv: 4
+      learn: Compile Rust to WebAssembly, export functions to JavaScript with wasm-bindgen, build and package with wasm-pack, pass strings and numbers across the boundary, and where WASM fits (and where it does not). A short tour of GUI (Tauri), games (Bevy) and embedded (embedded-hal) closes Track 2.
+      example:
+        title: A markdown word counter for the browser
+        deps: ['wasm-bindgen = "0.2"']
+        check: test
+        code: |
+          // Cargo.toml:
+          // [lib]
+          // crate-type = ["cdylib", "rlib"]
+          // [dependencies]
+          // wasm-bindgen = "0.2"
+          use wasm_bindgen::prelude::*;
+
+          #[wasm_bindgen]
+          pub fn reading_time(text: &str) -> String {
+              let words = text.split_whitespace().filter(|w| !w.starts_with('#')).count();
+              let minutes = (words as f64 / 200.0).ceil() as u32;
+              format!("{words} words, about {minutes} min read")
+          }
+
+          #[wasm_bindgen]
+          pub struct Counter { count: u32 }
+
+          #[wasm_bindgen]
+          impl Counter {
+              #[wasm_bindgen(constructor)]
+              pub fn new() -> Counter { Counter { count: 0 } }
+              pub fn increment(&mut self) -> u32 { self.count += 1; self.count }
+          }
+
+          // $ wasm-pack build --target web
+          // In JavaScript:
+          // import init, { reading_time, Counter } from "./pkg/reading.js";
+          // await init();
+          // reading_time(document.querySelector("textarea").value);
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              #[test]
+              fn counts_words() {
+                  assert_eq!(reading_time("# Title\nhello world"), "3 words, about 1 min read"); // the # marker is not a word
+                  let mut c = Counter::new();
+                  c.increment();
+                  assert_eq!(c.increment(), 2);
+              }
+          }
+        note: wasm-bindgen generates the JavaScript glue that converts strings and objects across the boundary, and wasm-pack builds and packages it for npm or the web. The same functions remain ordinary Rust, so they are unit tested natively. WASM shines for CPU-heavy work in the browser (parsing, image processing, games); for simple DOM manipulation, JavaScript is usually simpler.
+      ex:
+        - t: Build and run it in a page
+          p: Install wasm-pack, build the reading-time library with --target web, and load it from a minimal index.html with a textarea that updates the reading time as you type. Serve the folder with any static server.
+          lang: text
+          check: none
+          hints:
+            - cargo install wasm-pack (or use the installer from the wasm-pack site).
+            - The pkg folder holds the .wasm file and the generated JavaScript module.
+            - Browsers refuse to load WASM modules from file://, so serve with python -m http.server.
+          solution: |
+            <!-- index.html -->
+            <textarea id="t" rows="8" cols="60"></textarea>
+            <p id="out"></p>
+            <script type="module">
+              import init, { reading_time } from "./pkg/reading.js";
+              await init();
+              const t = document.getElementById("t");
+              const out = document.getElementById("out");
+              t.addEventListener("input", () => { out.textContent = reading_time(t.value); });
+            </script>
+
+            $ wasm-pack build --target web
+            $ python -m http.server 8000
+            # open http://localhost:8000
+          explain: Any page that loads WebAssembly has to be served over HTTP like this. The Rust code itself did not change at all to run in the browser.
+        - t: Pick the right ecosystem crate
+          p: For each project, name the crate or framework you would start with and one sentence why. (1) A desktop app with a web UI. (2) A 2D game. (3) Firmware for a microcontroller. (4) A full-stack web app in Rust. (5) A REST service with Postgres.
+          lang: text
+          check: none
+          hints:
+            - roadmap.sh/rust lists GUI, game, embedded and web frameworks under the ecosystem section.
+            - Consider maturity, community size and documentation.
+            - There is more than one good answer for most of these.
+          solution: |
+            1. Tauri: a small native shell with a web front end and Rust back
+               end; much lighter than Electron.
+            2. Bevy (or macroquad for something minimal): an ECS game engine
+               with a large community.
+            3. embedded-hal with a chip-specific HAL (for example nrf-hal or
+               rp2040-hal): portable drivers on top of a common trait layer.
+            4. Leptos (or Loco for a Rails-like experience): Rust on both the
+               server and the browser through WebAssembly.
+            5. axum with sqlx: async, widely used, and sqlx checks queries
+               against the real database at compile time.
+          explain: The Rust ecosystem moves quickly, so check recent activity and documentation before committing. Every one of these builds on the language features you have now practised, especially traits, async and macros.
+  quiz:
+    - q: What is an extractor in axum?
+      o: |
+        A handler parameter type that pulls data such as JSON, path or state out of the request
+        A middleware that compresses responses
+        A database driver
+        A macro that generates routes
+      a: 0
+      x: Json<T>, Path<T>, Query<T> and State<T> are extractors.
+    - q: How do SQL parameters such as ?1 prevent SQL injection?
+      o: |
+        Values are sent separately from the SQL text, so they cannot change the query
+        They escape quotes in the string
+        They encrypt the query
+        They only allow numbers
+      a: 0
+      x: Never build SQL with format!.
+    - q: What do CString and CStr handle?
+      o: |
+        NUL-terminated C strings, owned and borrowed
+        UTF-16 strings for Windows
+        Compressed strings
+        Strings in WebAssembly
+      a: 0
+      x: CString owns and adds the NUL; CStr borrows one.
+    - q: Why does every FFI call need unsafe?
+      o: |
+        The compiler cannot check the foreign code's promises about pointers and memory
+        C is always slower
+        FFI calls allocate memory
+        It does not; FFI is safe by default
+      a: 0
+      x: You take responsibility, ideally inside a small safe wrapper.
+      pool: exam
+    - q: What does a rusqlite Transaction do if it is dropped without commit?
+      o: |
+        Rolls back
+        Commits automatically
+        Panics
+        Leaves the database locked
+      a: 0
+      x: RAII makes early returns safe.
+      pool: exam
+    - q: Which are good uses of WebAssembly in the browser?
+      type: multi
+      o: |
+        CPU-heavy parsing or image processing
+        Games and simulations
+        Reusing an existing Rust library on the web
+        Replacing all HTML and CSS
+      a: [0, 1, 2]
+      x: WASM complements HTML, CSS and JavaScript rather than replacing them.
+      pool: exam
+  recap:
+    summary:
+      - axum handlers are async functions whose parameters are extractors; anything implementing IntoResponse can be returned; oneshot tests routers without a network.
+      - rusqlite gives simple, safe SQLite access with parameters and RAII transactions; sqlx offers async, compile-time checked SQL for servers.
+      - FFI uses extern blocks, CString and CStr, and extern "C" with no_mangle; wrap every unsafe call in a small safe API with SAFETY comments.
+      - wasm-bindgen and wasm-pack compile Rust for the browser; the same code stays testable natively.
+      - Tauri, Bevy, embedded-hal and Leptos extend the same skills to desktop, games, firmware and full-stack web.
+    functions: |
+      Router::new().route(path, get(h).post(h)) || Define axum routes.
+      State<T> / Path<T> / Json<T> || Common axum extractors.
+      app.oneshot(request) || Test a router without a server.
+      conn.execute(sql, params![..]) || Run SQL with safe parameters.
+      conn.transaction()? / tx.commit()? || A transaction that rolls back on drop.
+      unsafe extern "C" { fn f(..); } || Declare foreign functions.
+      CString::new(s) / CStr::from_ptr(p) || Cross the C string boundary.
+      #[wasm_bindgen] || Export a function or type to JavaScript.
+    explore:
+      - Rebuild the Chapter 21 web server with axum and compare the amount of code.
+      - Try a Tauri app that wraps one of your CLI tools with a simple window.
+    next: Track 2 is complete. Track 3 turns these skills into portfolio projects you can show employers.

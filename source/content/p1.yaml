@@ -1,0 +1,1252 @@
+- id: q1
+  n: Q1
+  t: "loadtest: an HTTP load-testing CLI"
+  lv: 4
+  goal: Build a command-line load tester that fires concurrent HTTP requests at a target, measures latency percentiles and error rates, and prints a clear report, the kind of tool performance testers use every day.
+  res: |
+    tokio | https://docs.rs/tokio
+    reqwest | https://docs.rs/reqwest
+    clap | https://docs.rs/clap
+    hdrhistogram | https://docs.rs/hdrhistogram
+  items:
+    - id: Q1.1
+      t: Plan the tool
+      min: 45
+      lv: 3
+      kind: project
+      learn: Define what the tool measures (throughput, latency percentiles, status codes, errors), the command-line interface, and a design that keeps the statistics code independent from the network so it can be tested.
+      example:
+        title: The design in types
+        code: |
+          use std::time::Duration;
+
+          /// One finished request.
+          #[derive(Debug, Clone)]
+          pub enum Outcome {
+              Response { status: u16, latency: Duration },
+              Error { kind: String, latency: Duration },
+          }
+
+          /// What the user asked for.
+          #[derive(Debug)]
+          pub struct Plan {
+              pub url: String,
+              pub requests: usize,
+              pub concurrency: usize,
+              pub timeout: Duration,
+          }
+
+          /// Anything that can perform one request: real HTTP in the app, a fake in tests.
+          pub trait Target {
+              fn hit(&self) -> impl std::future::Future<Output = Outcome> + Send;
+          }
+
+          fn main() {
+              let plan = Plan { url: "http://localhost:3000/health".into(), requests: 1000, concurrency: 50, timeout: Duration::from_secs(5) };
+              println!("{plan:?}");
+              let sample = Outcome::Response { status: 200, latency: Duration::from_millis(12) };
+              println!("{sample:?}");
+          }
+        output: |
+          Plan { url: "http://localhost:3000/health", requests: 1000, concurrency: 50, timeout: 5s }
+          Response { status: 200, latency: 12ms }
+        note: Separating "doing a request" (Target) from "running a plan" and "summarising outcomes" means the scheduler and the statistics can be tested with a fake target that returns chosen latencies. Only one small adapter touches the real network.
+      ex:
+        - t: Write the README first
+          p: Write the README sections for loadtest before any code, a one-line description, an example command, an example report, the flags, and a "how results are calculated" note explaining percentiles.
+          lang: text
+          check: none
+          hints:
+            - Show the exact command a user types and the exact report they see.
+            - Define p50, p95 and p99 in plain words.
+            - State the defaults for requests, concurrency and timeout.
+          solution: |
+            # loadtest
+            Fire concurrent HTTP requests at an endpoint and report latency and errors.
+
+            ## Example
+                $ loadtest http://localhost:3000/health -n 1000 -c 50
+                Requests:     1000 (998 ok, 2 errors)   Duration: 2.41 s   Throughput: 415 req/s
+                Latency:      p50 21 ms   p95 48 ms   p99 97 ms   max 140 ms
+                Status codes: 200 x 998
+                Errors:       timeout x 2
+
+            ## Flags
+                -n, --requests     total requests (default 100)
+                -c, --concurrency  requests in flight at once (default 10)
+                -t, --timeout      per-request timeout in seconds (default 10)
+                    --json         print the report as JSON
+
+            ## How results are calculated
+            p95 means 95% of requests were faster than this value. Percentiles
+            are computed from every recorded latency; errors count toward the
+            error rate but not toward latency percentiles.
+          explain: README-driven development forces you to decide what the user sees before implementation details pull you elsewhere. It also gives you your acceptance tests for free.
+        - t: List the test cases
+          p: Write the list of test cases you will need, grouped into statistics, scheduling and CLI parsing, with at least four cases per group, including edge cases.
+          lang: text
+          check: none
+          hints:
+            - Think about zero requests, all errors, a single request, and identical latencies.
+            - For scheduling, what proves the concurrency limit is respected?
+            - For the CLI, cover defaults, invalid numbers and a missing URL.
+          solution: |
+            Statistics
+              - percentiles of 1..=100 ms give p50 = 50, p95 = 95, p99 = 99
+              - a single sample is every percentile
+              - all errors: error rate 100%, no latency percentiles (None)
+              - status code counts group correctly (200 x 3, 503 x 1)
+            Scheduling
+              - exactly N outcomes for N requests
+              - peak in-flight requests never exceeds the concurrency limit
+              - concurrency larger than requests still works
+              - total time is close to (N / c) x latency with a fake target
+            CLI
+              - defaults apply when only the URL is given
+              - -c 0 is rejected with a clear message
+              - a non-number for -n is rejected
+              - a missing URL prints usage
+          explain: 'Writing the test list first is classic QA practice, and in Rust each line becomes a #[test] quickly. It also exposes design questions early, such as how to report percentiles when every request failed.'
+    - id: Q1.2
+      t: Build the core
+      min: 120
+      kind: project
+      learn: Implement latency statistics and a concurrency-limited runner over the Target trait, both fully tested with a fake target and no network.
+      example:
+        title: The summary statistics
+        check: test
+        code: |
+          use std::collections::BTreeMap;
+          use std::time::Duration;
+
+          #[derive(Debug, Clone)]
+          pub enum Outcome {
+              Response { status: u16, latency: Duration },
+              Error { kind: String, latency: Duration },
+          }
+
+          #[derive(Debug, PartialEq)]
+          pub struct Summary {
+              pub total: usize,
+              pub errors: usize,
+              pub p50: Option<Duration>,
+              pub p95: Option<Duration>,
+              pub p99: Option<Duration>,
+              pub statuses: BTreeMap<u16, usize>,
+          }
+
+          fn percentile(sorted: &[Duration], p: f64) -> Option<Duration> {
+              if sorted.is_empty() { return None; }
+              let rank = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
+              Some(sorted[rank.clamp(1, sorted.len()) - 1])
+          }
+
+          pub fn summarize(outcomes: &[Outcome]) -> Summary {
+              let mut lat = Vec::new();
+              let mut statuses = BTreeMap::new();
+              let mut errors = 0;
+              for o in outcomes {
+                  match o {
+                      Outcome::Response { status, latency } => {
+                          lat.push(*latency);
+                          *statuses.entry(*status).or_insert(0) += 1;
+                      }
+                      Outcome::Error { .. } => errors += 1,
+                  }
+              }
+              lat.sort();
+              Summary { total: outcomes.len(), errors, p50: percentile(&lat, 50.0), p95: percentile(&lat, 95.0), p99: percentile(&lat, 99.0), statuses }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              fn ok(ms: u64) -> Outcome { Outcome::Response { status: 200, latency: Duration::from_millis(ms) } }
+
+              #[test]
+              fn percentiles_of_1_to_100() {
+                  let outs: Vec<_> = (1..=100).map(ok).collect();
+                  let s = summarize(&outs);
+                  assert_eq!(s.p50, Some(Duration::from_millis(50)));
+                  assert_eq!(s.p95, Some(Duration::from_millis(95)));
+                  assert_eq!(s.p99, Some(Duration::from_millis(99)));
+              }
+
+              #[test]
+              fn all_errors() {
+                  let outs = vec![Outcome::Error { kind: "timeout".into(), latency: Duration::from_secs(5) }];
+                  let s = summarize(&outs);
+                  assert_eq!((s.errors, s.p50), (1, None));
+              }
+          }
+        note: The nearest-rank percentile method used here is simple and easy to explain in the README. For millions of samples, the hdrhistogram crate records latencies in fixed memory with configurable precision.
+      ex:
+        - t: The concurrency-limited runner
+          p: "Write async fn run<T: Target + Sync>(target &T, requests usize, concurrency usize) -> Vec<Outcome> that keeps at most concurrency requests in flight, using futures::stream with buffer_unordered. Test it with a fake target that sleeps 10 ms and tracks peak in-flight requests."
+          deps: ['tokio = { version = "1", features = ["full"] }', 'futures = "0.3"']
+          check: test
+          hints:
+            - stream::iter(0..requests).map(|_| target.hit()).buffer_unordered(concurrency).collect().await
+            - The fake keeps two AtomicUsize values, current and peak.
+            - "Assert outcomes.len() == requests and peak <= concurrency."
+          solution: |
+            use futures::stream::{self, StreamExt};
+            use std::future::Future;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            use std::time::{Duration, Instant};
+
+            #[derive(Debug, Clone)]
+            pub enum Outcome {
+                Response { status: u16, latency: Duration },
+                Error { kind: String, latency: Duration },
+            }
+
+            pub trait Target {
+                fn hit(&self) -> impl Future<Output = Outcome> + Send;
+            }
+
+            pub async fn run<T: Target + Sync>(target: &T, requests: usize, concurrency: usize) -> Vec<Outcome> {
+                stream::iter(0..requests)
+                    .map(|_| target.hit())
+                    .buffer_unordered(concurrency.max(1))
+                    .collect()
+                    .await
+            }
+
+            struct FakeTarget { current: AtomicUsize, peak: AtomicUsize }
+
+            impl Target for FakeTarget {
+                fn hit(&self) -> impl Future<Output = Outcome> + Send {
+                    async move {
+                        let start = Instant::now();
+                        let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+                        self.peak.fetch_max(now, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        self.current.fetch_sub(1, Ordering::SeqCst);
+                        Outcome::Response { status: 200, latency: start.elapsed() }
+                    }
+                }
+            }
+
+            #[tokio::main]
+            async fn main() {
+                let t = FakeTarget { current: AtomicUsize::new(0), peak: AtomicUsize::new(0) };
+                let start = Instant::now();
+                let outs = run(&t, 100, 10).await;
+                println!("{} outcomes in {:?}, peak {}", outs.len(), start.elapsed(), t.peak.load(Ordering::SeqCst));
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[tokio::test]
+                async fn respects_concurrency() {
+                    let t = FakeTarget { current: AtomicUsize::new(0), peak: AtomicUsize::new(0) };
+                    let outs = run(&t, 50, 5).await;
+                    assert_eq!(outs.len(), 50);
+                    assert!(t.peak.load(Ordering::SeqCst) <= 5);
+                }
+            }
+          explain: buffer_unordered is exactly the closed-loop model many load testers use, a fixed number of virtual users each issuing the next request as soon as the last finishes. The fake target proves the limit without any network, so the test is fast and never flaky.
+        - t: The real HTTP target
+          p: Implement Target for an HttpTarget holding a reqwest::Client and a URL, mapping responses to Outcome::Response and failures to Outcome::Error with a kind of "timeout", "connect" or "other".
+          deps: ['tokio = { version = "1", features = ["full"] }', 'reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }']
+          check: build
+          hints:
+            - Time each request with Instant::now() before send and elapsed() after.
+            - "reqwest::Error has is_timeout() and is_connect()."
+            - Build the client once with a timeout and reuse it.
+          solution: |
+            use std::future::Future;
+            use std::time::{Duration, Instant};
+
+            #[derive(Debug, Clone)]
+            pub enum Outcome {
+                Response { status: u16, latency: Duration },
+                Error { kind: String, latency: Duration },
+            }
+
+            pub trait Target {
+                fn hit(&self) -> impl Future<Output = Outcome> + Send;
+            }
+
+            pub struct HttpTarget {
+                client: reqwest::Client,
+                url: String,
+            }
+
+            impl HttpTarget {
+                pub fn new(url: &str, timeout: Duration) -> reqwest::Result<Self> {
+                    let client = reqwest::Client::builder().timeout(timeout).build()?;
+                    Ok(HttpTarget { client, url: url.to_string() })
+                }
+            }
+
+            impl Target for HttpTarget {
+                fn hit(&self) -> impl Future<Output = Outcome> + Send {
+                    async move {
+                        let start = Instant::now();
+                        match self.client.get(&self.url).send().await {
+                            Ok(resp) => Outcome::Response { status: resp.status().as_u16(), latency: start.elapsed() },
+                            Err(e) => {
+                                let kind = if e.is_timeout() { "timeout" } else if e.is_connect() { "connect" } else { "other" };
+                                Outcome::Error { kind: kind.into(), latency: start.elapsed() }
+                            }
+                        }
+                    }
+                }
+            }
+
+            #[tokio::main]
+            async fn main() {
+                let t = HttpTarget::new("http://127.0.0.1:9/", Duration::from_secs(2)).unwrap();
+                println!("{:?}", t.hit().await); // nothing listens on port 9: a connect error
+            }
+          explain: The response body is not read here, which keeps memory flat; add an option to read and discard bodies if you need full transfer times. Classifying errors makes the report actionable, since timeouts and refused connections point at very different problems.
+    - id: Q1.3
+      t: Ship it
+      min: 90
+      kind: project
+      learn: Wire the CLI with clap, print human and JSON reports, add a GitHub Actions workflow running fmt, clippy and tests, and publish a release with binaries.
+      example:
+        title: A CI workflow for any Rust project
+        lang: yaml
+        check: none
+        code: |
+          # .github/workflows/ci.yml
+          name: CI
+          on: [push, pull_request]
+          jobs:
+            test:
+              runs-on: ${{ matrix.os }}
+              strategy:
+                matrix:
+                  os: [ubuntu-latest, windows-latest, macos-latest]
+              steps:
+                - uses: actions/checkout@v4
+                - uses: dtolnay/rust-toolchain@stable
+                  with:
+                    components: rustfmt, clippy
+                - uses: Swatinem/rust-cache@v2
+                - run: cargo fmt --check
+                - run: cargo clippy --all-targets -- -D warnings
+                - run: cargo test --all-features
+        note: Running on three operating systems catches path and line-ending bugs early. rust-cache keeps CI fast by reusing compiled dependencies. The same workflow works for every project in this track.
+      ex:
+        - t: The report printer
+          p: "Write fn render(s &Summary, elapsed Duration) -> String producing the human report from the README, and fn render_json(...) using serde. Test the human output for a known summary."
+          deps: ['serde = { version = "1", features = ["derive"] }', 'serde_json = "1"']
+          check: test
+          hints:
+            - Throughput is total / elapsed.as_secs_f64().
+            - Format durations as whole milliseconds with as_millis().
+            - Derive Serialize on a separate JsonReport struct with plain numbers, so the JSON format is stable.
+          solution: |
+            use serde::Serialize;
+            use std::collections::BTreeMap;
+            use std::time::Duration;
+
+            pub struct Summary {
+                pub total: usize,
+                pub errors: usize,
+                pub p50: Option<Duration>,
+                pub p95: Option<Duration>,
+                pub p99: Option<Duration>,
+                pub statuses: BTreeMap<u16, usize>,
+            }
+
+            fn ms(d: Option<Duration>) -> String {
+                d.map(|d| format!("{} ms", d.as_millis())).unwrap_or_else(|| "n/a".into())
+            }
+
+            pub fn render(s: &Summary, elapsed: Duration) -> String {
+                let rps = s.total as f64 / elapsed.as_secs_f64().max(1e-9);
+                let codes: Vec<String> = s.statuses.iter().map(|(c, n)| format!("{c} x {n}")).collect();
+                format!(
+                    "Requests:     {} ({} ok, {} errors)   Duration: {:.2} s   Throughput: {:.0} req/s\nLatency:      p50 {}   p95 {}   p99 {}\nStatus codes: {}",
+                    s.total, s.total - s.errors, s.errors, elapsed.as_secs_f64(), rps, ms(s.p50), ms(s.p95), ms(s.p99), codes.join(", ")
+                )
+            }
+
+            #[derive(Serialize)]
+            struct JsonReport { total: usize, errors: usize, p50_ms: Option<u128>, p95_ms: Option<u128>, p99_ms: Option<u128>, statuses: BTreeMap<u16, usize> }
+
+            pub fn render_json(s: &Summary) -> String {
+                let r = JsonReport {
+                    total: s.total,
+                    errors: s.errors,
+                    p50_ms: s.p50.map(|d| d.as_millis()),
+                    p95_ms: s.p95.map(|d| d.as_millis()),
+                    p99_ms: s.p99.map(|d| d.as_millis()),
+                    statuses: s.statuses.clone(),
+                };
+                serde_json::to_string_pretty(&r).unwrap()
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn human_report() {
+                    let s = Summary { total: 4, errors: 1, p50: Some(Duration::from_millis(20)), p95: Some(Duration::from_millis(40)), p99: Some(Duration::from_millis(40)), statuses: BTreeMap::from([(200, 3)]) };
+                    let out = render(&s, Duration::from_secs(2));
+                    assert!(out.contains("4 (3 ok, 1 errors)"));
+                    assert!(out.contains("Throughput: 2 req/s"));
+                    assert!(out.contains("p95 40 ms"));
+                    assert!(render_json(&s).contains("\"p50_ms\": 20"));
+                }
+            }
+          explain: A separate JsonReport keeps the machine-readable format stable even if the internal Summary changes, which matters once people pipe your tool into dashboards or CI gates.
+        - t: Release it
+          p: Tag a v0.1.0 release, add a release workflow that builds binaries for Linux, macOS and Windows and attaches them to the GitHub release, and write the two CV bullets with your measured numbers.
+          lang: text
+          check: none
+          hints:
+            - Trigger the workflow on push of tags matching v*.
+            - Build with cargo build --release --target for each platform, or use a ready-made action such as taiki-e/upload-rust-binary-action.
+            - Measure your tool against a local axum server (Track 2, A12) to get honest numbers for the CV.
+          solution: |
+            # .github/workflows/release.yml
+            name: Release
+            on:
+              push:
+                tags: ["v*"]
+            jobs:
+              build:
+                strategy:
+                  matrix:
+                    include:
+                      - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+                      - { os: macos-latest, target: aarch64-apple-darwin }
+                      - { os: windows-latest, target: x86_64-pc-windows-msvc }
+                runs-on: ${{ matrix.os }}
+                steps:
+                  - uses: actions/checkout@v4
+                  - uses: taiki-e/upload-rust-binary-action@v1
+                    with:
+                      bin: loadtest
+                      target: ${{ matrix.target }}
+                      token: ${{ secrets.GITHUB_TOKEN }}
+
+            $ git tag v0.1.0 && git push origin v0.1.0
+          explain: Downloadable binaries let reviewers try your tool in seconds without installing Rust. Real, measured numbers on the CV are far more convincing than adjectives.
+  recap:
+    summary:
+      - Separate the network adapter (Target) from scheduling and statistics so the core is testable without a network.
+      - buffer_unordered gives a closed-loop load model with a fixed concurrency.
+      - Nearest-rank percentiles are simple and explainable; hdrhistogram scales to huge sample counts.
+      - Classify errors (timeout, connect, other) so reports point at causes.
+      - CI on three operating systems plus release binaries make the project easy to trust and try.
+    functions: |
+      trait Target { fn hit(&self) -> impl Future<Output = Outcome> } || The seam between logic and network.
+      stream::iter(..).map(..).buffer_unordered(c) || Concurrency-limited requests.
+      reqwest::Client::builder().timeout(..) || A reusable client with a timeout.
+      e.is_timeout() / e.is_connect() || Classify request failures.
+      clap derive || The command-line interface.
+      GitHub Actions + rust-cache || Continuous integration.
+    explore:
+      - Add a --rate option for an open-loop model (fixed requests per second) and explain how its results differ.
+      - Record latencies into hdrhistogram and print a text histogram.
+    repo: loadtest
+    cv:
+      - Built loadtest, an async HTTP load-testing CLI in Rust (Tokio, reqwest, clap) that drives [N] concurrent requests and reports p50/p95/p99 latency, throughput and error classes.
+      - Designed the scheduler and statistics behind a trait seam, reaching [X]% test coverage with deterministic fake targets and CI on Linux, macOS and Windows.
+    next: Q2 builds a test-report analyser that finds flaky tests.
+
+- id: q2
+  n: Q2
+  t: "testlens: a flaky test detector"
+  lv: 4
+  goal: Parse JUnit XML test reports from many CI runs, compute pass rates per test, flag flaky tests and slowest suites, and print a report a QA lead can act on.
+  res: |
+    roxmltree | https://docs.rs/roxmltree
+    JUnit XML format overview | https://github.com/testmoapp/junitxml
+    walkdir | https://docs.rs/walkdir
+  items:
+    - id: Q2.1
+      t: Plan the analyser
+      min: 45
+      lv: 3
+      kind: project
+      learn: Understand the JUnit XML format, define what "flaky" means for this tool, and model test cases, runs and verdicts as types.
+      example:
+        title: The JUnit XML shape and the model
+        code: |
+          // <testsuites>
+          //   <testsuite name="login" tests="3" failures="1" time="1.42">
+          //     <testcase classname="login" name="valid_password" time="0.21"/>
+          //     <testcase classname="login" name="wrong_password" time="0.30">
+          //       <failure message="expected 401, got 500">...</failure>
+          //     </testcase>
+          //     <testcase classname="login" name="sso" time="0.91"><skipped/></testcase>
+          //   </testsuite>
+          // </testsuites>
+
+          #[derive(Debug, Clone, Copy, PartialEq)]
+          pub enum Verdict { Passed, Failed, Skipped }
+
+          #[derive(Debug, Clone)]
+          pub struct CaseResult {
+              pub id: String,          // "classname::name", stable across runs
+              pub verdict: Verdict,
+              pub seconds: f64,
+          }
+
+          /// A test is flaky if, across runs of the same code, it both passed and failed.
+          pub fn is_flaky(history: &[Verdict]) -> bool {
+              history.contains(&Verdict::Passed) && history.contains(&Verdict::Failed)
+          }
+
+          fn main() {
+              use Verdict::*;
+              println!("{} {}", is_flaky(&[Passed, Failed, Passed]), is_flaky(&[Failed, Failed]));
+              let c = CaseResult { id: "login::sso".into(), verdict: Skipped, seconds: 0.91 };
+              println!("{c:?}");
+          }
+        output: |
+          true false
+          CaseResult { id: "login::sso", verdict: Skipped, seconds: 0.91 }
+        note: The definition of flaky is a product decision, so write it down and test it. Using classname::name as the identity lets results from many report files line up. Skipped results are ignored for flakiness.
+      ex:
+        - t: Define the report
+          p: Write the output you want testlens to print for a folder of 20 CI reports, including overall pass rate, the flaky tests sorted by failure rate, consistently failing tests, and the five slowest tests by average time.
+          lang: text
+          check: none
+          hints:
+            - Separate flaky (sometimes fails) from broken (always fails); they need different actions.
+            - Show counts as well as rates, so 1 of 2 is not mistaken for 10 of 20.
+            - Keep it scannable, one line per test.
+          solution: |
+            testlens: 20 runs, 412 test cases, 8,180 results
+            Overall pass rate: 97.8%
+
+            Flaky (passed and failed on the same code):
+              checkout::apply_coupon        fails 6/20  (30%)
+              search::autocomplete_latency  fails 2/20  (10%)
+
+            Always failing:
+              payments::refund_partial      fails 20/20
+
+            Slowest (average):
+              e2e::full_signup_flow         41.2 s
+              e2e::checkout_guest           33.9 s
+              ...
+          explain: Splitting flaky from broken is the most valuable part, since flaky tests erode trust in CI while broken tests block it. This is exactly the triage a QA lead does by hand today.
+        - t: Collect sample data
+          p: Create a tests/fixtures folder with three small JUnit XML files that together contain one flaky test, one always-failing test, one skipped test and one always-passing test. These become your integration test inputs.
+          lang: xml
+          check: none
+          hints:
+            - Keep each file under 20 lines.
+            - Vary only the flaky test's result between files.
+            - Include time attributes so the slowest list can be tested.
+          solution: |
+            <!-- tests/fixtures/run1.xml -->
+            <testsuites>
+              <testsuite name="cart">
+                <testcase classname="cart" name="add_item" time="0.10"/>
+                <testcase classname="cart" name="coupon" time="0.40"><failure message="timeout"/></testcase>
+                <testcase classname="cart" name="refund" time="0.20"><failure message="500"/></testcase>
+                <testcase classname="cart" name="gift_wrap" time="0.01"><skipped/></testcase>
+              </testsuite>
+            </testsuites>
+            <!-- run2.xml and run3.xml: identical except coupon has no <failure/>
+                 in run2, so coupon is flaky and refund always fails -->
+          explain: Small, hand-made fixtures make integration tests readable and give you exact expected numbers. Real CI reports are great for a final smoke test but too large to reason about in assertions.
+    - id: Q2.2
+      t: Build the parser and the analysis
+      min: 120
+      kind: project
+      learn: Parse JUnit XML with roxmltree into CaseResult values, then aggregate results across runs into per-test statistics with flaky and broken classification.
+      example:
+        title: Parsing a report with roxmltree
+        deps: ['roxmltree = "0.20"']
+        check: test
+        code: |
+          #[derive(Debug, Clone, Copy, PartialEq)]
+          pub enum Verdict { Passed, Failed, Skipped }
+
+          #[derive(Debug, Clone, PartialEq)]
+          pub struct CaseResult { pub id: String, pub verdict: Verdict, pub seconds: f64 }
+
+          pub fn parse_junit(xml: &str) -> Result<Vec<CaseResult>, roxmltree::Error> {
+              let doc = roxmltree::Document::parse(xml)?;
+              let cases = doc.descendants().filter(|n| n.has_tag_name("testcase")).map(|tc| {
+                  let has = |tag: &str| tc.children().any(|c| c.has_tag_name(tag));
+                  let verdict = if has("failure") || has("error") {
+                      Verdict::Failed
+                  } else if has("skipped") {
+                      Verdict::Skipped
+                  } else {
+                      Verdict::Passed
+                  };
+                  CaseResult {
+                      id: format!("{}::{}", tc.attribute("classname").unwrap_or("?"), tc.attribute("name").unwrap_or("?")),
+                      verdict,
+                      seconds: tc.attribute("time").and_then(|t| t.parse().ok()).unwrap_or(0.0),
+                  }
+              });
+              Ok(cases.collect())
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              #[test]
+              fn parses_verdicts() {
+                  let xml = r#"<testsuite><testcase classname="a" name="ok" time="0.5"/><testcase classname="a" name="bad"><failure/></testcase><testcase classname="a" name="skip"><skipped/></testcase></testsuite>"#;
+                  let r = parse_junit(xml).unwrap();
+                  assert_eq!(r.len(), 3);
+                  assert_eq!(r[0], CaseResult { id: "a::ok".into(), verdict: Verdict::Passed, seconds: 0.5 });
+                  assert_eq!(r[1].verdict, Verdict::Failed);
+                  assert_eq!(r[2].verdict, Verdict::Skipped);
+                  assert!(parse_junit("<not closed").is_err());
+              }
+          }
+        note: descendants() finds testcase elements whether they sit under testsuites, testsuite or nested suites, which covers the variations different test runners produce. Missing attributes fall back to sensible defaults instead of failing the whole report.
+      ex:
+        - t: Aggregate across runs
+          p: "Write fn analyse(runs: &[Vec<CaseResult>]) -> Vec<TestStats> where TestStats has id, passes, fails, avg_seconds and a Class (Stable, Flaky, Broken). Sort flaky tests first by failure rate. Test it with the three-run scenario from your fixtures."
+          check: test
+          hints:
+            - Accumulate into a HashMap<String, (passes, fails, total_seconds, count)>.
+            - Skipped results count toward neither passes nor fails.
+            - Classify with Broken when passes == 0 and fails > 0, Flaky when both are positive.
+          solution: |
+            use std::collections::HashMap;
+
+            #[derive(Debug, Clone, Copy, PartialEq)]
+            pub enum Verdict { Passed, Failed, Skipped }
+            #[derive(Debug, Clone)]
+            pub struct CaseResult { pub id: String, pub verdict: Verdict, pub seconds: f64 }
+
+            #[derive(Debug, PartialEq, Clone, Copy)]
+            pub enum Class { Stable, Flaky, Broken }
+
+            #[derive(Debug)]
+            pub struct TestStats { pub id: String, pub passes: u32, pub fails: u32, pub avg_seconds: f64, pub class: Class }
+
+            impl TestStats {
+                pub fn fail_rate(&self) -> f64 {
+                    let n = self.passes + self.fails;
+                    if n == 0 { 0.0 } else { self.fails as f64 / n as f64 }
+                }
+            }
+
+            pub fn analyse(runs: &[Vec<CaseResult>]) -> Vec<TestStats> {
+                let mut acc: HashMap<&str, (u32, u32, f64, u32)> = HashMap::new();
+                for run in runs {
+                    for c in run {
+                        let e = acc.entry(&c.id).or_insert((0, 0, 0.0, 0));
+                        match c.verdict {
+                            Verdict::Passed => e.0 += 1,
+                            Verdict::Failed => e.1 += 1,
+                            Verdict::Skipped => continue,
+                        }
+                        e.2 += c.seconds;
+                        e.3 += 1;
+                    }
+                }
+                let mut stats: Vec<TestStats> = acc
+                    .into_iter()
+                    .map(|(id, (p, f, secs, n))| TestStats {
+                        id: id.to_string(),
+                        passes: p,
+                        fails: f,
+                        avg_seconds: if n == 0 { 0.0 } else { secs / n as f64 },
+                        class: match (p, f) {
+                            (0, f) if f > 0 => Class::Broken,
+                            (p, f) if p > 0 && f > 0 => Class::Flaky,
+                            _ => Class::Stable,
+                        },
+                    })
+                    .collect();
+                stats.sort_by(|a, b| {
+                    let rank = |c: Class| match c { Class::Flaky => 0, Class::Broken => 1, Class::Stable => 2 };
+                    rank(a.class).cmp(&rank(b.class)).then(b.fail_rate().total_cmp(&a.fail_rate())).then(a.id.cmp(&b.id))
+                });
+                stats
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                fn r(id: &str, v: Verdict) -> CaseResult { CaseResult { id: id.into(), verdict: v, seconds: 0.1 } }
+
+                #[test]
+                fn classifies() {
+                    use Verdict::*;
+                    let runs = vec![
+                        vec![r("cart::coupon", Failed), r("cart::refund", Failed), r("cart::add", Passed), r("cart::wrap", Skipped)],
+                        vec![r("cart::coupon", Passed), r("cart::refund", Failed), r("cart::add", Passed), r("cart::wrap", Skipped)],
+                        vec![r("cart::coupon", Failed), r("cart::refund", Failed), r("cart::add", Passed), r("cart::wrap", Skipped)],
+                    ];
+                    let s = analyse(&runs);
+                    assert_eq!((s[0].id.as_str(), s[0].class, s[0].fails), ("cart::coupon", Class::Flaky, 2));
+                    assert_eq!(s[1].class, Class::Broken);
+                    assert!(s.iter().any(|t| t.id == "cart::add" && t.class == Class::Stable));
+                }
+            }
+          explain: total_cmp sorts floats without the NaN pitfalls of partial_cmp. A test that is only ever skipped ends up Stable with zero runs; consider reporting those separately, since a permanently skipped test is its own kind of risk.
+        - t: Read a whole folder
+          p: Write fn load_dir(path &Path) -> anyhow::Result<Vec<Vec<CaseResult>>> that parses every .xml file in a folder (one run per file), sorted by file name, adding the file name as context to any parse error. Test it with a temporary folder.
+          deps: ['anyhow = "1"', 'roxmltree = "0.20"']
+          check: test
+          hints:
+            - std::fs::read_dir gives entries; keep those whose extension is xml.
+            - Sort the paths so runs are in a predictable order.
+            - ".with_context(|| format!(\"parsing {}\", p.display()))"
+          solution: |
+            use anyhow::{Context, Result};
+            use std::path::{Path, PathBuf};
+
+            #[derive(Debug, Clone, Copy, PartialEq)]
+            pub enum Verdict { Passed, Failed, Skipped }
+            #[derive(Debug, Clone)]
+            pub struct CaseResult { pub id: String, pub verdict: Verdict, pub seconds: f64 }
+
+            fn parse_junit(xml: &str) -> Result<Vec<CaseResult>> {
+                let doc = roxmltree::Document::parse(xml)?;
+                Ok(doc
+                    .descendants()
+                    .filter(|n| n.has_tag_name("testcase"))
+                    .map(|tc| {
+                        let has = |t: &str| tc.children().any(|c| c.has_tag_name(t));
+                        CaseResult {
+                            id: format!("{}::{}", tc.attribute("classname").unwrap_or("?"), tc.attribute("name").unwrap_or("?")),
+                            verdict: if has("failure") || has("error") { Verdict::Failed } else if has("skipped") { Verdict::Skipped } else { Verdict::Passed },
+                            seconds: tc.attribute("time").and_then(|t| t.parse().ok()).unwrap_or(0.0),
+                        }
+                    })
+                    .collect())
+            }
+
+            pub fn load_dir(path: &Path) -> Result<Vec<Vec<CaseResult>>> {
+                let mut files: Vec<PathBuf> = std::fs::read_dir(path)
+                    .with_context(|| format!("reading folder {}", path.display()))?
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().is_some_and(|x| x == "xml"))
+                    .collect();
+                files.sort();
+                files
+                    .iter()
+                    .map(|p| {
+                        let text = std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+                        parse_junit(&text).with_context(|| format!("parsing {}", p.display()))
+                    })
+                    .collect()
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn loads_and_reports_bad_file() {
+                    let dir = std::env::temp_dir().join("testlens_load_dir_test");
+                    let _ = std::fs::remove_dir_all(&dir);
+                    std::fs::create_dir_all(&dir).unwrap();
+                    std::fs::write(dir.join("a.xml"), r#"<testsuite><testcase classname="x" name="y"/></testsuite>"#).unwrap();
+                    std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+                    assert_eq!(load_dir(&dir).unwrap().len(), 1);
+                    std::fs::write(dir.join("b.xml"), "<broken").unwrap();
+                    let err = format!("{:#}", load_dir(&dir).unwrap_err());
+                    assert!(err.contains("b.xml"), "{err}");
+                }
+            }
+          explain: Collecting an iterator of Result into Result<Vec<_>> stops at the first error, and the context names the exact file. For nested folders, the walkdir crate replaces read_dir.
+    - id: Q2.3
+      t: Ship it
+      min: 90
+      kind: project
+      learn: Add a clap CLI with a --min-runs filter and --json output, an exit code that fails CI when new flaky tests appear, a GitHub Action example, and documentation.
+      example:
+        title: Using testlens as a CI quality gate
+        lang: yaml
+        check: none
+        code: |
+          # In the project being tested (after the test step):
+          - name: Download last 20 test reports
+            uses: dawidd6/action-download-artifact@v6
+            with:
+              name: junit-reports
+              path: reports/
+              workflow_conclusion: ""
+              if_no_artifact_found: warn
+          - name: Check for flaky tests
+            run: testlens reports/ --min-runs 5 --fail-on-flaky --allow-list .testlens-allow
+        note: As a quality gate, the tool's exit code decides whether CI passes. An allow-list file lets a team acknowledge known flaky tests while still catching new ones, which keeps the gate useful instead of noisy.
+      ex:
+        - t: Exit codes for CI
+          p: "Implement fn exit_code(stats &[TestStats], allow &HashSet<String>, fail_on_flaky bool) -> u8 returning 0 when all is well, 1 when there are flaky tests not in the allow-list (only if fail_on_flaky), and 2 when any test is broken. Test each case."
+          check: test
+          hints:
+            - Broken tests take priority, so check them first.
+            - Filter flaky tests by !allow.contains(&t.id).
+            - Keep this pure, so main only maps it to ExitCode.
+          solution: |
+            use std::collections::HashSet;
+
+            #[derive(Debug, PartialEq, Clone, Copy)]
+            pub enum Class { Stable, Flaky, Broken }
+            pub struct TestStats { pub id: String, pub class: Class }
+
+            pub fn exit_code(stats: &[TestStats], allow: &HashSet<String>, fail_on_flaky: bool) -> u8 {
+                if stats.iter().any(|t| t.class == Class::Broken) {
+                    return 2;
+                }
+                let new_flaky = stats.iter().any(|t| t.class == Class::Flaky && !allow.contains(&t.id));
+                if fail_on_flaky && new_flaky { 1 } else { 0 }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                fn t(id: &str, class: Class) -> TestStats { TestStats { id: id.into(), class } }
+
+                #[test]
+                fn cases() {
+                    let none = HashSet::new();
+                    assert_eq!(exit_code(&[t("a", Class::Stable)], &none, true), 0);
+                    assert_eq!(exit_code(&[t("a", Class::Flaky)], &none, true), 1);
+                    assert_eq!(exit_code(&[t("a", Class::Flaky)], &none, false), 0);
+                    let allow: HashSet<String> = ["a".to_string()].into();
+                    assert_eq!(exit_code(&[t("a", Class::Flaky)], &allow, true), 0);
+                    assert_eq!(exit_code(&[t("a", Class::Flaky), t("b", Class::Broken)], &allow, true), 2);
+                }
+            }
+          explain: A pure decision function makes the gate's policy obvious and fully testable. Distinct codes let a pipeline treat "new flakiness" as a warning stage and "broken" as a hard failure.
+        - t: Document and publish
+          p: Write the README (problem, install, usage, CI example, how flakiness is defined), add the CI workflow from Q1, tag v0.1.0, and draft two CV bullets using numbers from running testlens on a real project's reports.
+          lang: text
+          check: none
+          hints:
+            - Start the README with the problem in one sentence, flaky tests erode trust in CI.
+            - Include the exact definition of flaky and broken from your code.
+            - If you lack real reports, generate 20 runs of a sample project with a deliberately flaky test.
+          solution: |
+            # testlens
+            Find flaky and broken tests across many CI runs from JUnit XML reports.
+
+            ## Install
+                cargo install --git https://github.com/your-name/testlens
+
+            ## Usage
+                testlens reports/ --min-runs 5 [--json] [--fail-on-flaky] [--allow-list FILE]
+
+            ## Definitions
+            Flaky: passed at least once and failed at least once across the runs.
+            Broken: failed in every run where it ran. Skipped results are ignored.
+
+            ## Exit codes
+            0 OK, 1 new flaky tests (with --fail-on-flaky), 2 broken tests.
+          explain: A tool that solves a well-known QA pain point is a credible portfolio piece, because you can speak to both the problem and the implementation in interviews.
+  recap:
+    summary:
+      - JUnit XML is the common format for test results; roxmltree parses it into a tree you can query.
+      - Model verdicts, results and classifications as enums and structs, and define flaky precisely.
+      - Aggregate with a HashMap keyed by a stable test id, then sort with total_cmp for floats.
+      - Collecting Results stops at the first error; anyhow context names the failing file.
+      - A pure exit-code function turns the tool into a CI quality gate with an allow-list.
+    functions: |
+      roxmltree::Document::parse(xml) || Parse XML into a read-only tree.
+      doc.descendants().filter(|n| n.has_tag_name("testcase")) || Find elements anywhere.
+      node.attribute("name") || Read an attribute.
+      a.total_cmp(&b) || Total ordering for floats.
+      iter.collect::<Result<Vec<_>>>() || Stop at the first error.
+      std::process::ExitCode || Report the gate result to CI.
+    explore:
+      - Add an HTML report with a pass-rate sparkline per test.
+      - Detect tests whose duration is trending upwards across runs.
+    repo: testlens
+    cv:
+      - Built testlens, a Rust CLI that parses JUnit XML from [N] CI runs and classifies flaky versus broken tests, used as a CI quality gate with an allow-list.
+      - Identified [X] flaky tests in [project], cutting false CI failures by [Y]% after fixes.
+    next: Q3 builds a log-based intrusion detector.
+
+- id: q3
+  n: Q3
+  t: "logwatch: a log-based intrusion detector"
+  lv: 4
+  goal: Watch authentication logs on your own server, detect repeated failed logins per IP within a time window, and raise alerts, with a design that is fast, testable and safe to run continuously.
+  res: |
+    regex | https://docs.rs/regex
+    chrono | https://docs.rs/chrono
+    notify | https://docs.rs/notify
+  items:
+    - id: Q3.1
+      t: Plan the detector
+      min: 45
+      lv: 3
+      kind: project
+      learn: Choose the log format to support (OpenSSH auth.log), define the detection rule (N failures from one IP within W seconds), plan alert outputs, and note the ethical limits, monitoring only systems you own or are authorised to monitor.
+      example:
+        title: The events and the rule
+        code: |
+          // Sample lines from /var/log/auth.log (OpenSSH):
+          // Nov  4 06:12:01 web sshd[1201]: Failed password for root from 203.0.113.9 port 51234 ssh2
+          // Nov  4 06:12:03 web sshd[1203]: Failed password for invalid user admin from 203.0.113.9 port 51240 ssh2
+          // Nov  4 06:13:10 web sshd[1210]: Accepted publickey for kev from 198.51.100.7 port 50111 ssh2
+
+          #[derive(Debug, Clone, PartialEq)]
+          pub enum Event {
+              Failed { ip: String, user: String, ts: u64 },
+              Accepted { ip: String, user: String, ts: u64 },
+          }
+
+          /// Alert when an IP fails at least `max_failures` times within `window_secs`.
+          #[derive(Debug, Clone, Copy)]
+          pub struct Rule { pub max_failures: usize, pub window_secs: u64 }
+
+          fn main() {
+              let rule = Rule { max_failures: 5, window_secs: 60 };
+              let e = Event::Failed { ip: "203.0.113.9".into(), user: "root".into(), ts: 1_793_000_000 };
+              println!("{rule:?}\n{e:?}");
+          }
+        output: |
+          Rule { max_failures: 5, window_secs: 60 }
+          Failed { ip: "203.0.113.9", user: "root", ts: 1793000000 }
+        note: Working with timestamps as seconds keeps the detector independent from clocks and dates, so tests can feed events with chosen times. The IP addresses above are from documentation ranges reserved for examples. Only point the tool at logs you are allowed to read.
+      ex:
+        - t: Threat model in one page
+          p: Write a short threat model for logwatch, what it detects (password brute force, user enumeration), what it does not (attacks that do not log, distributed low-and-slow attempts), false positives to expect, and what the alert should contain.
+          lang: text
+          check: none
+          hints:
+            - Distributed attacks from many IPs each stay under a per-IP threshold.
+            - A user mistyping a password a few times should not trigger an alert.
+            - An alert needs enough detail to act on without opening the log.
+          solution: |
+            Detects
+              - Repeated failed passwords from one IP (brute force)
+              - Many "invalid user" attempts from one IP (user enumeration)
+            Does not detect
+              - Distributed attempts below the per-IP threshold
+              - Attacks that leave no auth log entries
+            False positives
+              - A real user who forgot their password; mitigated by a threshold
+                such as 5 failures in 60 s and by resetting on a successful login
+            Alert contents
+              - IP, failure count, window, usernames tried, first and last time,
+                and whether any login from that IP later succeeded (critical)
+          explain: Stating limits honestly is part of good security engineering, and the "failed then succeeded" signal is the highest-priority alert, since it may mean a password was guessed.
+        - t: Fixture logs
+          p: Create a tests/fixtures/auth.log with about 15 lines covering a brute-force burst from one IP, a few scattered failures from another, a successful login after failures, and unrelated lines that must be ignored.
+          lang: text
+          check: none
+          hints:
+            - Copy the shapes from the example lines exactly.
+            - Use documentation IP ranges such as 203.0.113.0/24 and 198.51.100.0/24.
+            - Include a cron or systemd line so the parser must skip it.
+          solution: |
+            Nov  4 06:12:01 web sshd[1201]: Failed password for root from 203.0.113.9 port 51234 ssh2
+            Nov  4 06:12:03 web sshd[1203]: Failed password for invalid user admin from 203.0.113.9 port 51240 ssh2
+            Nov  4 06:12:04 web sshd[1204]: Failed password for root from 203.0.113.9 port 51244 ssh2
+            Nov  4 06:12:06 web sshd[1206]: Failed password for root from 203.0.113.9 port 51250 ssh2
+            Nov  4 06:12:07 web sshd[1207]: Failed password for root from 203.0.113.9 port 51251 ssh2
+            Nov  4 06:12:30 web CRON[1300]: pam_unix(cron:session): session opened for user root
+            Nov  4 06:20:00 web sshd[1400]: Failed password for kev from 198.51.100.7 port 50000 ssh2
+            Nov  4 06:20:40 web sshd[1401]: Accepted password for kev from 198.51.100.7 port 50001 ssh2
+          explain: With this fixture you know the right answer in advance, one alert for 203.0.113.9, and no alert for kev's single typo followed by success.
+    - id: Q3.2
+      t: Build the parser and the detector
+      min: 120
+      kind: project
+      learn: Parse log lines with a compiled regex into events, then detect bursts with a per-IP sliding window of timestamps in a VecDeque, clearing an IP's history after a successful login.
+      example:
+        title: Parsing lines with regex
+        deps: ['regex = "1"']
+        check: test
+        code: |
+          use regex::Regex;
+          use std::sync::LazyLock;
+
+          #[derive(Debug, Clone, PartialEq)]
+          pub enum Event {
+              Failed { ip: String, user: String },
+              Accepted { ip: String, user: String },
+          }
+
+          static LINE: LazyLock<Regex> = LazyLock::new(|| {
+              Regex::new(r"sshd\[\d+\]: (Failed|Accepted) \S+ for (?:invalid user )?(\S+) from (\S+) port").unwrap()
+          });
+
+          pub fn parse(line: &str) -> Option<Event> {
+              let c = LINE.captures(line)?;
+              let (user, ip) = (c[2].to_string(), c[3].to_string());
+              Some(match &c[1] {
+                  "Failed" => Event::Failed { ip, user },
+                  _ => Event::Accepted { ip, user },
+              })
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              #[test]
+              fn parses_lines() {
+                  let f = "Nov  4 06:12:03 web sshd[1203]: Failed password for invalid user admin from 203.0.113.9 port 51240 ssh2";
+                  assert_eq!(parse(f), Some(Event::Failed { ip: "203.0.113.9".into(), user: "admin".into() }));
+                  let a = "Nov  4 06:20:40 web sshd[1401]: Accepted publickey for kev from 198.51.100.7 port 50001 ssh2";
+                  assert_eq!(parse(a), Some(Event::Accepted { ip: "198.51.100.7".into(), user: "kev".into() }));
+                  assert_eq!(parse("Nov  4 06:12:30 web CRON[1300]: session opened"), None);
+              }
+          }
+        note: The regex is compiled once into a LazyLock static and reused for every line, which matters when scanning millions of lines. The (?:invalid user )? group is non-capturing, so both "Failed password for root" and "for invalid user admin" yield the user name. Timestamps are added by the caller from the line's date or the time it was read.
+      ex:
+        - t: The sliding-window detector
+          p: "Write struct Detector { rule: Rule, windows: HashMap<String, VecDeque<u64>> } with fn observe(&mut self, ip: &str, failed: bool, ts: u64) -> Option<Alert>. Failures push the timestamp and drop ones older than the window; reaching the threshold returns an Alert once and clears that IP. A success clears the IP's window. Test a burst, a slow trickle that never alerts, and a reset after success."
+          check: test
+          hints:
+            - "while let Some(&front) = q.front() { if ts - front >= window { q.pop_front(); } else { break; } }"
+            - When q.len() >= max_failures, build the alert from q.front() and q.back(), then clear q.
+            - On success, remove the IP from the map.
+          solution: |
+            use std::collections::{HashMap, VecDeque};
+
+            #[derive(Debug, Clone, Copy)]
+            pub struct Rule { pub max_failures: usize, pub window_secs: u64 }
+
+            #[derive(Debug, PartialEq)]
+            pub struct Alert { pub ip: String, pub failures: usize, pub first: u64, pub last: u64 }
+
+            pub struct Detector { rule: Rule, windows: HashMap<String, VecDeque<u64>> }
+
+            impl Detector {
+                pub fn new(rule: Rule) -> Self {
+                    Detector { rule, windows: HashMap::new() }
+                }
+
+                pub fn observe(&mut self, ip: &str, failed: bool, ts: u64) -> Option<Alert> {
+                    if !failed {
+                        self.windows.remove(ip);
+                        return None;
+                    }
+                    let q = self.windows.entry(ip.to_string()).or_default();
+                    q.push_back(ts);
+                    while let Some(&front) = q.front() {
+                        if ts.saturating_sub(front) >= self.rule.window_secs { q.pop_front(); } else { break; }
+                    }
+                    if q.len() >= self.rule.max_failures {
+                        let alert = Alert { ip: ip.to_string(), failures: q.len(), first: *q.front().unwrap(), last: ts };
+                        q.clear();
+                        return Some(alert);
+                    }
+                    None
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                fn det() -> Detector { Detector::new(Rule { max_failures: 3, window_secs: 60 }) }
+
+                #[test]
+                fn burst_alerts_once() {
+                    let mut d = det();
+                    assert_eq!(d.observe("a", true, 0), None);
+                    assert_eq!(d.observe("a", true, 10), None);
+                    assert_eq!(d.observe("a", true, 20), Some(Alert { ip: "a".into(), failures: 3, first: 0, last: 20 }));
+                    assert_eq!(d.observe("a", true, 21), None, "window was cleared after alerting");
+                }
+
+                #[test]
+                fn slow_trickle_never_alerts() {
+                    let mut d = det();
+                    for t in [0, 70, 140, 210, 280] {
+                        assert_eq!(d.observe("b", true, t), None);
+                    }
+                }
+
+                #[test]
+                fn success_resets() {
+                    let mut d = det();
+                    d.observe("c", true, 0);
+                    d.observe("c", true, 5);
+                    d.observe("c", false, 6);
+                    assert_eq!(d.observe("c", true, 7), None);
+                }
+            }
+          explain: Each IP keeps only timestamps inside the window, so memory stays bounded per active IP; production versions also evict idle IPs periodically. saturating_sub protects against out-of-order timestamps, which real logs do contain.
+        - t: Flag success after failures
+          p: Extend the detector so a successful login from an IP that had at least two recent failures returns a high-severity Alert with a flag compromised_suspect set to true. Add a test.
+          check: test
+          hints:
+            - Before removing the IP on success, look at how many timestamps its window holds.
+            - Add a severity or compromised_suspect field to Alert.
+            - Only count failures still inside the window.
+          solution: |
+            use std::collections::{HashMap, VecDeque};
+
+            #[derive(Debug, PartialEq)]
+            pub struct Alert { pub ip: String, pub failures: usize, pub compromised_suspect: bool }
+
+            pub struct Detector { max: usize, window: u64, w: HashMap<String, VecDeque<u64>> }
+
+            impl Detector {
+                pub fn new(max: usize, window: u64) -> Self {
+                    Detector { max, window, w: HashMap::new() }
+                }
+                fn prune(q: &mut VecDeque<u64>, ts: u64, window: u64) {
+                    while q.front().is_some_and(|&f| ts.saturating_sub(f) >= window) {
+                        q.pop_front();
+                    }
+                }
+                pub fn observe(&mut self, ip: &str, failed: bool, ts: u64) -> Option<Alert> {
+                    if !failed {
+                        let mut q = self.w.remove(ip)?;
+                        Self::prune(&mut q, ts, self.window);
+                        return (q.len() >= 2).then(|| Alert { ip: ip.into(), failures: q.len(), compromised_suspect: true });
+                    }
+                    let q = self.w.entry(ip.into()).or_default();
+                    q.push_back(ts);
+                    Self::prune(q, ts, self.window);
+                    if q.len() >= self.max {
+                        let n = q.len();
+                        q.clear();
+                        return Some(Alert { ip: ip.into(), failures: n, compromised_suspect: false });
+                    }
+                    None
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+                #[test]
+                fn success_after_failures_is_suspicious() {
+                    let mut d = Detector::new(10, 60);
+                    d.observe("x", true, 0);
+                    d.observe("x", true, 3);
+                    let a = d.observe("x", false, 5).unwrap();
+                    assert!(a.compromised_suspect);
+                    assert_eq!(d.observe("y", false, 5), None, "a clean login is not an alert");
+                }
+            }
+          explain: A burst of failures followed by a success from the same IP is a classic sign of a guessed password, so it deserves a louder alert than the failures alone. The ? on self.w.remove(ip) neatly returns None for IPs with no history.
+    - id: Q3.3
+      t: Ship it
+      min: 90
+      kind: project
+      learn: Follow a growing log file like tail -f, send alerts to stdout as JSON lines (and optionally a webhook), add a benchmark on a large synthetic log, and document safe deployment as a systemd service.
+      example:
+        title: Following a file as it grows
+        check: build
+        code: |
+          use std::fs::File;
+          use std::io::{BufRead, BufReader, Seek, SeekFrom};
+          use std::thread;
+          use std::time::Duration;
+
+          /// Calls `on_line` for every new line appended to `path`, forever.
+          fn follow(path: &str, mut on_line: impl FnMut(&str)) -> std::io::Result<()> {
+              let mut file = File::open(path)?;
+              file.seek(SeekFrom::End(0))?;          // start at the end, like tail -f
+              let mut reader = BufReader::new(file);
+              let mut line = String::new();
+              loop {
+                  line.clear();
+                  if reader.read_line(&mut line)? == 0 {
+                      thread::sleep(Duration::from_millis(250)); // nothing new yet
+                      continue;
+                  }
+                  on_line(line.trim_end());
+              }
+          }
+
+          fn main() -> std::io::Result<()> {
+              let path = std::env::args().nth(1).unwrap_or_else(|| "/var/log/auth.log".into());
+              follow(&path, |l| println!("new line: {l}"))
+          }
+        note: Polling every 250 ms is simple and portable; the notify crate can wake you on file changes instead. A production version also handles log rotation, noticing when the file is replaced and reopening it. Emitting JSON lines lets other tools (jq, a SIEM, a chat webhook) consume alerts.
+      ex:
+        - t: Benchmark on a big log
+          p: Generate a synthetic 1,000,000-line auth log (mostly benign lines, some attacks) and measure how many lines per second your parser and detector process in a release build. Record the number for your README and CV.
+          check: build
+          hints:
+            - Build the lines in memory with format! and a simple counter-based pattern instead of randomness, so runs are repeatable.
+            - Time only the parse plus observe loop.
+            - Report lines per second as count / elapsed.as_secs_f64().
+          solution: |
+            use std::time::Instant;
+
+            fn synthetic(n: usize) -> Vec<String> {
+                (0..n)
+                    .map(|i| {
+                        if i % 50 == 0 {
+                            format!("Nov  4 06:{:02}:{:02} web sshd[{i}]: Failed password for root from 203.0.113.{} port 5{i} ssh2", (i / 60) % 60, i % 60, i % 7)
+                        } else {
+                            format!("Nov  4 06:{:02}:{:02} web CRON[{i}]: pam_unix(cron:session): session closed for user root", (i / 60) % 60, i % 60)
+                        }
+                    })
+                    .collect()
+            }
+
+            fn main() {
+                let lines = synthetic(1_000_000);
+                let start = Instant::now();
+                let mut failures = 0usize;
+                for l in &lines {
+                    // stand-in for parse(l) + detector.observe(..)
+                    if l.contains("sshd[") && l.contains("Failed password") {
+                        failures += 1;
+                    }
+                }
+                let secs = start.elapsed().as_secs_f64();
+                println!("{failures} failures in {} lines: {:.0} lines/s", lines.len(), lines.len() as f64 / secs);
+            }
+          explain: Swap the stand-in for your real parse and observe calls. A pre-filter with contains before running the regex is a common trick that skips most benign lines cheaply. Concrete throughput figures make strong CV material.
+        - t: Run it as a service
+          p: Write a systemd unit file that runs logwatch against /var/log/auth.log as a dedicated unprivileged user with read access to the log, restarts on failure, and writes alerts to the journal. Add the setup steps to the README.
+          lang: ini
+          check: none
+          hints:
+            - Create a system user and add it to the adm group (which can read auth.log on Debian and Ubuntu).
+            - Use ProtectSystem=strict and NoNewPrivileges=true to sandbox it.
+            - Restart=on-failure restarts the service if it crashes.
+          solution: |
+            # /etc/systemd/system/logwatch.service
+            [Unit]
+            Description=logwatch SSH brute-force detector
+            After=network.target
+
+            [Service]
+            ExecStart=/usr/local/bin/logwatch --follow /var/log/auth.log --max-failures 5 --window 60
+            User=logwatch
+            Group=adm
+            Restart=on-failure
+            NoNewPrivileges=true
+            ProtectSystem=strict
+            ProtectHome=true
+            PrivateTmp=true
+
+            [Install]
+            WantedBy=multi-user.target
+
+            # setup
+            # sudo useradd --system --no-create-home logwatch
+            # sudo usermod -aG adm logwatch
+            # sudo systemctl enable --now logwatch
+            # journalctl -u logwatch -f
+          explain: Running a security tool with the least privilege it needs, and sandboxing it, is part of the deliverable. A home server or a small cloud VM is a good place to deploy and observe it.
+  recap:
+    summary:
+      - Define the detection rule and its limits first; monitor only systems you own or are authorised to monitor.
+      - A compiled regex in a LazyLock static parses lines quickly; unknown lines are skipped.
+      - A per-IP VecDeque sliding window detects bursts in bounded memory; a success resets the IP.
+      - Success after recent failures is the highest-priority signal.
+      - Follow files like tail -f, emit JSON alerts, benchmark on synthetic logs, and deploy with least privilege.
+    functions: |
+      Regex::new(pattern) / re.captures(line) || Compile and match a regular expression.
+      LazyLock<Regex> || Compile a regex once, on first use.
+      VecDeque::push_back / pop_front || Sliding-window bookkeeping.
+      file.seek(SeekFrom::End(0)) || Start reading at the end of a file.
+      reader.read_line(&mut s) || Read the next line, returning 0 at end of file.
+      systemd unit with ProtectSystem=strict || Run the tool safely as a service.
+    explore:
+      - Add a distributed-attack rule that counts failures per username across all IPs.
+      - Send alerts to a chat webhook with reqwest, with rate limiting so a big attack does not flood the channel.
+    repo: logwatch
+    cv:
+      - Built logwatch, a Rust log-based intrusion detector that parses SSH auth logs at [N] lines/s and flags brute-force bursts and suspicious successful logins with a sliding-window algorithm.
+      - Deployed it as a sandboxed systemd service on a self-hosted server, with property and fixture tests covering parsing and detection.
+    next: The Web and systems projects start with W1, a JSON API backed by SQLite.
