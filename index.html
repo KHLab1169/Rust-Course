@@ -1055,7 +1055,7 @@ function editorBlock(i,e){
     "<textarea class=\"code-ed\" id=\"ed-"+e.id+"\" data-code=\""+e.id+"\" spellcheck=\"false\" autocapitalize=\"off\" autocomplete=\"off\" placeholder=\""+esc(ph)+"\">"+esc(val)+"</textarea>";
   out+="<div class=\"row\">"+(isRs?"<a class=\"btn small\" id=\"pl-"+e.id+"\" href=\""+esc(playUrl(val))+"\" target=\"_blank\" rel=\"noopener\">Open in Rust Playground</a>":"")+
     (taAvailable()?"<button class=\"btn small primary\" data-act=\"tareview\" data-id=\""+e.id+"\""+(r.taBusy?" disabled":"")+">Ask the TA for feedback</button>":"")+
-    (isRs?"<span class=\"note\">The Playground runs main, or your tests when there is no main.</span>":"")+"</div>";
+    (isRs?"<span class=\"note\">Run runs main. If the code has #[test] functions, choose Test from the menu next to Run (in your IDE: cargo test).</span>":"")+"</div>";
   if(r.ta){var t=r.ta,rb=t.rubric||{};
     out+="<div class=\"tafb\"><div class=\"ta-h\"><b>TA feedback</b><span class=\"ta-score\">"+esc(String(t.score))+"/100</span></div>"+
       "<div class=\"rub\">"+["correctness","readability","robustness","idiomatic"].map(function(k){return "<span>"+k+" <b>"+(rb[k]!=null?rb[k]:"-")+"/5</b></span>";}).join("")+"</div>"+
