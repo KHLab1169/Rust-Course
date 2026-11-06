@@ -62,6 +62,8 @@ button,input,textarea{font:inherit;color:inherit}
 /* buttons */
 .btn{border:1px solid var(--line);background:var(--surface);padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:500;min-height:38px}
 .btn:hover{border-color:var(--blue)}
+.ed-act{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.ed-act .sub{margin-left:auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 a.btn{display:inline-flex;align-items:center;text-decoration:none;color:var(--ink)}
 .btn.primary{background:var(--yellow);border-color:var(--yellow);color:var(--yellow-ink);font-weight:600}
 .btn.primary:hover{filter:brightness(.96)}
@@ -1049,15 +1051,15 @@ function editorBlock(i,e){
   var c=exC(i.id,e.id)||{},lang=c.lang||"rust",isRs=lang==="rust";
   if(!isRs&&!taAvailable())return "";
   var r=RUNOUT[e.id]||{},val=CODE[e.id]!=null?CODE[e.id]:"";
-  var ph=isRs?"Write your Rust here. Open it in the Rust Playground to compile, run and test it.":"Paste your work here (commands, Cargo.toml, a written answer) for TA feedback.";
+  var ph=isRs?"Paste your finished code from your IDE here, or write it here and test it in the Playground. Submit it to the TA for a grade.":"Paste your work here (commands, Cargo.toml, a written answer) for TA feedback.";
   var out="<div class=\"ed\" data-ed=\""+e.id+"\"><div class=\"ed-h\"><span class=\"lbl\">"+(isRs?"Your code":"Your work")+"</span>"+
     (S.ta&&S.ta[e.id]?"<span class=\"note\">TA score: "+S.ta[e.id].score+"</span>":"")+"</div>"+
     "<textarea class=\"code-ed\" id=\"ed-"+e.id+"\" data-code=\""+e.id+"\" spellcheck=\"false\" autocapitalize=\"off\" autocomplete=\"off\" placeholder=\""+esc(ph)+"\">"+esc(val)+"</textarea>";
-  out+="<div class=\"row\">"+(isRs?"<a class=\"btn small\" id=\"pl-"+e.id+"\" href=\""+esc(playUrl(val))+"\" target=\"_blank\" rel=\"noopener\">Open in Rust Playground</a>":"")+
-    (taAvailable()?"<button class=\"btn small primary\" data-act=\"tareview\" data-id=\""+e.id+"\""+(r.taBusy?" disabled":"")+">Ask the TA for feedback</button>":"")+
-    (isRs?"<span class=\"note\">Run runs main. If the code has #[test] functions, choose Test from the menu next to Run (in your IDE: cargo test).</span>":"")+"</div>";
+  out+="<div class=\"ed-act\">"+(isRs?"<a class=\"btn small\" id=\"pl-"+e.id+"\" href=\""+esc(playUrl(val))+"\" target=\"_blank\" rel=\"noopener\" title=\"Try your code. Nothing is graded.\">Test in Rust Playground</a>":"")+
+    "<span class=\"sub\">"+(taAvailable()?"<button class=\"btn small primary\" data-act=\"tareview\" data-id=\""+e.id+"\" title=\"The TA grades your answer\""+(r.taBusy?" disabled":"")+">Submit to TA</button>":"")+"</span></div>"+
+    (isRs?"<p class=\"note\" style=\"margin:0\">Test in your IDE or the Playground; nothing is graded until you submit. In the Playground, Run runs main; for #[test] functions choose Test from the menu next to Run (in your IDE: cargo test).</p>":"");
   if(r.ta){var t=r.ta,rb=t.rubric||{};
-    out+="<div class=\"tafb\"><div class=\"ta-h\"><b>TA feedback</b><span class=\"ta-score\">"+esc(String(t.score))+"/100</span></div>"+
+    out+="<div class=\"tafb\"><div class=\"ta-h\"><b>TA review</b><span class=\"ta-score\">"+esc(String(t.score))+"/100</span></div>"+
       "<div class=\"rub\">"+["correctness","readability","robustness","idiomatic"].map(function(k){return "<span>"+k+" <b>"+(rb[k]!=null?rb[k]:"-")+"/5</b></span>";}).join("")+"</div>"+
       (t.summary?"<p>"+esc(t.summary)+"</p>":"")+
       (t.strengths&&t.strengths.length?"<p class=\"lbl\">Strengths</p><ul>"+t.strengths.map(function(s){return "<li>"+esc(s)+"</li>";}).join("")+"</ul>":"")+
