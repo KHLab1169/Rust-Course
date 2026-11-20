@@ -1,0 +1,624 @@
+=== 17.1
+@idea
+**Async** programming lets one thread make progress on many tasks that spend most of their time **waiting**: for the network, a timer, a database. Instead of blocking a thread per task, an async function **pauses** at each wait and lets other work run, resuming when its data is ready.
+
+The building block is a **future**: a value representing a computation that will finish later. An **`async fn`** (or an `async { ... }` block) returns a future instead of running immediately. Futures are **lazy**: nothing happens until the future is **awaited** with `.await`, which runs it until it completes, pausing the current async function at that point if it has to wait. Calling an async function without `.await` does nothing at all, and the compiler warns that the future is unused.
+
+Futures need a **runtime** to drive them: an executor that polls futures, plus the I/O and timer machinery that wakes them up. Rust's standard library defines the `Future` trait but ships no runtime; **Tokio** is the most widely used one. `#[tokio::main]` turns `async fn main` into a normal `main` that starts the runtime and runs it. Awaiting two futures one after the other runs them **sequentially**: the second starts only after the first finishes. Running them at the same time is the next lesson.
+@how
+- `async fn f() -> T` returns `impl Future<Output = T>`; `f().await` runs it.
+- `async { ... }` blocks create futures inline.
+- Futures do nothing until awaited (or spawned).
+- A runtime drives futures: `#[tokio::main] async fn main()` with `tokio = { features = ["full"] }`.
+- `tokio::time::sleep(d).await` waits without blocking the thread.
+@example rust: Two async functions, awaited in order
+use std::time::Duration;
+use tokio::time::{sleep, Instant};
+
+async fn fetch_price(item: &str, ms: u64) -> u32 {
+    println!("  start {item}");
+    sleep(Duration::from_millis(ms)).await;       // pauses this task; the thread is free
+    println!("  done  {item}");
+    item.len() as u32 * 100
+}
+
+#[tokio::main]
+async fn main() {
+    let start = Instant::now();
+    let future = fetch_price("teapot", 50);
+    println!("future created, nothing printed yet");
+    let a = future.await;
+    let b = fetch_price("cups", 50).await;
+    println!("total {} after about {} ms (sequential)", a + b, start.elapsed().as_millis() / 50 * 50);
+}
+@deps tokio@1+full
+@note
+Creating the future printed nothing, because futures are lazy; the work started only at `.await`. Awaiting one after the other ran them sequentially, so the two 50 ms waits added up to about 100 ms. The elapsed time is rounded down to a multiple of 50 so the output is stable.
+@example rust: An async block, and the runtime driving it
+use std::future::Future;
+
+fn add_later(a: u32, b: u32) -> impl Future<Output = u32> {
+    async move { a + b }                         // an async block is a future too
+}
+
+fn main() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let total = runtime.block_on(async {
+        let x = add_later(2, 3).await;
+        let y = add_later(x, 10).await;
+        y * 2
+    });
+    println!("block_on returned {total}");
+}
+@deps tokio@1+full
+@note
+`#[tokio::main]` is shorthand for this: build a runtime and `block_on` a future, which drives it to completion on the current thread. The function returning `impl Future` shows what `async fn` desugars to: an ordinary function returning a future built by an `async move` block.
+@mistakes
+- **Calling an async function without `.await`.** Nothing runs; the compiler warns about an unused future.
+- **Using `std::thread::sleep` in async code.** It blocks the whole thread and every task on it. Use `tokio::time::sleep`.
+- **Expecting awaits in sequence to run concurrently.** They don't; see join and spawn.
+@keys
+- Async lets one thread juggle many waiting tasks.
+- `async fn` and `async {}` produce lazy futures; `.await` runs them.
+- A runtime such as Tokio drives futures; `#[tokio::main]` sets it up.
+- Sequential awaits run one after the other.
+
+=== 17.2
+@idea
+Concurrency comes from running several futures **at the same time**. **`tokio::join!(a, b, c)`** awaits several futures concurrently within the current task and returns all their results as a tuple once every one has finished; total time is about the longest, not the sum. `tokio::try_join!` does the same for futures returning `Result` and stops at the first error.
+
+**`tokio::spawn(future)`** creates an independent **task**, scheduled by the runtime, possibly on another thread in the multi-threaded runtime. It returns a **`JoinHandle`**; awaiting it gives the task's result (wrapped in a Result that reports panics). Spawned tasks must own their data (`async move`) and be `Send + 'static`, like threads, because they may outlive the caller and move between threads. Tasks are very cheap (bytes, not megabytes like threads), so spawning thousands is normal.
+
+Tasks communicate with **async channels**: `tokio::sync::mpsc::channel(capacity)` gives a sender and receiver whose `send(...).await` waits if the channel is full (back-pressure) and whose `recv().await` waits for a message, returning `None` once all senders are dropped. It is the async counterpart of the thread channels from chapter 16.
+@how
+- `let (a, b) = tokio::join!(fut_a, fut_b);` concurrent, same task.
+- `tokio::try_join!` for Result futures, stopping at the first error.
+- `let h = tokio::spawn(async move { ... }); h.await?` for independent tasks.
+- Spawned futures must be `Send + 'static`: use `async move`, own the data.
+- `tokio::sync::mpsc::channel(n)`: `tx.send(v).await`, `rx.recv().await` → Option.
+@example rust: join!, spawn and an async channel
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::time::{sleep, Instant};
+
+async fn fetch(name: &str, ms: u64) -> String {
+    sleep(Duration::from_millis(ms)).await;
+    format!("{name} ({ms} ms)")
+}
+
+#[tokio::main]
+async fn main() {
+    let start = Instant::now();
+    let (a, b, c) = tokio::join!(fetch("weather", 80), fetch("news", 50), fetch("rates", 60));
+    println!("join!: {a}, {b}, {c}");
+    println!("concurrent: about {} ms, not 190", start.elapsed().as_millis() / 40 * 40);
+
+    let handles: Vec<_> = (1..=3).map(|i| tokio::spawn(async move { i * 10 })).collect();
+    let mut total = 0;
+    for h in handles {
+        total += h.await.unwrap();
+    }
+    println!("spawned tasks summed to {total}");
+
+    let (tx, mut rx) = mpsc::channel::<String>(2);
+    for worker in ["A", "B"] {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            for n in 1..=2 {
+                tx.send(format!("{worker}{n}")).await.unwrap();
+            }
+        });
+    }
+    drop(tx);
+    let mut received = Vec::new();
+    while let Some(msg) = rx.recv().await {
+        received.push(msg);
+    }
+    received.sort();
+    println!("channel delivered {received:?}");
+}
+@deps tokio@1+full
+@note
+`join!` ran the three fetches at once, so the whole thing took about as long as the slowest (80 ms), rounded down here for stable output. Spawned tasks ran independently and their handles returned their results. Two producer tasks sent into a bounded channel; once both finished and the original sender was dropped, `recv` returned `None` and the loop ended.
+@example rust fail: Spawned tasks must own what they use
+#[tokio::main]
+async fn main() {
+    let names = vec![String::from("ada"), String::from("ben")];
+    let handle = tokio::spawn(async {
+        println!("{}", names.len());
+    });
+    handle.await.unwrap();
+}
+@deps tokio@1+full
+@note
+A spawned task may outlive `main`'s local `names`, so borrowing it is refused, just like with threads; the compiler suggests an `async move` block. Adding `move` transfers ownership of the vector into the task.
+@mistakes
+- **Spawning when `join!` would do.** For a few futures in one function, `join!` is simpler and needs no `'static`.
+- **Ignoring JoinHandles.** Errors and panics in tasks go unnoticed. Await them.
+- **Unbounded fan-out against a server.** Limit concurrency (Semaphore, bounded channels).
+@keys
+- `join!` runs futures concurrently in one task; time ≈ the slowest.
+- `tokio::spawn` creates independent tasks; await the JoinHandle.
+- Spawned futures need `async move` and owned data.
+- Async mpsc channels connect tasks with back-pressure.
+
+=== 17.3
+@idea
+Often the number of futures is not known in advance: one request per URL in a list. **`futures::future::join_all(iter)`** takes any number of futures and resolves to a `Vec` of their results, in the original order, when all are done. A **`tokio::task::JoinSet`** does the same for spawned tasks and lets you collect results **as they finish** with `join_next().await`.
+
+Sometimes you want the **first** result instead of all of them. **`tokio::select!`** waits on several futures and runs the branch of whichever completes first, **cancelling** (dropping) the others. That powers patterns like "use the fastest of two mirrors", "stop when a shutdown signal arrives", or a hand-made timeout. Cancellation in Rust is simply dropping the future, so code after an `.await` point may never run; keep that in mind when a select branch loses.
+
+Timeouts are common enough to have a helper: **`tokio::time::timeout(duration, future)`** returns `Ok(value)` if the future finishes in time and `Err(Elapsed)` otherwise, dropping the slow future. Finally, a long CPU-bound loop inside an async task never awaits, so it **starves** other tasks; insert `tokio::task::yield_now().await` occasionally, or move heavy work to `spawn_blocking`.
+@how
+- `join_all(futures)` → `Vec` of results in order (crate `futures`).
+- `JoinSet`: `set.spawn(fut)`, then `while let Some(res) = set.join_next().await`.
+- `tokio::select! { a = fut_a => ..., b = fut_b => ... }`: first wins, others dropped.
+- `tokio::time::timeout(d, fut).await` → `Result<T, Elapsed>`.
+- `yield_now().await` in long loops; `spawn_blocking` for heavy CPU work.
+@example rust: join_all, select! and timeout
+use std::time::Duration;
+use futures::future::join_all;
+use tokio::time::{sleep, timeout};
+
+async fn fetch(url: &str, ms: u64) -> String {
+    sleep(Duration::from_millis(ms)).await;
+    format!("{url}: 200 OK")
+}
+
+#[tokio::main]
+async fn main() {
+    let sites = [("a.example", 40), ("b.example", 10), ("c.example", 25)];
+    let results = join_all(sites.iter().map(|&(u, ms)| fetch(u, ms))).await;
+    println!("join_all, in input order: {results:?}");
+
+    let winner = tokio::select! {
+        r = fetch("mirror-eu", 30) => format!("eu won: {r}"),
+        r = fetch("mirror-us", 10) => format!("us won: {r}"),
+    };
+    println!("{winner}");
+
+    match timeout(Duration::from_millis(20), fetch("slow.example", 200)).await {
+        Ok(r) => println!("got {r}"),
+        Err(_) => println!("slow.example: gave up after 20 ms"),
+    }
+    match timeout(Duration::from_millis(100), fetch("fast.example", 5)).await {
+        Ok(r) => println!("got {r}"),
+        Err(_) => println!("timed out"),
+    }
+}
+@deps tokio@1+full, futures@0.3
+@note
+`join_all` ran three fetches concurrently and returned results in the order of the input, not the order they finished. `select!` took whichever mirror finished first and dropped the other future. `timeout` abandoned the slow fetch after 20 ms and let the fast one through.
+@example rust: A JoinSet collects results as they finish
+use std::time::Duration;
+use tokio::task::JoinSet;
+use tokio::time::sleep;
+
+#[tokio::main]
+async fn main() {
+    let mut set = JoinSet::new();
+    for (name, ms) in [("report", 60), ("thumbnail", 10), ("email", 35)] {
+        set.spawn(async move {
+            sleep(Duration::from_millis(ms)).await;
+            if name == "email" {
+                panic!("SMTP server unreachable");
+            }
+            name
+        });
+    }
+    while let Some(result) = set.join_next().await {
+        match result {
+            Ok(name) => println!("finished: {name}"),
+            Err(e) if e.is_panic() => println!("a task panicked"),
+            Err(e) => println!("task error: {e}"),
+        }
+    }
+}
+@deps tokio@1+full
+@note
+Results arrived in completion order: the thumbnail first, then the failing email task, then the report. A panic inside one task did not bring down the others; `join_next` reported it as an error the program could handle. Tokio still prints the panic message to standard error, as seen above, but the program carries on.
+@mistakes
+- **Awaiting futures one by one in a loop.** That is sequential. Use `join_all` or a JoinSet.
+- **Forgetting that `select!` drops the losers.** Work in progress in those futures is cancelled.
+- **Long computations without awaits.** They starve other tasks; yield or use `spawn_blocking`.
+@keys
+- `join_all` awaits any number of futures; results keep input order.
+- `JoinSet` collects spawned tasks' results as they finish.
+- `select!` takes the first to complete and cancels the rest.
+- `timeout` bounds any future; yield in long loops.
+
+=== 17.4
+@idea
+A **stream** is the asynchronous version of an iterator: it produces a sequence of values over time, each possibly after a wait. Ticks from a timer, messages from a channel, lines from a socket and rows from a database query are all streams. The `Stream` trait lives in the `futures` crate (and Tokio's `tokio-stream`), with extension traits (`StreamExt`) providing iterator-like adaptors: `next().await`, `map`, `filter`, `take`, `then` (an async map), and `collect`. Process a stream with `while let Some(item) = stream.next().await`.
+
+Under the hood, the **`Future` trait** has one method, `poll`, which the runtime calls; it returns `Poll::Ready(value)` or `Poll::Pending` (plus a promise to wake the task later). `async fn` writes these state machines for you. Some futures must not move in memory once polled, because they hold references into themselves; **`Pin`** expresses that guarantee. You will meet `Pin` mostly in error messages and signatures (`Pin<Box<dyn Future>>`); `Box::pin(fut)` or the `pin!` macro usually solves them.
+
+Async and threads complement each other. Async excels at many concurrent I/O waits; threads (or `spawn_blocking`, which runs work on a dedicated thread pool) suit CPU-heavy work and blocking libraries. Since Rust 1.75, traits can have `async fn` methods directly.
+@how
+- `use futures::StreamExt;` then `stream.next().await`, `map`, `filter`, `take`, `collect`.
+- Channels become streams with wrappers (e.g. `ReceiverStream`); timers with intervals.
+- `Future::poll` returns `Ready` or `Pending`; `async` builds the state machine.
+- `Pin` keeps self-referential futures in place; `Box::pin`/`pin!` fix most errors.
+- `spawn_blocking` for CPU-heavy or blocking code; `async fn` in traits is supported.
+@example rust: A stream of ticks, filtered and mapped
+use std::time::Duration;
+use futures::stream::{self, StreamExt};
+
+#[tokio::main]
+async fn main() {
+    let ticks = stream::unfold(0u32, |n| async move {
+        tokio::time::sleep(Duration::from_millis(5)).await;     // each item arrives after a wait
+        Some((n, n + 1))
+    });
+    let evens: Vec<String> = ticks
+        .filter(|n| std::future::ready(n % 2 == 0))
+        .map(|n| format!("tick {n}"))
+        .take(4)
+        .collect()
+        .await;
+    println!("{evens:?}");
+
+    let mut words = stream::iter(["async", "streams", "are", "iterators", "over", "time"]);
+    let mut lengths = Vec::new();
+    while let Some(w) = words.next().await {
+        lengths.push(w.len());
+    }
+    println!("lengths: {lengths:?}");
+}
+@deps tokio@1+full, futures@0.3
+@note
+`unfold` built an endless stream where each value arrives after a short sleep; `filter`, `map` and `take(4)` work just like iterator adaptors, and `collect().await` gathered the results. The second part shows the basic loop, `while let Some(x) = stream.next().await`, the async counterpart of a `for` loop.
+@example rust: Writing a Future by hand
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+struct Countdown {
+    remaining: u32,
+    polls: u32,
+}
+
+impl Future for Countdown {
+    type Output = String;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<String> {
+        self.polls += 1;
+        if self.remaining == 0 {
+            Poll::Ready(format!("liftoff after {} polls", self.polls))
+        } else {
+            self.remaining -= 1;
+            cx.waker().wake_by_ref();          // ask to be polled again
+            Poll::Pending
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let message = Countdown { remaining: 3, polls: 0 }.await;
+    println!("{message}");
+    let boxed: Pin<Box<dyn Future<Output = String>>> = Box::pin(Countdown { remaining: 1, polls: 0 });
+    println!("{}", boxed.await);
+}
+@deps tokio@1+full
+@note
+`poll` returned `Pending` three times, each time waking itself so the runtime polled again, then `Ready` with the result. This is the machinery `async fn` generates for you. `Box::pin` produced a `Pin<Box<dyn Future>>`, the usual way to store futures of different types behind one type.
+@mistakes
+- **Blocking calls inside async code.** They freeze every task on the thread. Use async APIs or `spawn_blocking`.
+- **Implementing Future by hand for everyday code.** `async fn` writes the state machine for you.
+- **Panicking at Pin errors.** `Box::pin(fut)` or `pin!(fut)` resolves most of them.
+@keys
+- Streams are async iterators; `StreamExt` gives `next`, `map`, `filter`, `take`.
+- Futures are polled state machines returning Ready or Pending.
+- `Pin` keeps self-referential futures in place.
+- Combine async for I/O with threads or `spawn_blocking` for CPU work.
+
+=== 18.1
+@idea
+Is Rust object-oriented? It depends on the definition. **Objects** that bundle data with behaviour: yes, structs and enums with `impl` blocks. **Encapsulation**, hiding implementation details behind a public interface: yes, with `pub` and private fields. **Inheritance**, a type reusing another type's implementation and being usable wherever its parent is: no, Rust has none.
+
+Encapsulation is the important part, and Rust supports it fully. A struct with private fields and public methods can maintain **invariants**: an `AveragedCollection` that keeps a list and its cached average must update the average whenever the list changes, so the list is private and only `add` and `remove` methods change it. Users cannot put the struct into an inconsistent state, and the implementation can change (say, from a `Vec` to a running sum) without breaking them.
+
+Inheritance is usually wanted for two reasons, and Rust covers both differently. **Code reuse**: trait default methods share implementations across types. **Polymorphism**, treating different types through one interface: generics with trait bounds (resolved at compile time) and **trait objects** (resolved at run time, next lesson). Many modern designs prefer composition and traits over inheritance anyway, because inheritance tends to share more code than intended.
+@how
+- Objects: structs/enums with methods in `impl` blocks.
+- Encapsulation: private fields, public methods that preserve invariants.
+- No inheritance; reuse code with trait default methods.
+- Polymorphism with generics (`impl Trait`) or trait objects (`dyn Trait`).
+- Prefer composition: structs containing other structs.
+@example rust: Encapsulation that protects an invariant
+pub struct AveragedCollection {
+    list: Vec<i32>,                     // private: only our methods change it
+    average: f64,                       // cached, always consistent with `list`
+}
+
+impl AveragedCollection {
+    pub fn new() -> Self {
+        AveragedCollection { list: vec![], average: 0.0 }
+    }
+    pub fn add(&mut self, value: i32) {
+        self.list.push(value);
+        self.update_average();
+    }
+    pub fn remove(&mut self) -> Option<i32> {
+        let result = self.list.pop();
+        if result.is_some() {
+            self.update_average();
+        }
+        result
+    }
+    pub fn average(&self) -> f64 {
+        self.average
+    }
+    fn update_average(&mut self) {
+        let total: i32 = self.list.iter().sum();
+        self.average = if self.list.is_empty() { 0.0 } else { total as f64 / self.list.len() as f64 };
+    }
+}
+
+fn main() {
+    let mut scores = AveragedCollection::new();
+    for s in [90, 70, 80] {
+        scores.add(s);
+    }
+    println!("average {:.2}", scores.average());
+    println!("removed {:?}, average now {:.2}", scores.remove(), scores.average());
+    scores.remove();
+    scores.remove();
+    println!("after emptying: {:?}, average {:.2}", scores.remove(), scores.average());
+}
+@note
+Because `list` and `average` are private, the only ways to change the collection are `add` and `remove`, and both keep the cached average correct. Outside code cannot push to the list directly and forget to update the average; the invariant is guaranteed by the type itself.
+@example rust: Code reuse without inheritance
+trait Describe {
+    fn name(&self) -> String;
+    fn legs(&self) -> u32;
+    fn describe(&self) -> String {                 // shared implementation
+        format!("{} walks on {} legs", self.name(), self.legs())
+    }
+}
+
+struct Dog;
+struct Bird {
+    species: &'static str,
+}
+
+impl Describe for Dog {
+    fn name(&self) -> String { "a dog".into() }
+    fn legs(&self) -> u32 { 4 }
+}
+
+impl Describe for Bird {
+    fn name(&self) -> String { format!("a {}", self.species) }
+    fn legs(&self) -> u32 { 2 }
+    fn describe(&self) -> String {                 // "override"
+        format!("{} hops on {} legs and can fly", self.name(), self.legs())
+    }
+}
+
+struct Pet<A: Describe> {                          // composition: a Pet has an animal
+    nickname: &'static str,
+    animal: A,
+}
+
+fn main() {
+    println!("{}", Dog.describe());
+    println!("{}", Bird { species: "robin" }.describe());
+    let rex = Pet { nickname: "Rex", animal: Dog };
+    println!("{}: {}", rex.nickname, rex.animal.describe());
+}
+@note
+The default `describe` method is written once and reused by every implementor, which is the code-reuse half of inheritance; Bird replaces it with its own version. `Pet` contains an animal rather than inheriting from it: composition, the usual Rust way to build bigger types from smaller ones.
+@mistakes
+- **Public fields on types with invariants.** Anyone can break them. Keep fields private.
+- **Trying to emulate inheritance with Deref.** It confuses readers. Use traits and composition.
+- **Deep "class hierarchies" ported from other languages.** Small traits and composed structs fit Rust better.
+@keys
+- Rust has objects and encapsulation, but no inheritance.
+- Private fields plus methods protect invariants.
+- Trait default methods provide code reuse.
+- Polymorphism comes from generics and trait objects; compose types.
+
+=== 18.2
+@idea
+A `Vec<T>` holds one type. What about a GUI screen holding buttons, text boxes and images, all of which can be drawn? **Trait objects** solve this: `Box<dyn Draw>` is a pointer to *some* value implementing `Draw`, with its concrete type erased. A `Vec<Box<dyn Draw>>` can hold a Button and a TextField side by side, and calling `component.draw()` runs the right implementation for each.
+
+That call uses **dynamic dispatch**: a trait object is a "fat pointer" made of a pointer to the data and a pointer to a **vtable**, a table of function pointers for that type's implementation of the trait. At run time, the call looks up the method in the vtable. Generics, by contrast, use **static dispatch**: the compiler generates a specialised copy per type (monomorphisation) and calls the method directly, which allows inlining. Static dispatch is a little faster; trait objects allow **heterogeneous collections** and types chosen at run time, such as plug-ins, and keep binaries smaller.
+
+Not every trait can become a trait object: it must be **dyn compatible** (formerly "object safe"). Roughly, its methods cannot be generic and cannot return `Self`, because the vtable needs a fixed set of concrete functions. `Clone` is the classic example of a trait that cannot be used as `dyn Clone`.
+@how
+- `Box<dyn Trait>`, `&dyn Trait` or `Rc<dyn Trait>` for a value of any implementing type.
+- `Vec<Box<dyn Trait>>` for heterogeneous collections.
+- Dynamic dispatch through a vtable; generics use static dispatch.
+- Choose generics for one type per use and speed; trait objects for mixed types at run time.
+- Dyn-compatible traits: no generic methods, no `Self` return values (or mark them `where Self: Sized`).
+@example rust: A screen of mixed components
+trait Draw {
+    fn draw(&self) -> String;
+}
+
+struct Button {
+    label: String,
+}
+
+struct TextField {
+    width: usize,
+    placeholder: String,
+}
+
+struct Image {
+    file: &'static str,
+}
+
+impl Draw for Button {
+    fn draw(&self) -> String {
+        format!("[ {} ]", self.label)
+    }
+}
+
+impl Draw for TextField {
+    fn draw(&self) -> String {
+        format!("|{:<width$}|", self.placeholder, width = self.width)
+    }
+}
+
+impl Draw for Image {
+    fn draw(&self) -> String {
+        format!("<img {}>", self.file)
+    }
+}
+
+struct Screen {
+    components: Vec<Box<dyn Draw>>,
+}
+
+impl Screen {
+    fn render(&self) {
+        for c in &self.components {
+            println!("{}", c.draw());                  // dynamic dispatch
+        }
+    }
+}
+
+fn main() {
+    let screen = Screen {
+        components: vec![
+            Box::new(Image { file: "logo.png" }),
+            Box::new(TextField { width: 16, placeholder: "your email".into() }),
+            Box::new(Button { label: "Subscribe".into() }),
+        ],
+    };
+    screen.render();
+    println!("a &dyn Draw is {} bytes (data pointer + vtable pointer), a &Button {}",
+        std::mem::size_of::<&dyn Draw>(), std::mem::size_of::<&Button>());
+}
+@note
+Three different types live in one vector because each is boxed as a `dyn Draw`, and `render` calls the right `draw` for each through its vtable. The size check shows the fat pointer: a reference to a trait object is twice the size of an ordinary reference.
+@example rust fail: Clone cannot be a trait object
+fn main() {
+    let items: Vec<Box<dyn Clone>> = Vec::new();
+    println!("{}", items.len());
+}
+@note
+`Clone::clone` returns `Self`, a concrete type the vtable cannot know about, so `dyn Clone` is not allowed and the compiler explains that the trait is not dyn compatible. Libraries that need cloneable trait objects add a method like `fn box_clone(&self) -> Box<dyn MyTrait>` instead.
+@mistakes
+- **`Box<dyn Trait>` where generics would do.** Static dispatch is simpler and faster when one type is used at a time.
+- **Generic methods on traits meant for `dyn`.** They make the trait not dyn compatible.
+- **Downcasting trait objects all the time.** If you need the concrete type, an enum is probably a better fit.
+@keys
+- `dyn Trait` erases the concrete type behind a pointer.
+- Trait objects enable heterogeneous collections and run-time choice.
+- Calls go through a vtable (dynamic dispatch); generics dispatch statically.
+- Only dyn-compatible traits can be used as trait objects.
+
+=== 18.3
+@idea
+The **state pattern** models something that moves through states, with behaviour depending on the current state. The Book's example is a blog post: a draft, then pending review, then published; only a published post shows its content. The object-oriented version stores the state as a trait object, `state: Option<Box<dyn State>>`, and each state struct implements methods like `request_review(self: Box<Self>) -> Box<dyn State>` that return the next state. The `Post` delegates to its state. Adding a state means adding a struct, and states encapsulate their own rules.
+
+The Rust-flavoured alternative **encodes states as types**: `DraftPost`, `PendingReviewPost` and `Post` are separate structs, and transitions are methods that **consume** one and return another: `draft.request_review()` returns a `PendingReviewPost`, whose `approve()` returns a `Post`. Only `Post` has a `content()` method, so calling it on a draft is not a run-time "empty string" but a **compile error**. This "typestate" approach moves rule violations from run time to compile time.
+
+Both are valid. Trait objects suit states chosen at run time (loaded from a database, many states, frequent additions); typestates suit workflows whose order is fixed and where mistakes should be impossible to compile.
+@how
+- OOP version: `Option<Box<dyn State>>`; state methods take `self: Box<Self>` and return the next state.
+- `Option::take()` moves the state out so it can be replaced.
+- Typestate version: one struct per state; transitions consume `self` and return the next type.
+- Methods exist only on the states where they are valid.
+- Choose run-time flexibility (trait objects) or compile-time guarantees (types).
+@example rust: The blog workflow with trait-object states
+trait State {
+    fn request_review(self: Box<Self>) -> Box<dyn State>;
+    fn approve(self: Box<Self>) -> Box<dyn State>;
+    fn content<'a>(&self, _post: &'a Post) -> &'a str {
+        ""
+    }
+    fn name(&self) -> &'static str;
+}
+
+struct Draft;
+struct PendingReview;
+struct Published;
+
+impl State for Draft {
+    fn request_review(self: Box<Self>) -> Box<dyn State> { Box::new(PendingReview) }
+    fn approve(self: Box<Self>) -> Box<dyn State> { self }
+    fn name(&self) -> &'static str { "draft" }
+}
+
+impl State for PendingReview {
+    fn request_review(self: Box<Self>) -> Box<dyn State> { self }
+    fn approve(self: Box<Self>) -> Box<dyn State> { Box::new(Published) }
+    fn name(&self) -> &'static str { "pending review" }
+}
+
+impl State for Published {
+    fn request_review(self: Box<Self>) -> Box<dyn State> { self }
+    fn approve(self: Box<Self>) -> Box<dyn State> { self }
+    fn content<'a>(&self, post: &'a Post) -> &'a str { &post.text }
+    fn name(&self) -> &'static str { "published" }
+}
+
+pub struct Post {
+    state: Option<Box<dyn State>>,
+    text: String,
+}
+
+impl Post {
+    pub fn new() -> Post {
+        Post { state: Some(Box::new(Draft)), text: String::new() }
+    }
+    pub fn add_text(&mut self, t: &str) { self.text.push_str(t); }
+    pub fn content(&self) -> &str { self.state.as_ref().unwrap().content(self) }
+    pub fn request_review(&mut self) { if let Some(s) = self.state.take() { self.state = Some(s.request_review()); } }
+    pub fn approve(&mut self) { if let Some(s) = self.state.take() { self.state = Some(s.approve()); } }
+    fn status(&self) -> &'static str { self.state.as_ref().unwrap().name() }
+}
+
+fn main() {
+    let mut post = Post::new();
+    post.add_text("I ate a salad for lunch today");
+    println!("{:15} content: {:?}", post.status(), post.content());
+    post.approve();                                  // ignored: drafts can't be approved
+    println!("{:15} content: {:?}", post.status(), post.content());
+    post.request_review();
+    println!("{:15} content: {:?}", post.status(), post.content());
+    post.approve();
+    println!("{:15} content: {:?}", post.status(), post.content());
+}
+@note
+Each state decides what its transitions mean: approving a draft does nothing, and only `Published` returns the real content. `Option::take` moves the boxed state out so the consuming `self: Box<Self>` methods can replace it. Mistakes are handled at run time, as with the ignored early `approve`.
+@example rust fail: Encoding states as types makes invalid calls impossible
+pub struct DraftPost { text: String }
+pub struct PendingReviewPost { text: String }
+pub struct Post { text: String }
+
+impl DraftPost {
+    pub fn new() -> DraftPost { DraftPost { text: String::new() } }
+    pub fn add_text(&mut self, t: &str) { self.text.push_str(t); }
+    pub fn request_review(self) -> PendingReviewPost { PendingReviewPost { text: self.text } }
+}
+
+impl PendingReviewPost {
+    pub fn approve(self) -> Post { Post { text: self.text } }
+}
+
+impl Post {
+    pub fn content(&self) -> &str { &self.text }
+}
+
+fn main() {
+    let mut draft = DraftPost::new();
+    draft.add_text("I ate a salad for lunch today");
+    println!("{}", draft.content());                // drafts have no content() method
+    let post = draft.request_review().approve();
+    println!("{}", post.content());
+}
+@note
+In the typestate version, `content` exists only on `Post`, so asking a draft for its content is rejected by the compiler: "no method named `content` found for struct `DraftPost`". Transitions consume the old state, so a draft can't be used after being sent for review either. Remove the offending line and the program compiles and prints the published text.
+@mistakes
+- **Run-time state checks for workflows with a fixed order.** Typestates make illegal transitions impossible to compile.
+- **Typestates for states chosen at run time.** You can't pick a type from database data; use trait objects or enums.
+- **Forgetting `Option::take` when replacing a boxed state.** You cannot move out of a field without it.
+@keys
+- The state pattern delegates behaviour to the current state object.
+- Trait-object states are flexible and checked at run time.
+- Typestates encode states as types; invalid transitions become compile errors.
+- Pick the approach by whether states are fixed in code or decided at run time.

@@ -2378,5 +2378,710 @@
 "Rc and RefCell are not thread-safe; Arc and Mutex are.",
 "`thread::spawn` requires Send, turning data races into compile errors."
 ]
+},
+"17.1": {
+"idea": [
+"**Async** programming lets one thread make progress on many tasks that spend most of their time **waiting**: for the network, a timer, a database. Instead of blocking a thread per task, an async function **pauses** at each wait and lets other work run, resuming when its data is ready.",
+"The building block is a **future**: a value representing a computation that will finish later. An **`async fn`** (or an `async { ... }` block) returns a future instead of running immediately. Futures are **lazy**: nothing happens until the future is **awaited** with `.await`, which runs it until it completes, pausing the current async function at that point if it has to wait. Calling an async function without `.await` does nothing at all, and the compiler warns that the future is unused.",
+"Futures need a **runtime** to drive them: an executor that polls futures, plus the I/O and timer machinery that wakes them up. Rust's standard library defines the `Future` trait but ships no runtime; **Tokio** is the most widely used one. `#[tokio::main]` turns `async fn main` into a normal `main` that starts the runtime and runs it. Awaiting two futures one after the other runs them **sequentially**: the second starts only after the first finishes. Running them at the same time is the next lesson."
+],
+"how": [
+"`async fn f() -> T` returns `impl Future<Output = T>`; `f().await` runs it.",
+"`async { ... }` blocks create futures inline.",
+"Futures do nothing until awaited (or spawned).",
+"A runtime drives futures: `#[tokio::main] async fn main()` with `tokio = { features = [\"full\"] }`.",
+"`tokio::time::sleep(d).await` waits without blocking the thread."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Two async functions, awaited in order",
+"code": "use std::time::Duration;\nuse tokio::time::{sleep, Instant};\n\nasync fn fetch_price(item: &str, ms: u64) -> u32 {\n    println!(\"  start {item}\");\n    sleep(Duration::from_millis(ms)).await;       // pauses this task; the thread is free\n    println!(\"  done  {item}\");\n    item.len() as u32 * 100\n}\n\n#[tokio::main]\nasync fn main() {\n    let start = Instant::now();\n    let future = fetch_price(\"teapot\", 50);\n    println!(\"future created, nothing printed yet\");\n    let a = future.await;\n    let b = fetch_price(\"cups\", 50).await;\n    println!(\"total {} after about {} ms (sequential)\", a + b, start.elapsed().as_millis() / 50 * 50);\n}",
+"note": "Creating the future printed nothing, because futures are lazy; the work started only at `.await`. Awaiting one after the other ran them sequentially, so the two 50 ms waits added up to about 100 ms. The elapsed time is rounded down to a multiple of 50 so the output is stable.",
+"output": "future created, nothing printed yet\n  start teapot\n  done  teapot\n  start cups\n  done  cups\ntotal 1000 after about 100 ms (sequential)"
+},
+{
+"lang": "rust",
+"title": "An async block, and the runtime driving it",
+"code": "use std::future::Future;\n\nfn add_later(a: u32, b: u32) -> impl Future<Output = u32> {\n    async move { a + b }                         // an async block is a future too\n}\n\nfn main() {\n    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();\n    let total = runtime.block_on(async {\n        let x = add_later(2, 3).await;\n        let y = add_later(x, 10).await;\n        y * 2\n    });\n    println!(\"block_on returned {total}\");\n}",
+"note": "`#[tokio::main]` is shorthand for this: build a runtime and `block_on` a future, which drives it to completion on the current thread. The function returning `impl Future` shows what `async fn` desugars to: an ordinary function returning a future built by an `async move` block.",
+"output": "block_on returned 30"
+}
+],
+"mistakes": [
+"**Calling an async function without `.await`.** Nothing runs; the compiler warns about an unused future.",
+"**Using `std::thread::sleep` in async code.** It blocks the whole thread and every task on it. Use `tokio::time::sleep`.",
+"**Expecting awaits in sequence to run concurrently.** They don't; see join and spawn."
+],
+"keys": [
+"Async lets one thread juggle many waiting tasks.",
+"`async fn` and `async {}` produce lazy futures; `.await` runs them.",
+"A runtime such as Tokio drives futures; `#[tokio::main]` sets it up.",
+"Sequential awaits run one after the other."
+]
+},
+"17.2": {
+"idea": [
+"Concurrency comes from running several futures **at the same time**. **`tokio::join!(a, b, c)`** awaits several futures concurrently within the current task and returns all their results as a tuple once every one has finished; total time is about the longest, not the sum. `tokio::try_join!` does the same for futures returning `Result` and stops at the first error.",
+"**`tokio::spawn(future)`** creates an independent **task**, scheduled by the runtime, possibly on another thread in the multi-threaded runtime. It returns a **`JoinHandle`**; awaiting it gives the task's result (wrapped in a Result that reports panics). Spawned tasks must own their data (`async move`) and be `Send + 'static`, like threads, because they may outlive the caller and move between threads. Tasks are very cheap (bytes, not megabytes like threads), so spawning thousands is normal.",
+"Tasks communicate with **async channels**: `tokio::sync::mpsc::channel(capacity)` gives a sender and receiver whose `send(...).await` waits if the channel is full (back-pressure) and whose `recv().await` waits for a message, returning `None` once all senders are dropped. It is the async counterpart of the thread channels from chapter 16."
+],
+"how": [
+"`let (a, b) = tokio::join!(fut_a, fut_b);` concurrent, same task.",
+"`tokio::try_join!` for Result futures, stopping at the first error.",
+"`let h = tokio::spawn(async move { ... }); h.await?` for independent tasks.",
+"Spawned futures must be `Send + 'static`: use `async move`, own the data.",
+"`tokio::sync::mpsc::channel(n)`: `tx.send(v).await`, `rx.recv().await` → Option."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "join!, spawn and an async channel",
+"code": "use std::time::Duration;\nuse tokio::sync::mpsc;\nuse tokio::time::{sleep, Instant};\n\nasync fn fetch(name: &str, ms: u64) -> String {\n    sleep(Duration::from_millis(ms)).await;\n    format!(\"{name} ({ms} ms)\")\n}\n\n#[tokio::main]\nasync fn main() {\n    let start = Instant::now();\n    let (a, b, c) = tokio::join!(fetch(\"weather\", 80), fetch(\"news\", 50), fetch(\"rates\", 60));\n    println!(\"join!: {a}, {b}, {c}\");\n    println!(\"concurrent: about {} ms, not 190\", start.elapsed().as_millis() / 40 * 40);\n\n    let handles: Vec<_> = (1..=3).map(|i| tokio::spawn(async move { i * 10 })).collect();\n    let mut total = 0;\n    for h in handles {\n        total += h.await.unwrap();\n    }\n    println!(\"spawned tasks summed to {total}\");\n\n    let (tx, mut rx) = mpsc::channel::<String>(2);\n    for worker in [\"A\", \"B\"] {\n        let tx = tx.clone();\n        tokio::spawn(async move {\n            for n in 1..=2 {\n                tx.send(format!(\"{worker}{n}\")).await.unwrap();\n            }\n        });\n    }\n    drop(tx);\n    let mut received = Vec::new();\n    while let Some(msg) = rx.recv().await {\n        received.push(msg);\n    }\n    received.sort();\n    println!(\"channel delivered {received:?}\");\n}",
+"note": "`join!` ran the three fetches at once, so the whole thing took about as long as the slowest (80 ms), rounded down here for stable output. Spawned tasks ran independently and their handles returned their results. Two producer tasks sent into a bounded channel; once both finished and the original sender was dropped, `recv` returned `None` and the loop ended.",
+"output": "join!: weather (80 ms), news (50 ms), rates (60 ms)\nconcurrent: about 80 ms, not 190\nspawned tasks summed to 60\nchannel delivered [\"A1\", \"A2\", \"B1\", \"B2\"]"
+},
+{
+"lang": "rust",
+"title": "Spawned tasks must own what they use",
+"code": "#[tokio::main]\nasync fn main() {\n    let names = vec![String::from(\"ada\"), String::from(\"ben\")];\n    let handle = tokio::spawn(async {\n        println!(\"{}\", names.len());\n    });\n    handle.await.unwrap();\n}",
+"note": "A spawned task may outlive `main`'s local `names`, so borrowing it is refused, just like with threads; the compiler suggests an `async move` block. Adding `move` transfers ownership of the vector into the task.",
+"output": "error[E0373]: async block may outlive the current function, but it borrows `names`, which is owned by the current function\n --> main.rs:4:31\n  |\n4 |     let handle = tokio::spawn(async {\n  |                               ^^^^^ may outlive borrowed value `names`\n5 |         println!(\"{}\", names.len());\n  |                        ----- `names` is borrowed here\n  |\n  = note: async blocks are not executed immediately and must either take a reference or ownership of outside variables they use\nhelp: to force the async block to take ownership of `names` (and any other referenced variables), use the `move` keyword\n  |\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Spawning when `join!` would do.** For a few futures in one function, `join!` is simpler and needs no `'static`.",
+"**Ignoring JoinHandles.** Errors and panics in tasks go unnoticed. Await them.",
+"**Unbounded fan-out against a server.** Limit concurrency (Semaphore, bounded channels)."
+],
+"keys": [
+"`join!` runs futures concurrently in one task; time ≈ the slowest.",
+"`tokio::spawn` creates independent tasks; await the JoinHandle.",
+"Spawned futures need `async move` and owned data.",
+"Async mpsc channels connect tasks with back-pressure."
+]
+},
+"17.3": {
+"idea": [
+"Often the number of futures is not known in advance: one request per URL in a list. **`futures::future::join_all(iter)`** takes any number of futures and resolves to a `Vec` of their results, in the original order, when all are done. A **`tokio::task::JoinSet`** does the same for spawned tasks and lets you collect results **as they finish** with `join_next().await`.",
+"Sometimes you want the **first** result instead of all of them. **`tokio::select!`** waits on several futures and runs the branch of whichever completes first, **cancelling** (dropping) the others. That powers patterns like \"use the fastest of two mirrors\", \"stop when a shutdown signal arrives\", or a hand-made timeout. Cancellation in Rust is simply dropping the future, so code after an `.await` point may never run; keep that in mind when a select branch loses.",
+"Timeouts are common enough to have a helper: **`tokio::time::timeout(duration, future)`** returns `Ok(value)` if the future finishes in time and `Err(Elapsed)` otherwise, dropping the slow future. Finally, a long CPU-bound loop inside an async task never awaits, so it **starves** other tasks; insert `tokio::task::yield_now().await` occasionally, or move heavy work to `spawn_blocking`."
+],
+"how": [
+"`join_all(futures)` → `Vec` of results in order (crate `futures`).",
+"`JoinSet`: `set.spawn(fut)`, then `while let Some(res) = set.join_next().await`.",
+"`tokio::select! { a = fut_a => ..., b = fut_b => ... }`: first wins, others dropped.",
+"`tokio::time::timeout(d, fut).await` → `Result<T, Elapsed>`.",
+"`yield_now().await` in long loops; `spawn_blocking` for heavy CPU work."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "join_all, select! and timeout",
+"code": "use std::time::Duration;\nuse futures::future::join_all;\nuse tokio::time::{sleep, timeout};\n\nasync fn fetch(url: &str, ms: u64) -> String {\n    sleep(Duration::from_millis(ms)).await;\n    format!(\"{url}: 200 OK\")\n}\n\n#[tokio::main]\nasync fn main() {\n    let sites = [(\"a.example\", 40), (\"b.example\", 10), (\"c.example\", 25)];\n    let results = join_all(sites.iter().map(|&(u, ms)| fetch(u, ms))).await;\n    println!(\"join_all, in input order: {results:?}\");\n\n    let winner = tokio::select! {\n        r = fetch(\"mirror-eu\", 30) => format!(\"eu won: {r}\"),\n        r = fetch(\"mirror-us\", 10) => format!(\"us won: {r}\"),\n    };\n    println!(\"{winner}\");\n\n    match timeout(Duration::from_millis(20), fetch(\"slow.example\", 200)).await {\n        Ok(r) => println!(\"got {r}\"),\n        Err(_) => println!(\"slow.example: gave up after 20 ms\"),\n    }\n    match timeout(Duration::from_millis(100), fetch(\"fast.example\", 5)).await {\n        Ok(r) => println!(\"got {r}\"),\n        Err(_) => println!(\"timed out\"),\n    }\n}",
+"note": "`join_all` ran three fetches concurrently and returned results in the order of the input, not the order they finished. `select!` took whichever mirror finished first and dropped the other future. `timeout` abandoned the slow fetch after 20 ms and let the fast one through.",
+"output": "join_all, in input order: [\"a.example: 200 OK\", \"b.example: 200 OK\", \"c.example: 200 OK\"]\nus won: mirror-us: 200 OK\nslow.example: gave up after 20 ms\ngot fast.example: 200 OK"
+},
+{
+"lang": "rust",
+"title": "A JoinSet collects results as they finish",
+"code": "use std::time::Duration;\nuse tokio::task::JoinSet;\nuse tokio::time::sleep;\n\n#[tokio::main]\nasync fn main() {\n    let mut set = JoinSet::new();\n    for (name, ms) in [(\"report\", 60), (\"thumbnail\", 10), (\"email\", 35)] {\n        set.spawn(async move {\n            sleep(Duration::from_millis(ms)).await;\n            if name == \"email\" {\n                panic!(\"SMTP server unreachable\");\n            }\n            name\n        });\n    }\n    while let Some(result) = set.join_next().await {\n        match result {\n            Ok(name) => println!(\"finished: {name}\"),\n            Err(e) if e.is_panic() => println!(\"a task panicked\"),\n            Err(e) => println!(\"task error: {e}\"),\n        }\n    }\n}",
+"note": "Results arrived in completion order: the thumbnail first, then the failing email task, then the report. A panic inside one task did not bring down the others; `join_next` reported it as an error the program could handle. Tokio still prints the panic message to standard error, as seen above, but the program carries on.",
+"output": "finished: thumbnail\n\nthread 'tokio-rt-worker' panicked at src/main.rs:12:17:\nSMTP server unreachable\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\na task panicked\nfinished: report"
+}
+],
+"mistakes": [
+"**Awaiting futures one by one in a loop.** That is sequential. Use `join_all` or a JoinSet.",
+"**Forgetting that `select!` drops the losers.** Work in progress in those futures is cancelled.",
+"**Long computations without awaits.** They starve other tasks; yield or use `spawn_blocking`."
+],
+"keys": [
+"`join_all` awaits any number of futures; results keep input order.",
+"`JoinSet` collects spawned tasks' results as they finish.",
+"`select!` takes the first to complete and cancels the rest.",
+"`timeout` bounds any future; yield in long loops."
+]
+},
+"17.4": {
+"idea": [
+"A **stream** is the asynchronous version of an iterator: it produces a sequence of values over time, each possibly after a wait. Ticks from a timer, messages from a channel, lines from a socket and rows from a database query are all streams. The `Stream` trait lives in the `futures` crate (and Tokio's `tokio-stream`), with extension traits (`StreamExt`) providing iterator-like adaptors: `next().await`, `map`, `filter`, `take`, `then` (an async map), and `collect`. Process a stream with `while let Some(item) = stream.next().await`.",
+"Under the hood, the **`Future` trait** has one method, `poll`, which the runtime calls; it returns `Poll::Ready(value)` or `Poll::Pending` (plus a promise to wake the task later). `async fn` writes these state machines for you. Some futures must not move in memory once polled, because they hold references into themselves; **`Pin`** expresses that guarantee. You will meet `Pin` mostly in error messages and signatures (`Pin<Box<dyn Future>>`); `Box::pin(fut)` or the `pin!` macro usually solves them.",
+"Async and threads complement each other. Async excels at many concurrent I/O waits; threads (or `spawn_blocking`, which runs work on a dedicated thread pool) suit CPU-heavy work and blocking libraries. Since Rust 1.75, traits can have `async fn` methods directly."
+],
+"how": [
+"`use futures::StreamExt;` then `stream.next().await`, `map`, `filter`, `take`, `collect`.",
+"Channels become streams with wrappers (e.g. `ReceiverStream`); timers with intervals.",
+"`Future::poll` returns `Ready` or `Pending`; `async` builds the state machine.",
+"`Pin` keeps self-referential futures in place; `Box::pin`/`pin!` fix most errors.",
+"`spawn_blocking` for CPU-heavy or blocking code; `async fn` in traits is supported."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A stream of ticks, filtered and mapped",
+"code": "use std::time::Duration;\nuse futures::stream::{self, StreamExt};\n\n#[tokio::main]\nasync fn main() {\n    let ticks = stream::unfold(0u32, |n| async move {\n        tokio::time::sleep(Duration::from_millis(5)).await;     // each item arrives after a wait\n        Some((n, n + 1))\n    });\n    let evens: Vec<String> = ticks\n        .filter(|n| std::future::ready(n % 2 == 0))\n        .map(|n| format!(\"tick {n}\"))\n        .take(4)\n        .collect()\n        .await;\n    println!(\"{evens:?}\");\n\n    let mut words = stream::iter([\"async\", \"streams\", \"are\", \"iterators\", \"over\", \"time\"]);\n    let mut lengths = Vec::new();\n    while let Some(w) = words.next().await {\n        lengths.push(w.len());\n    }\n    println!(\"lengths: {lengths:?}\");\n}",
+"note": "`unfold` built an endless stream where each value arrives after a short sleep; `filter`, `map` and `take(4)` work just like iterator adaptors, and `collect().await` gathered the results. The second part shows the basic loop, `while let Some(x) = stream.next().await`, the async counterpart of a `for` loop.",
+"output": "[\"tick 0\", \"tick 2\", \"tick 4\", \"tick 6\"]\nlengths: [5, 7, 3, 9, 4, 4]"
+},
+{
+"lang": "rust",
+"title": "Writing a Future by hand",
+"code": "use std::future::Future;\nuse std::pin::Pin;\nuse std::task::{Context, Poll};\n\nstruct Countdown {\n    remaining: u32,\n    polls: u32,\n}\n\nimpl Future for Countdown {\n    type Output = String;\n    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<String> {\n        self.polls += 1;\n        if self.remaining == 0 {\n            Poll::Ready(format!(\"liftoff after {} polls\", self.polls))\n        } else {\n            self.remaining -= 1;\n            cx.waker().wake_by_ref();          // ask to be polled again\n            Poll::Pending\n        }\n    }\n}\n\n#[tokio::main]\nasync fn main() {\n    let message = Countdown { remaining: 3, polls: 0 }.await;\n    println!(\"{message}\");\n    let boxed: Pin<Box<dyn Future<Output = String>>> = Box::pin(Countdown { remaining: 1, polls: 0 });\n    println!(\"{}\", boxed.await);\n}",
+"note": "`poll` returned `Pending` three times, each time waking itself so the runtime polled again, then `Ready` with the result. This is the machinery `async fn` generates for you. `Box::pin` produced a `Pin<Box<dyn Future>>`, the usual way to store futures of different types behind one type.",
+"output": "liftoff after 4 polls\nliftoff after 2 polls"
+}
+],
+"mistakes": [
+"**Blocking calls inside async code.** They freeze every task on the thread. Use async APIs or `spawn_blocking`.",
+"**Implementing Future by hand for everyday code.** `async fn` writes the state machine for you.",
+"**Panicking at Pin errors.** `Box::pin(fut)` or `pin!(fut)` resolves most of them."
+],
+"keys": [
+"Streams are async iterators; `StreamExt` gives `next`, `map`, `filter`, `take`.",
+"Futures are polled state machines returning Ready or Pending.",
+"`Pin` keeps self-referential futures in place.",
+"Combine async for I/O with threads or `spawn_blocking` for CPU work."
+]
+},
+"18.1": {
+"idea": [
+"Is Rust object-oriented? It depends on the definition. **Objects** that bundle data with behaviour: yes, structs and enums with `impl` blocks. **Encapsulation**, hiding implementation details behind a public interface: yes, with `pub` and private fields. **Inheritance**, a type reusing another type's implementation and being usable wherever its parent is: no, Rust has none.",
+"Encapsulation is the important part, and Rust supports it fully. A struct with private fields and public methods can maintain **invariants**: an `AveragedCollection` that keeps a list and its cached average must update the average whenever the list changes, so the list is private and only `add` and `remove` methods change it. Users cannot put the struct into an inconsistent state, and the implementation can change (say, from a `Vec` to a running sum) without breaking them.",
+"Inheritance is usually wanted for two reasons, and Rust covers both differently. **Code reuse**: trait default methods share implementations across types. **Polymorphism**, treating different types through one interface: generics with trait bounds (resolved at compile time) and **trait objects** (resolved at run time, next lesson). Many modern designs prefer composition and traits over inheritance anyway, because inheritance tends to share more code than intended."
+],
+"how": [
+"Objects: structs/enums with methods in `impl` blocks.",
+"Encapsulation: private fields, public methods that preserve invariants.",
+"No inheritance; reuse code with trait default methods.",
+"Polymorphism with generics (`impl Trait`) or trait objects (`dyn Trait`).",
+"Prefer composition: structs containing other structs."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Encapsulation that protects an invariant",
+"code": "pub struct AveragedCollection {\n    list: Vec<i32>,                     // private: only our methods change it\n    average: f64,                       // cached, always consistent with `list`\n}\n\nimpl AveragedCollection {\n    pub fn new() -> Self {\n        AveragedCollection { list: vec![], average: 0.0 }\n    }\n    pub fn add(&mut self, value: i32) {\n        self.list.push(value);\n        self.update_average();\n    }\n    pub fn remove(&mut self) -> Option<i32> {\n        let result = self.list.pop();\n        if result.is_some() {\n            self.update_average();\n        }\n        result\n    }\n    pub fn average(&self) -> f64 {\n        self.average\n    }\n    fn update_average(&mut self) {\n        let total: i32 = self.list.iter().sum();\n        self.average = if self.list.is_empty() { 0.0 } else { total as f64 / self.list.len() as f64 };\n    }\n}\n\nfn main() {\n    let mut scores = AveragedCollection::new();\n    for s in [90, 70, 80] {\n        scores.add(s);\n    }\n    println!(\"average {:.2}\", scores.average());\n    println!(\"removed {:?}, average now {:.2}\", scores.remove(), scores.average());\n    scores.remove();\n    scores.remove();\n    println!(\"after emptying: {:?}, average {:.2}\", scores.remove(), scores.average());\n}",
+"note": "Because `list` and `average` are private, the only ways to change the collection are `add` and `remove`, and both keep the cached average correct. Outside code cannot push to the list directly and forget to update the average; the invariant is guaranteed by the type itself.",
+"output": "average 80.00\nremoved Some(80), average now 80.00\nafter emptying: None, average 0.00"
+},
+{
+"lang": "rust",
+"title": "Code reuse without inheritance",
+"code": "trait Describe {\n    fn name(&self) -> String;\n    fn legs(&self) -> u32;\n    fn describe(&self) -> String {                 // shared implementation\n        format!(\"{} walks on {} legs\", self.name(), self.legs())\n    }\n}\n\nstruct Dog;\nstruct Bird {\n    species: &'static str,\n}\n\nimpl Describe for Dog {\n    fn name(&self) -> String { \"a dog\".into() }\n    fn legs(&self) -> u32 { 4 }\n}\n\nimpl Describe for Bird {\n    fn name(&self) -> String { format!(\"a {}\", self.species) }\n    fn legs(&self) -> u32 { 2 }\n    fn describe(&self) -> String {                 // \"override\"\n        format!(\"{} hops on {} legs and can fly\", self.name(), self.legs())\n    }\n}\n\nstruct Pet<A: Describe> {                          // composition: a Pet has an animal\n    nickname: &'static str,\n    animal: A,\n}\n\nfn main() {\n    println!(\"{}\", Dog.describe());\n    println!(\"{}\", Bird { species: \"robin\" }.describe());\n    let rex = Pet { nickname: \"Rex\", animal: Dog };\n    println!(\"{}: {}\", rex.nickname, rex.animal.describe());\n}",
+"note": "The default `describe` method is written once and reused by every implementor, which is the code-reuse half of inheritance; Bird replaces it with its own version. `Pet` contains an animal rather than inheriting from it: composition, the usual Rust way to build bigger types from smaller ones.",
+"output": "a dog walks on 4 legs\na robin hops on 2 legs and can fly\nRex: a dog walks on 4 legs"
+}
+],
+"mistakes": [
+"**Public fields on types with invariants.** Anyone can break them. Keep fields private.",
+"**Trying to emulate inheritance with Deref.** It confuses readers. Use traits and composition.",
+"**Deep \"class hierarchies\" ported from other languages.** Small traits and composed structs fit Rust better."
+],
+"keys": [
+"Rust has objects and encapsulation, but no inheritance.",
+"Private fields plus methods protect invariants.",
+"Trait default methods provide code reuse.",
+"Polymorphism comes from generics and trait objects; compose types."
+]
+},
+"18.2": {
+"idea": [
+"A `Vec<T>` holds one type. What about a GUI screen holding buttons, text boxes and images, all of which can be drawn? **Trait objects** solve this: `Box<dyn Draw>` is a pointer to *some* value implementing `Draw`, with its concrete type erased. A `Vec<Box<dyn Draw>>` can hold a Button and a TextField side by side, and calling `component.draw()` runs the right implementation for each.",
+"That call uses **dynamic dispatch**: a trait object is a \"fat pointer\" made of a pointer to the data and a pointer to a **vtable**, a table of function pointers for that type's implementation of the trait. At run time, the call looks up the method in the vtable. Generics, by contrast, use **static dispatch**: the compiler generates a specialised copy per type (monomorphisation) and calls the method directly, which allows inlining. Static dispatch is a little faster; trait objects allow **heterogeneous collections** and types chosen at run time, such as plug-ins, and keep binaries smaller.",
+"Not every trait can become a trait object: it must be **dyn compatible** (formerly \"object safe\"). Roughly, its methods cannot be generic and cannot return `Self`, because the vtable needs a fixed set of concrete functions. `Clone` is the classic example of a trait that cannot be used as `dyn Clone`."
+],
+"how": [
+"`Box<dyn Trait>`, `&dyn Trait` or `Rc<dyn Trait>` for a value of any implementing type.",
+"`Vec<Box<dyn Trait>>` for heterogeneous collections.",
+"Dynamic dispatch through a vtable; generics use static dispatch.",
+"Choose generics for one type per use and speed; trait objects for mixed types at run time.",
+"Dyn-compatible traits: no generic methods, no `Self` return values (or mark them `where Self: Sized`)."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A screen of mixed components",
+"code": "trait Draw {\n    fn draw(&self) -> String;\n}\n\nstruct Button {\n    label: String,\n}\n\nstruct TextField {\n    width: usize,\n    placeholder: String,\n}\n\nstruct Image {\n    file: &'static str,\n}\n\nimpl Draw for Button {\n    fn draw(&self) -> String {\n        format!(\"[ {} ]\", self.label)\n    }\n}\n\nimpl Draw for TextField {\n    fn draw(&self) -> String {\n        format!(\"|{:<width$}|\", self.placeholder, width = self.width)\n    }\n}\n\nimpl Draw for Image {\n    fn draw(&self) -> String {\n        format!(\"<img {}>\", self.file)\n    }\n}\n\nstruct Screen {\n    components: Vec<Box<dyn Draw>>,\n}\n\nimpl Screen {\n    fn render(&self) {\n        for c in &self.components {\n            println!(\"{}\", c.draw());                  // dynamic dispatch\n        }\n    }\n}\n\nfn main() {\n    let screen = Screen {\n        components: vec![\n            Box::new(Image { file: \"logo.png\" }),\n            Box::new(TextField { width: 16, placeholder: \"your email\".into() }),\n            Box::new(Button { label: \"Subscribe\".into() }),\n        ],\n    };\n    screen.render();\n    println!(\"a &dyn Draw is {} bytes (data pointer + vtable pointer), a &Button {}\",\n        std::mem::size_of::<&dyn Draw>(), std::mem::size_of::<&Button>());\n}",
+"note": "Three different types live in one vector because each is boxed as a `dyn Draw`, and `render` calls the right `draw` for each through its vtable. The size check shows the fat pointer: a reference to a trait object is twice the size of an ordinary reference.",
+"output": "<img logo.png>\n|your email      |\n[ Subscribe ]\na &dyn Draw is 16 bytes (data pointer + vtable pointer), a &Button 8"
+},
+{
+"lang": "rust",
+"title": "Clone cannot be a trait object",
+"code": "fn main() {\n    let items: Vec<Box<dyn Clone>> = Vec::new();\n    println!(\"{}\", items.len());\n}",
+"note": "`Clone::clone` returns `Self`, a concrete type the vtable cannot know about, so `dyn Clone` is not allowed and the compiler explains that the trait is not dyn compatible. Libraries that need cloneable trait objects add a method like `fn box_clone(&self) -> Box<dyn MyTrait>` instead.",
+"output": "error[E0038]: the trait `Clone` is not dyn compatible\n --> main.rs:2:28\n  |\n2 |     let items: Vec<Box<dyn Clone>> = Vec::new();\n  |                            ^^^^^ `Clone` is not dyn compatible\n  |\n  = note: the trait is not dyn compatible because it requires `Self: Sized`\n  = note: for a trait to be dyn compatible it needs to allow building a vtable",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**`Box<dyn Trait>` where generics would do.** Static dispatch is simpler and faster when one type is used at a time.",
+"**Generic methods on traits meant for `dyn`.** They make the trait not dyn compatible.",
+"**Downcasting trait objects all the time.** If you need the concrete type, an enum is probably a better fit."
+],
+"keys": [
+"`dyn Trait` erases the concrete type behind a pointer.",
+"Trait objects enable heterogeneous collections and run-time choice.",
+"Calls go through a vtable (dynamic dispatch); generics dispatch statically.",
+"Only dyn-compatible traits can be used as trait objects."
+]
+},
+"18.3": {
+"idea": [
+"The **state pattern** models something that moves through states, with behaviour depending on the current state. The Book's example is a blog post: a draft, then pending review, then published; only a published post shows its content. The object-oriented version stores the state as a trait object, `state: Option<Box<dyn State>>`, and each state struct implements methods like `request_review(self: Box<Self>) -> Box<dyn State>` that return the next state. The `Post` delegates to its state. Adding a state means adding a struct, and states encapsulate their own rules.",
+"The Rust-flavoured alternative **encodes states as types**: `DraftPost`, `PendingReviewPost` and `Post` are separate structs, and transitions are methods that **consume** one and return another: `draft.request_review()` returns a `PendingReviewPost`, whose `approve()` returns a `Post`. Only `Post` has a `content()` method, so calling it on a draft is not a run-time \"empty string\" but a **compile error**. This \"typestate\" approach moves rule violations from run time to compile time.",
+"Both are valid. Trait objects suit states chosen at run time (loaded from a database, many states, frequent additions); typestates suit workflows whose order is fixed and where mistakes should be impossible to compile."
+],
+"how": [
+"OOP version: `Option<Box<dyn State>>`; state methods take `self: Box<Self>` and return the next state.",
+"`Option::take()` moves the state out so it can be replaced.",
+"Typestate version: one struct per state; transitions consume `self` and return the next type.",
+"Methods exist only on the states where they are valid.",
+"Choose run-time flexibility (trait objects) or compile-time guarantees (types)."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The blog workflow with trait-object states",
+"code": "trait State {\n    fn request_review(self: Box<Self>) -> Box<dyn State>;\n    fn approve(self: Box<Self>) -> Box<dyn State>;\n    fn content<'a>(&self, _post: &'a Post) -> &'a str {\n        \"\"\n    }\n    fn name(&self) -> &'static str;\n}\n\nstruct Draft;\nstruct PendingReview;\nstruct Published;\n\nimpl State for Draft {\n    fn request_review(self: Box<Self>) -> Box<dyn State> { Box::new(PendingReview) }\n    fn approve(self: Box<Self>) -> Box<dyn State> { self }\n    fn name(&self) -> &'static str { \"draft\" }\n}\n\nimpl State for PendingReview {\n    fn request_review(self: Box<Self>) -> Box<dyn State> { self }\n    fn approve(self: Box<Self>) -> Box<dyn State> { Box::new(Published) }\n    fn name(&self) -> &'static str { \"pending review\" }\n}\n\nimpl State for Published {\n    fn request_review(self: Box<Self>) -> Box<dyn State> { self }\n    fn approve(self: Box<Self>) -> Box<dyn State> { self }\n    fn content<'a>(&self, post: &'a Post) -> &'a str { &post.text }\n    fn name(&self) -> &'static str { \"published\" }\n}\n\npub struct Post {\n    state: Option<Box<dyn State>>,\n    text: String,\n}\n\nimpl Post {\n    pub fn new() -> Post {\n        Post { state: Some(Box::new(Draft)), text: String::new() }\n    }\n    pub fn add_text(&mut self, t: &str) { self.text.push_str(t); }\n    pub fn content(&self) -> &str { self.state.as_ref().unwrap().content(self) }\n    pub fn request_review(&mut self) { if let Some(s) = self.state.take() { self.state = Some(s.request_review()); } }\n    pub fn approve(&mut self) { if let Some(s) = self.state.take() { self.state = Some(s.approve()); } }\n    fn status(&self) -> &'static str { self.state.as_ref().unwrap().name() }\n}\n\nfn main() {\n    let mut post = Post::new();\n    post.add_text(\"I ate a salad for lunch today\");\n    println!(\"{:15} content: {:?}\", post.status(), post.content());\n    post.approve();                                  // ignored: drafts can't be approved\n    println!(\"{:15} content: {:?}\", post.status(), post.content());\n    post.request_review();\n    println!(\"{:15} content: {:?}\", post.status(), post.content());\n    post.approve();\n    println!(\"{:15} content: {:?}\", post.status(), post.content());\n}",
+"note": "Each state decides what its transitions mean: approving a draft does nothing, and only `Published` returns the real content. `Option::take` moves the boxed state out so the consuming `self: Box<Self>` methods can replace it. Mistakes are handled at run time, as with the ignored early `approve`.",
+"output": "draft           content: \"\"\ndraft           content: \"\"\npending review  content: \"\"\npublished       content: \"I ate a salad for lunch today\""
+},
+{
+"lang": "rust",
+"title": "Encoding states as types makes invalid calls impossible",
+"code": "pub struct DraftPost { text: String }\npub struct PendingReviewPost { text: String }\npub struct Post { text: String }\n\nimpl DraftPost {\n    pub fn new() -> DraftPost { DraftPost { text: String::new() } }\n    pub fn add_text(&mut self, t: &str) { self.text.push_str(t); }\n    pub fn request_review(self) -> PendingReviewPost { PendingReviewPost { text: self.text } }\n}\n\nimpl PendingReviewPost {\n    pub fn approve(self) -> Post { Post { text: self.text } }\n}\n\nimpl Post {\n    pub fn content(&self) -> &str { &self.text }\n}\n\nfn main() {\n    let mut draft = DraftPost::new();\n    draft.add_text(\"I ate a salad for lunch today\");\n    println!(\"{}\", draft.content());                // drafts have no content() method\n    let post = draft.request_review().approve();\n    println!(\"{}\", post.content());\n}",
+"note": "In the typestate version, `content` exists only on `Post`, so asking a draft for its content is rejected by the compiler: \"no method named `content` found for struct `DraftPost`\". Transitions consume the old state, so a draft can't be used after being sent for review either. Remove the offending line and the program compiles and prints the published text.",
+"output": "error[E0599]: no method named `content` found for struct `DraftPost` in the current scope\n  --> main.rs:22:26\n   |\n 1 | pub struct DraftPost { text: String }\n   | -------------------- method `content` not found for this struct\n22 |     println!(\"{}\", draft.content());                // drafts have no content() method\n   |                          ^^^^^^^ method not found in `DraftPost`",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Run-time state checks for workflows with a fixed order.** Typestates make illegal transitions impossible to compile.",
+"**Typestates for states chosen at run time.** You can't pick a type from database data; use trait objects or enums.",
+"**Forgetting `Option::take` when replacing a boxed state.** You cannot move out of a field without it."
+],
+"keys": [
+"The state pattern delegates behaviour to the current state object.",
+"Trait-object states are flexible and checked at run time.",
+"Typestates encode states as types; invalid transitions become compile errors.",
+"Pick the approach by whether states are fixed in code or decided at run time."
+]
+},
+"19.1": {
+"idea": [
+"**Patterns** describe the shape of a value, and they appear in many more places than `match`. A `let` statement is a pattern: `let (x, y) = point;` destructures a tuple. Function parameters are patterns: `fn print(&(x, y): &(i32, i32))`. So are the targets of `for` loops (`for (i, item) in list.iter().enumerate()`), `if let`, `while let`, let-else, and closure parameters. Learning patterns once pays off everywhere.",
+"Patterns come in two kinds. An **irrefutable** pattern matches any possible value of its type: `x`, `(a, b)` for a pair, `Point { x, y }`. A **refutable** pattern can fail to match: `Some(x)` does not match `None`, and `1..=5` does not match 9. Where a pattern appears decides which kind is allowed. `let`, function parameters and `for` loops require irrefutable patterns, because there is no sensible thing to do if they fail. `if let`, `while let`, let-else and `match` arms accept refutable ones, because they say what happens on failure.",
+"The compiler enforces this: `let Some(x) = maybe;` alone is an error (use `if let` or let-else), and `if let x = 5` is a warning, because the condition is always true. Match arms are refutable patterns, except that the last arm often uses an irrefutable catch-all to make the match exhaustive."
+],
+"how": [
+"Patterns appear in `let`, parameters, `for`, `if let`, `while let`, let-else, `match`, closures.",
+"Irrefutable: always match (`x`, `(a, b)`, struct destructuring).",
+"Refutable: may fail (`Some(x)`, literals, ranges).",
+"`let`/parameters/`for` need irrefutable; `if let`/`while let`/let-else/`match` handle refutable.",
+"Use let-else to bind a refutable pattern for the rest of a scope."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Patterns everywhere",
+"code": "struct Point {\n    x: i32,\n    y: i32,\n}\n\nfn print_coords(&(x, y): &(i32, i32)) -> String {              // pattern in a parameter\n    format!(\"({x}, {y})\")\n}\n\nfn main() {\n    let (a, b, c) = (1, \"two\", 3.0);                              // let destructures a tuple\n    let Point { x, y: height } = Point { x: 5, y: 12 };           // and a struct\n    println!(\"{a} {b} {c} | x={x} height={height}\");\n    println!(\"{}\", print_coords(&(3, -4)));\n\n    for (i, word) in [\"alpha\", \"beta\"].iter().enumerate() {       // for-loop pattern\n        println!(\"{i}: {word}\");\n    }\n\n    let mut stack = vec![(1, 'a'), (2, 'b')];\n    while let Some((n, ch)) = stack.pop() {                        // refutable, in while let\n        println!(\"popped {n}{ch}\");\n    }\n\n    let pairs = [(1, 2), (3, 4)];\n    let sums: Vec<i32> = pairs.iter().map(|&(l, r)| l + r).collect();   // closure parameter\n    println!(\"{sums:?}\");\n\n    let config = Some(\"8080\");\n    let Some(port) = config else { return };                       // refutable with let-else\n    println!(\"port {port}\");\n}",
+"note": "The same pattern syntax destructured a tuple and a struct in `let`, unpacked a reference to a tuple in a function parameter, split `enumerate`'s pairs in a `for` loop, drove a `while let` loop, and unpacked tuples in a closure. let-else accepted a refutable pattern because it says what to do when it fails.",
+"output": "1 two 3 | x=5 height=12\n(3, -4)\n0: alpha\n1: beta\npopped 2b\npopped 1a\n[3, 7]\nport 8080"
+},
+{
+"lang": "rust",
+"title": "let needs an irrefutable pattern",
+"code": "fn main() {\n    let maybe_name: Option<&str> = None;\n    let Some(name) = maybe_name;\n    println!(\"{name}\");\n}",
+"note": "`Some(name)` does not cover `None`, so a plain `let` cannot use it: the compiler says the pattern is refutable and suggests `if let` or `let ... else`. Requiring irrefutable patterns in `let` is what guarantees that every variable is initialised.",
+"output": "error[E0005]: refutable pattern in local binding\n --> main.rs:3:9\n  |\n3 |     let Some(name) = maybe_name;\n  |         ^^^^^^^^^^ pattern `None` not covered\n  |\n  = note: `let` bindings require an \"irrefutable pattern\", like a `struct` or an `enum` with only one variant\n  = note: for more information, visit https://doc.rust-lang.org/book/ch19-02-refutability.html\n  = note: the matched value is of type `Option<&str>`\nhelp: you might want to use `let...else` to handle the variant that isn't matched\n  |\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**`let Some(x) = opt;`.** Use `if let`, let-else or `match`.",
+"**Forgetting that parameters and `for` loops take patterns.** Destructuring there removes boilerplate.",
+"**`if let` with an irrefutable pattern.** The condition is always true; just use `let`."
+],
+"keys": [
+"Patterns appear in let, parameters, for, if let, while let, let-else, match and closures.",
+"Irrefutable patterns always match; refutable ones may fail.",
+"Contexts without a failure branch require irrefutable patterns.",
+"let-else binds a refutable pattern with an explicit failure path."
+]
+},
+"19.2": {
+"idea": [
+"Pattern syntax is a small language of its own. **Literals** match exact values; **named variables** match anything and bind it (careful: a name in a `match` arm creates a new variable, **shadowing** any outer one with the same name; compare with an outer value using a guard instead). **`|`** combines alternatives (`1 | 2`), and **ranges** match spans of numbers or chars (`'a'..='j'`, `90..=100`).",
+"**Destructuring** takes apart structs (`Point { x, y: 0 }` matches points on the x axis and binds `x`), enums including nested ones (`Message::ChangeColor(Color::Rgb(r, g, b))`), tuples and references. **Ignoring** parts: `_` ignores one value without binding it, `_name` binds but silences the unused warning, and `..` ignores the remaining fields or elements (`Point { x, .. }`, `(first, .., last)`).",
+"Two extras complete the toolbox. A **match guard**, `if condition` after a pattern, adds a check the pattern alone cannot express (`Some(n) if n % 2 == 0`). An **`@` binding** tests a value against a pattern *and* binds it: `id @ 3..=7` matches the range and keeps the number in `id`. Combined, these let one `match` express rules that would otherwise take nested `if` statements."
+],
+"how": [
+"Literals, variables (new bindings!), `|` alternatives, `a..=b` ranges.",
+"Destructure structs `S { a, b: 0 }`, enums, nested enums, tuples, references.",
+"Ignore: `_` (no binding), `_x` (binding, no warning), `..` (the rest).",
+"Guards: `pattern if cond =>`; compare to outer variables with guards.",
+"`name @ pattern` binds while testing."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The whole pattern toolbox",
+"code": "enum Color {\n    Rgb(u8, u8, u8),\n    Hsv(u16, u8, u8),\n}\n\nenum Message {\n    Move { x: i32, y: i32 },\n    Write(String),\n    ChangeColor(Color),\n    Quit,\n}\n\nstruct Point3 {\n    x: i32,\n    y: i32,\n    z: i32,\n}\n\nfn classify(n: i32, lucky: i32) -> String {\n    match n {\n        0 => \"zero\".into(),\n        1 | 2 | 3 => \"small\".into(),\n        x if x == lucky => format!(\"{x} is the lucky number\"),     // guard compares with an outer value\n        id @ 4..=9 => format!(\"single digit {id}\"),\n        n if n < 0 => \"negative\".into(),\n        _ => \"big\".into(),\n    }\n}\n\nfn describe(msg: &Message) -> String {\n    match msg {\n        Message::Move { x: 0, y } => format!(\"vertical move by {y}\"),\n        Message::Move { x, y: 0 } => format!(\"horizontal move by {x}\"),\n        Message::Move { x, y } => format!(\"diagonal to ({x}, {y})\"),\n        Message::Write(text) if text.is_empty() => \"empty note\".into(),\n        Message::Write(text) => format!(\"note: {text}\"),\n        Message::ChangeColor(Color::Rgb(r, _, b)) => format!(\"rgb, red {r} blue {b}\"),\n        Message::ChangeColor(Color::Hsv(h, ..)) => format!(\"hsv, hue {h}\"),\n        Message::Quit => \"quit\".into(),\n    }\n}\n\nfn main() {\n    println!(\"{:?}\", [0, 2, 13, 7, -5, 42].map(|n| classify(n, 13)));\n    let inbox = [\n        Message::Move { x: 0, y: 5 }, Message::Move { x: -3, y: 0 }, Message::Move { x: 1, y: 1 },\n        Message::Write(String::new()), Message::Write(\"hi\".into()),\n        Message::ChangeColor(Color::Rgb(255, 0, 64)), Message::ChangeColor(Color::Hsv(210, 50, 80)), Message::Quit,\n    ];\n    for m in &inbox {\n        println!(\"{}\", describe(m));\n    }\n    let p = Point3 { x: 1, y: 2, z: 3 };\n    let Point3 { x, .. } = p;\n    let (first, .., last) = (10, 20, 30, 40);\n    println!(\"x = {x}, z unused = {}, first {first}, last {last}\", p.z + p.y - p.y);\n}",
+"note": "`classify` uses literals, alternatives, a guard that compares with the outer `lucky` value, an `@` binding on a range, and a catch-all. `describe` destructures struct variants with literal fields to tell vertical, horizontal and diagonal moves apart, adds a guard on `Write`, and reaches into a nested enum while ignoring parts with `_` and `..`.",
+"output": "[\"zero\", \"small\", \"13 is the lucky number\", \"single digit 7\", \"negative\", \"big\"]\nvertical move by 5\nhorizontal move by -3\ndiagonal to (1, 1)\nempty note\nnote: hi\nrgb, red 255 blue 64\nhsv, hue 210\nquit\nx = 1, z unused = 3, first 10, last 40"
+},
+{
+"lang": "rust",
+"title": "A named variable in a pattern shadows, it doesn't compare",
+"code": "fn main() {\n    let expected = 5;\n    let value = Some(10);\n    match value {\n        Some(expected) => println!(\"matched, and `expected` is now {expected} (a new variable!)\"),\n        None => println!(\"none\"),\n    }\n    match value {\n        Some(n) if n == expected => println!(\"equal to {expected}\"),\n        Some(n) => println!(\"{n} is not {expected}: the guard compared properly\"),\n        None => println!(\"none\"),\n    }\n}",
+"note": "In the first `match`, `Some(expected)` did not compare with the outer `expected`; it created a new variable that matched anything and shadowed the outer one, which is a classic surprise. The second `match` uses a guard to compare against the outer value correctly.",
+"output": "matched, and `expected` is now 10 (a new variable!)\n10 is not 5: the guard compared properly"
+}
+],
+"mistakes": [
+"**Expecting a variable name in a pattern to compare.** It binds a new variable; use a guard.",
+"**`_x` when you mean `_`.** `_x` still binds (and can move a value); `_` does not.",
+"**Long if-else chains on enum fields.** A match with destructuring and guards is clearer."
+],
+"keys": [
+"Literals, `|`, ranges and named bindings form the basics.",
+"Destructure structs, enums, tuples and references; ignore with `_` and `..`.",
+"Guards add conditions; `@` binds while testing.",
+"Names in patterns bind new variables, they do not compare."
+]
+},
+"19.3": {
+"idea": [
+"**Slice patterns** match on the **shape** of a slice or array. `[]` matches an empty slice, `[x]` exactly one element, `[first, second]` exactly two, and `..` stands for \"any number of elements here\": `[first, ..]`, `[.., last]` or `[first, .., last]`. Combine `..` with an `@` binding to capture the middle or the rest: `[head, tail @ ..]` binds the first element and a sub-slice of the remainder, a natural fit for recursive processing and for parsing command words like `[\"move\", x, y]`.",
+"**Let chains** (stable in the 2024 edition) combine several `let` patterns and boolean conditions in a single `if` or `while`, joined with `&&`: `if let Some(user) = find(id) && user.active && let Some(email) = &user.email { ... }`. Each binding is available in the following conditions and in the body, replacing nested `if let` pyramids with one flat condition.",
+"The **`matches!`** macro answers \"does this value match this pattern?\" as a `bool`, guards included: `matches!(c, 'a'..='z' | '_')` or `matches!(response, Ok(r) if r.status == 200)`. It is ideal for `filter` closures, assertions and simple checks where a full `match` would be noise."
+],
+"how": [
+"`[]`, `[x]`, `[a, b]`, `[first, ..]`, `[.., last]`, `[first, .., last]`.",
+"`[head, tail @ ..]` binds the rest as a sub-slice.",
+"Let chains: `if let P = a && cond && let Q = b { ... }` (edition 2024).",
+"`matches!(value, pattern)` and `matches!(value, pattern if guard)` return bool.",
+"Slice patterns on `&str` lists make command parsing readable."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Slices, let chains and matches!",
+"code": "fn describe(nums: &[i32]) -> String {\n    match nums {\n        [] => \"empty\".into(),\n        [one] => format!(\"just {one}\"),\n        [first, second] => format!(\"a pair: {first} and {second}\"),\n        [first, .., last] if first == last => format!(\"{} items, same at both ends ({first})\", nums.len()),\n        [first, middle @ .., last] => format!(\"{first}..{last} with {} in the middle\", middle.len()),\n    }\n}\n\nfn sum(nums: &[i32]) -> i32 {\n    match nums {\n        [] => 0,\n        [head, tail @ ..] => head + sum(tail),\n    }\n}\n\nfn command(input: &str) -> String {\n    let words: Vec<&str> = input.split_whitespace().collect();\n    match words.as_slice() {\n        [\"go\", direction] => format!(\"going {direction}\"),\n        [\"take\", item, \"from\", place] => format!(\"taking {item} from the {place}\"),\n        [\"say\", rest @ ..] if !rest.is_empty() => format!(\"saying {:?}\", rest.join(\" \")),\n        _ => format!(\"unknown command {input:?}\"),\n    }\n}\n\nstruct User {\n    name: &'static str,\n    active: bool,\n    email: Option<&'static str>,\n}\n\nfn main() {\n    for list in [&[][..], &[7], &[1, 2], &[4, 9, 4], &[1, 2, 3, 4, 5]] {\n        println!(\"{}\", describe(list));\n    }\n    println!(\"recursive sum: {}\", sum(&[1, 2, 3, 4]));\n    for c in [\"go north\", \"take lamp from table\", \"say hello there\", \"dance\"] {\n        println!(\"{}\", command(c));\n    }\n\n    let users = [User { name: \"ada\", active: true, email: Some(\"ada@example.com\") },\n                 User { name: \"ben\", active: false, email: Some(\"ben@example.com\") },\n                 User { name: \"cy\", active: true, email: None }];\n    for u in &users {\n        if u.active && let Some(email) = u.email && email.ends_with(\"@example.com\") {\n            println!(\"emailing {} at {email}\", u.name);\n        }\n    }\n    let identifier_chars = \"snake_case_42\".chars().filter(|c| matches!(c, 'a'..='z' | '0'..='9' | '_')).count();\n    println!(\"{identifier_chars} valid identifier characters; is the first a letter? {}\", matches!(\"snake\".chars().next(), Some(c) if c.is_alphabetic()));\n}",
+"note": "The slice patterns read like a description of each shape, including a guard comparing the ends and `middle @ ..` capturing the rest. The recursive `sum` peels off the head each time. Command parsing matches word lists directly, and the let chain replaced two nested `if let`s: only Ada is active and has an email. `matches!` turned patterns into booleans.",
+"output": "empty\njust 7\na pair: 1 and 2\n3 items, same at both ends (4)\n1..5 with 3 in the middle\nrecursive sum: 10\ngoing north\ntaking lamp from the table\nsaying \"hello there\"\nunknown command \"dance\"\nemailing ada at ada@example.com\n13 valid identifier characters; is the first a letter? true"
+},
+{
+"lang": "rust",
+"title": "Slice patterns must cover every length",
+"code": "fn first_two(nums: &[i32]) -> (i32, i32) {\n    match nums {\n        [a, b, ..] => (*a, *b),\n        [a] => (*a, 0),\n    }\n}\n\nfn main() {\n    println!(\"{:?}\", first_two(&[1, 2, 3]));\n}",
+"note": "Exhaustiveness checking applies to slice shapes too: the empty slice `[]` is not covered, and the compiler names it as the missing pattern. Adding `[] => (0, 0)` completes the match.",
+"output": "error[E0004]: non-exhaustive patterns: `&[]` not covered\n --> main.rs:2:11\n  |\n2 |     match nums {\n  |           ^^^^ pattern `&[]` not covered\n  |\n  = note: the matched value is of type `&[i32]`\nhelp: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Indexing with `nums[0]` after checking `len()`.** Slice patterns check and bind in one step.",
+"**Nested `if let` pyramids.** Use let chains (edition 2024).",
+"**A full `match` just to get a bool.** Use `matches!`."
+],
+"keys": [
+"Slice patterns match shapes: `[]`, `[x]`, `[first, .., last]`, `[head, tail @ ..]`.",
+"They make recursive processing and word-list parsing readable.",
+"Let chains combine `let` patterns and conditions with `&&`.",
+"`matches!` returns whether a value fits a pattern."
+]
+},
+"20.1": {
+"idea": [
+"Rust's safety checks are conservative: some correct programs cannot be proven safe by the compiler. **`unsafe`** blocks let you do five extra things, the \"unsafe superpowers\": dereference a **raw pointer**, call an **unsafe function** (including foreign C functions), access or modify a **mutable static** variable, implement an **unsafe trait** (like `Send`), and access fields of a **union**. Everything else, including the borrow checker, stays in force inside `unsafe`.",
+"`unsafe` does not mean \"dangerous code\" so much as \"**the programmer**, not the compiler, **guarantees** these rules\": no null or dangling pointer dereferences, no data races, no aliasing a `&mut`. Get it wrong and the program has **undefined behaviour**, which can corrupt memory silently. So keep unsafe blocks tiny, and document each with a `// SAFETY:` comment explaining why the rules hold.",
+"The key technique is a **safe abstraction**: wrap the unsafe code in a function with a safe signature whose checks guarantee the unsafe part is sound. The standard library's `split_at_mut` is the classic example: borrowing two non-overlapping halves of a slice mutably at once is safe, but the borrow checker cannot see that they don't overlap, so it uses raw pointers internally, after asserting the split point is in bounds. Callers get a safe function; the unsafety is contained and reviewed in one place."
+],
+"how": [
+"Raw pointers: `*const T`, `*mut T`; creating them is safe, dereferencing needs `unsafe`.",
+"`unsafe { ... }` blocks for the five superpowers only; borrow checking still applies.",
+"`unsafe fn` for functions with preconditions the caller must uphold.",
+"Write `// SAFETY:` comments explaining why each block is sound.",
+"Wrap unsafe code in safe functions with checks; prefer existing safe APIs."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A safe split_at_mut built on raw pointers",
+"code": "use std::slice;\n\nfn split_at_mut(values: &mut [i32], mid: usize) -> (&mut [i32], &mut [i32]) {\n    let len = values.len();\n    assert!(mid <= len, \"mid {mid} out of bounds for length {len}\");\n    let ptr = values.as_mut_ptr();\n    // SAFETY: mid <= len was checked, so both ranges are inside the slice,\n    // and they do not overlap, so the two &mut never alias.\n    unsafe { (slice::from_raw_parts_mut(ptr, mid), slice::from_raw_parts_mut(ptr.add(mid), len - mid)) }\n}\n\nstatic mut CALLS: u32 = 0;\n\nfn count_call() -> u32 {\n    // SAFETY: this program is single-threaded, so nothing else accesses CALLS concurrently.\n    unsafe {\n        CALLS += 1;\n        CALLS\n    }\n}\n\nfn main() {\n    let mut data = [1, 2, 3, 4, 5, 6];\n    let (left, right) = split_at_mut(&mut data, 2);\n    left[0] *= 100;\n    right[0] *= 10;\n    println!(\"{data:?}\");\n\n    let x = 42;\n    let p = &x as *const i32;                 // creating a raw pointer is safe\n    // SAFETY: p points to x, which is alive and valid for reads.\n    println!(\"through a raw pointer: {}\", unsafe { *p });\n    count_call();\n    println!(\"calls: {}\", count_call());\n}",
+"note": "`split_at_mut` has a safe signature: it checks the bounds, then uses raw pointers to create two mutable slices the borrow checker could not prove disjoint. Callers modify both halves with no `unsafe` in sight. Dereferencing a raw pointer and touching a mutable static both required `unsafe`, each with a SAFETY comment stating why it is sound.",
+"output": "[100, 2, 30, 4, 5, 6]\nthrough a raw pointer: 42\ncalls: 2"
+},
+{
+"lang": "rust",
+"title": "The borrow checker can't see that the halves don't overlap",
+"code": "fn split_at_mut(values: &mut [i32], mid: usize) -> (&mut [i32], &mut [i32]) {\n    let len = values.len();\n    assert!(mid <= len);\n    (&mut values[..mid], &mut values[mid..])\n}\n\nfn main() {}",
+"note": "Without unsafe code, the compiler sees two mutable borrows of `values` at the same time and refuses, even though the ranges never overlap. This is exactly the situation unsafe exists for: a correct program the checker cannot prove, wrapped in a small, carefully justified block.",
+"output": "error[E0499]: cannot borrow `*values` as mutable more than once at a time\n --> main.rs:4:31\n  |\n1 | fn split_at_mut(values: &mut [i32], mid: usize) -> (&mut [i32], &mut [i32]) {\n  |                         - let's call the lifetime of this reference `'1`\n4 |     (&mut values[..mid], &mut values[mid..])\n  |     --------------------------^^^^^^--------\n  |     |     |                   |\n  |     |     |                   second mutable borrow occurs here\n  |     |     first mutable borrow occurs here\n  |     returning this value requires that `*values` is borrowed for `'1`\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Large unsafe blocks.** Keep them minimal so the risky part is easy to review.",
+"**Unsafe without a SAFETY comment.** The next reader cannot check your reasoning.",
+"**Reaching for unsafe to fix borrow errors.** Usually a safe restructuring exists (or a std function like `split_at_mut`)."
+],
+"keys": [
+"`unsafe` unlocks five superpowers; the borrow checker still applies.",
+"The programmer guarantees soundness; mistakes are undefined behaviour.",
+"Wrap unsafe code in small, checked, safe abstractions.",
+"Document every unsafe block with a SAFETY comment."
+]
+},
+"20.2": {
+"idea": [
+"Traits have a few advanced features worth knowing. **Associated types** (`type Item;` inside a trait) name a type the implementor chooses once: `Iterator` has one `Item` per iterator. A **generic parameter** (`trait From<T>`) instead allows many implementations for one type (`From<u8>`, `From<u16>`...). Use an associated type when there is exactly one sensible choice per implementor.",
+"**Default type parameters** set a type parameter's default: `trait Add<Rhs = Self>`, which is why `impl Add for Point` means adding two Points. Implementing `std::ops` traits is **operator overloading**: `Add` for `+`, `Mul` for `*`, `Neg` for unary `-`, `Index` for `[]`, and so on. Override the default when the right-hand side differs: `impl Add<Meters> for Millimeters`.",
+"When two traits give a type methods with the same name, use **fully qualified syntax** to choose: `<Dog as Animal>::name()`. A **supertrait** requires another trait: `trait OutlinePrint: Display` lets the trait's methods use `to_string()`. And the **newtype pattern**, a tuple struct wrapping one value (`struct Wrapper(Vec<String>)`), lets you implement foreign traits on foreign types (sidestepping the orphan rule), add type safety (`Meters` vs `Feet`), or hide an inner type's API, at zero run-time cost."
+],
+"how": [
+"Associated type: one choice per implementor (`type Item`); generic param: many impls.",
+"`impl Add for T` (default `Rhs = Self`); `impl Add<Other> for T` otherwise.",
+"Operator traits in `std::ops`: Add, Sub, Mul, Neg, Index, AddAssign...",
+"Disambiguate with `<Type as Trait>::method(...)`.",
+"Supertraits: `trait A: B`; newtypes: `struct Wrapper(Inner);`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Operators, supertraits and a newtype",
+"code": "use std::fmt;\nuse std::ops::{Add, Mul};\n\n#[derive(Debug, Clone, Copy, PartialEq)]\nstruct Point {\n    x: i32,\n    y: i32,\n}\n\nimpl Add for Point {                                   // Rhs defaults to Self\n    type Output = Point;\n    fn add(self, other: Point) -> Point {\n        Point { x: self.x + other.x, y: self.y + other.y }\n    }\n}\n\nimpl Mul<i32> for Point {                              // a different right-hand side\n    type Output = Point;\n    fn mul(self, k: i32) -> Point {\n        Point { x: self.x * k, y: self.y * k }\n    }\n}\n\nimpl fmt::Display for Point {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, \"({}, {})\", self.x, self.y)\n    }\n}\n\ntrait OutlinePrint: fmt::Display {                     // supertrait: requires Display\n    fn outline(&self) -> String {\n        let s = self.to_string();\n        let bar = \"*\".repeat(s.len() + 4);\n        format!(\"{bar}\\n* {s} *\\n{bar}\")\n    }\n}\n\nimpl OutlinePrint for Point {}\n\nstruct Csv(Vec<String>);                                // newtype: Display for a Vec, legally\n\nimpl fmt::Display for Csv {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, \"{}\", self.0.join(\",\"))\n    }\n}\n\n#[derive(Debug, Clone, Copy)]\nstruct Meters(f64);\n#[derive(Debug, Clone, Copy)]\nstruct Millimeters(f64);\n\nimpl Add<Meters> for Millimeters {\n    type Output = Millimeters;\n    fn add(self, m: Meters) -> Millimeters {\n        Millimeters(self.0 + m.0 * 1000.0)\n    }\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 } + Point { x: 3, y: 4 };\n    println!(\"{p} and doubled {}\", p * 2);\n    println!(\"{}\", p.outline());\n    println!(\"{}\", Csv(vec![\"tea\".into(), \"cake\".into(), \"scone\".into()]));\n    println!(\"{:?}\", Millimeters(250.0) + Meters(1.5));\n}",
+"note": "`impl Add for Point` used the default right-hand side (another Point), while `Mul<i32>` and `Add<Meters>` chose different ones. `OutlinePrint` could call `to_string()` because its supertrait guarantees Display. The `Csv` newtype implemented Display for what is really a `Vec<String>`, which the orphan rule would otherwise forbid.",
+"output": "(4, 6) and doubled (8, 12)\n**********\n* (4, 6) *\n**********\ntea,cake,scone\nMillimeters(1750.0)"
+},
+{
+"lang": "rust",
+"title": "Fully qualified syntax for same-named methods",
+"code": "trait Pilot {\n    fn fly(&self) -> String;\n}\n\ntrait Wizard {\n    fn fly(&self) -> String;\n}\n\nstruct Human;\n\nimpl Pilot for Human {\n    fn fly(&self) -> String { \"This is your captain speaking.\".into() }\n}\n\nimpl Wizard for Human {\n    fn fly(&self) -> String { \"Up!\".into() }\n}\n\nimpl Human {\n    fn fly(&self) -> String { \"*waving arms furiously*\".into() }\n}\n\ntrait Animal {\n    fn baby_name() -> String;\n}\n\nstruct Dog;\n\nimpl Dog {\n    fn baby_name() -> String { \"Spot\".into() }\n}\n\nimpl Animal for Dog {\n    fn baby_name() -> String { \"puppy\".into() }\n}\n\nfn main() {\n    let person = Human;\n    println!(\"{}\", person.fly());\n    println!(\"{}\", Pilot::fly(&person));\n    println!(\"{}\", Wizard::fly(&person));\n    println!(\"{} / {}\", Dog::baby_name(), <Dog as Animal>::baby_name());\n}",
+"note": "Calling `person.fly()` picks the method defined directly on the type; `Pilot::fly(&person)` and `Wizard::fly(&person)` choose the trait versions. For associated functions without `self`, there is nothing to infer the type from, so `<Dog as Animal>::baby_name()` names both the type and the trait.",
+"output": "*waving arms furiously*\nThis is your captain speaking.\nUp!\nSpot / puppy"
+}
+],
+"mistakes": [
+"**Generic parameters where an associated type fits.** Callers then must annotate types everywhere.",
+"**Operator overloads with surprising meanings.** `+` should mean something like addition.",
+"**Fighting the orphan rule.** A newtype is the standard, zero-cost answer."
+],
+"keys": [
+"Associated types: one per implementor; generic parameters: many implementations.",
+"`std::ops` traits overload operators; default type parameters keep the common case short.",
+"Fully qualified syntax picks between same-named methods.",
+"Supertraits require other traits; newtypes add safety and bypass the orphan rule."
+]
+},
+"20.3": {
+"idea": [
+"A few more type-system tools round out the language. A **type alias** (`type Kilometers = i32;` or `type Result<T> = std::result::Result<T, MyError>;`) gives an existing type a shorter or clearer name; unlike a newtype, it is the *same* type, with no extra safety. Aliases shine for long types such as `Box<dyn Fn() + Send + 'static>`.",
+"The **never type**, `!`, is the type of expressions that never produce a value: `panic!`, `loop` without `break`, `continue`, `return`, `process::exit`. Because `!` can stand in for any type, a `match` arm can be `Err(_) => continue` while the others produce numbers. **Dynamically sized types** (DSTs) like `str`, `[T]` and `dyn Trait` have no size known at compile time, so they always sit behind a pointer (`&str`, `Box<[T]>`, `&dyn Trait`). Generic parameters have an implicit `Sized` bound; `T: ?Sized` relaxes it to accept DSTs behind references.",
+"Functions are values too. A **function pointer** type `fn(i32) -> i32` refers to a named function and can be passed around; closures that capture nothing coerce to it, and fn pointers implement all three `Fn` traits. To **return closures**, use `impl Fn(...)` (one concrete closure type) or `Box<dyn Fn(...)>` (when different branches return different closures)."
+],
+"how": [
+"`type Name = LongType;` for readability; same type, no safety (unlike newtypes).",
+"`!` for diverging expressions; it coerces to any type.",
+"DSTs (`str`, `[T]`, `dyn Trait`) live behind pointers; `T: ?Sized` accepts them.",
+"`fn(A) -> B` function pointers; pass named functions or non-capturing closures.",
+"Return closures with `impl Fn` or `Box<dyn Fn>`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Aliases, never, fn pointers and returned closures",
+"code": "use std::fmt::Debug;\n\ntype Thunk = Box<dyn Fn(i32) -> i32 + Send + 'static>;\ntype Kilometers = u32;\n\nfn parse_all(inputs: &[&str]) -> Vec<u32> {\n    let mut out = Vec::new();\n    for s in inputs {\n        let n: u32 = match s.parse() {\n            Ok(n) => n,\n            Err(_) => continue,                   // `continue` has type `!`, so it fits as a u32\n        };\n        out.push(n);\n    }\n    out\n}\n\nfn apply(f: fn(i32) -> i32, x: i32) -> i32 {\n    f(x)\n}\n\nfn double(x: i32) -> i32 {\n    x * 2\n}\n\nfn make_op(kind: &str) -> Thunk {\n    match kind {\n        \"add\" => Box::new(|x| x + 10),\n        \"square\" => Box::new(|x| x * x),\n        _ => Box::new(|x| x),\n    }\n}\n\nfn show<T: Debug + ?Sized>(value: &T) -> String {      // accepts str and [T] behind a reference\n    format!(\"{value:?}\")\n}\n\nfn main() {\n    let trip: Kilometers = 42;\n    let distance: u32 = trip + 8;                       // an alias is the same type\n    println!(\"distance {distance}\");\n    println!(\"{:?}\", parse_all(&[\"10\", \"x\", \"30\", \"4o\", \"50\"]));\n    println!(\"{} {}\", apply(double, 21), apply(|x| x - 1, 1));\n    let names: Vec<String> = vec![1, 2, 3].into_iter().map(|n: i32| n.to_string()).collect();\n    println!(\"{names:?}, via fn pointer: {:?}\", [1, 2, 3].map(double));\n    let ops: Vec<Thunk> = [\"add\", \"square\", \"other\"].iter().map(|k| make_op(k)).collect();\n    println!(\"{:?}\", ops.iter().map(|op| op(5)).collect::<Vec<_>>());\n    println!(\"{} {}\", show(\"a str\"), show(&[1, 2, 3][..]));\n}",
+"note": "`Kilometers` mixed freely with `u32` because an alias is not a new type. `continue` fit in a `match` arm expecting a number because `!` coerces to anything. `apply` took both a named function and a non-capturing closure as `fn` pointers. `make_op` returned different closures boxed behind one alias, and `?Sized` let `show` accept `str` and a slice.",
+"output": "distance 50\n[10, 30, 50]\n42 0\n[\"1\", \"2\", \"3\"], via fn pointer: [2, 4, 6]\n[15, 25, 5]\n\"a str\" [1, 2, 3]"
+},
+{
+"lang": "rust",
+"title": "A function can't return different closure types as impl Fn",
+"code": "fn make_op(kind: &str, n: i32) -> impl Fn(i32) -> i32 {\n    if kind == \"add\" {\n        move |x| x + n\n    } else {\n        move |x| x * n\n    }\n}\n\nfn main() {\n    println!(\"{}\", make_op(\"add\", 10)(1));\n}",
+"note": "Every closure has its own unique type, and `impl Fn` promises one single concrete type, so two different capturing closures in two branches don't fit (closures that capture nothing would quietly coerce to the same `fn` pointer type); the compiler points out that no two closures have the same type and suggests boxing them. `Box<dyn Fn(i32) -> i32>` erases the types and works.",
+"output": "error[E0308]: `if` and `else` have incompatible types\n --> main.rs:5:9\n  |\n2 | /     if kind == \"add\" {\n3 | |         move |x| x + n\n  | |         --------------\n  | |         |\n  | |         the expected closure\n  | |         expected because of this\n4 | |     } else {\n5 | |         move |x| x * n\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Using an alias for type safety.** Aliases are interchangeable with the original; use a newtype for safety.",
+"**`impl Fn` with several closures.** Box them as `dyn Fn`.",
+"**Forgetting `?Sized` when a generic should accept `str` or slices.** The implicit `Sized` bound rejects them."
+],
+"keys": [
+"Type aliases rename types without creating new ones.",
+"`!` is the type of diverging expressions and fits anywhere.",
+"DSTs live behind pointers; `?Sized` relaxes the default bound.",
+"`fn` pointers, `impl Fn` and `Box<dyn Fn>` pass and return behaviour."
+]
+},
+"20.4": {
+"idea": [
+"**Macros** are code that writes code at compile time. You have used them since `println!`: they take a variable number of arguments, can introduce new syntax, and expand into ordinary Rust before type checking. Functions can't do either: a function has a fixed signature and runs at run time. The cost is that macros are harder to write, read and debug, so reach for them only when a function or generic will not do.",
+"**Declarative macros** (`macro_rules!`) work by pattern matching on code. Each rule has a matcher and a transcriber: `($x:expr) => { ... }`. **Fragment specifiers** say what each piece may be: `expr` (an expression), `ident` (a name), `ty` (a type), `tt` (any single token tree), `literal`, `block`, `pat`. **Repetition** `$( ... ),*` matches zero or more comma-separated items (`+` for one or more), and the transcriber repeats code for each. Macros are **hygienic**: variables they introduce cannot clash with the caller's.",
+"**Procedural macros** are Rust functions that receive a token stream and return one, compiled in a separate crate. They come in three kinds: **custom derive** (`#[derive(Serialize)]`), **attribute-like** (`#[route(GET, \"/\")]`) and **function-like** (`sql!(SELECT ...)`). Most programmers use them far more than they write them; Track 2's macro module covers writing one."
+],
+"how": [
+"`macro_rules! name { (pattern) => { expansion }; ... }`.",
+"Fragments: `$e:expr`, `$i:ident`, `$t:ty`, `$x:tt`, `$l:literal`, `$b:block`, `$p:pat`.",
+"Repetition: `$( $x:expr ),*` in the matcher, `$( ... )*` in the transcriber; add `$(,)?` for a trailing comma.",
+"Hygiene keeps macro-internal names separate from the caller's.",
+"Procedural macros: derive, attribute and function-like, in a `proc-macro` crate."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A vec-like macro, a hashmap literal and a generated function",
+"code": "use std::collections::BTreeMap;\n\nmacro_rules! my_vec {\n    () => { Vec::new() };\n    ( $( $x:expr ),+ $(,)? ) => {{\n        let mut v = Vec::new();\n        $( v.push($x); )+\n        v\n    }};\n}\n\nmacro_rules! map {\n    ( $( $k:expr => $v:expr ),* $(,)? ) => {{\n        let mut m = BTreeMap::new();\n        $( m.insert($k, $v); )*\n        m\n    }};\n}\n\nmacro_rules! getter {\n    ($name:ident, $field:ident, $t:ty) => {\n        fn $name(&self) -> $t {\n            self.$field.clone()\n        }\n    };\n}\n\nstruct Config {\n    host: String,\n    port: u16,\n}\n\nimpl Config {\n    getter!(host, host, String);\n    getter!(port, port, u16);\n}\n\nfn main() {\n    let empty: Vec<i32> = my_vec![];\n    let v = my_vec![1, 2 + 3, 4 * 4,];\n    println!(\"{empty:?} {v:?}\");\n    let prices = map! { \"tea\" => 450, \"cake\" => 650, \"scone\" => 300 };\n    println!(\"{prices:?}\");\n    let c = Config { host: \"localhost\".into(), port: 8080 };\n    println!(\"{}:{}\", c.host(), c.port());\n}",
+"note": "`my_vec!` has two rules: one for no arguments and one for a comma-separated list (with an optional trailing comma), whose `$( v.push($x); )+` repeats once per expression. `map!` uses the custom `=>` syntax a function could never accept, and `getter!` generates whole methods from an identifier and a type.",
+"output": "[] [1, 5, 16]\n{\"cake\": 650, \"scone\": 300, \"tea\": 450}\nlocalhost:8080"
+},
+{
+"lang": "rust",
+"title": "Hygiene: a macro's variables don't leak",
+"code": "macro_rules! square_twice {\n    ($x:expr) => {{\n        let tmp = $x * $x;                // `tmp` belongs to the macro\n        tmp * tmp\n    }};\n}\n\nmacro_rules! count {\n    () => { 0usize };\n    ($head:tt $($tail:tt)*) => { 1usize + count!($($tail)*) };\n}\n\nfn main() {\n    let tmp = 3;\n    let result = square_twice!(tmp + 1);\n    println!(\"({tmp} + 1)^4 = {result}, and the caller's tmp is still {tmp}\");\n    println!(\"count!(a b c d) = {}\", count!(a b c d));\n}",
+"note": "The macro's internal `tmp` did not clash with the caller's `tmp`, and the argument `tmp + 1` used the caller's variable: that is hygiene. The expression was also evaluated as a unit because `$x:expr` captures it whole. `count!` is a recursive macro that peels off one token tree per step.",
+"output": "(3 + 1)^4 = 256, and the caller's tmp is still 3\ncount!(a b c d) = 4"
+}
+],
+"mistakes": [
+"**Writing a macro when a function or generic would do.** Macros are harder to read and debug.",
+"**Forgetting repetition separators.** `$( $x:expr ),*` needs commas between items; add `$(,)?` to allow a trailing one.",
+"**Expecting macros to see types.** They work on tokens before type checking."
+],
+"keys": [
+"Macros generate code at compile time and accept flexible syntax.",
+"`macro_rules!` matches patterns of fragments and repeats with `$(...)*`.",
+"Hygiene prevents name clashes between macro and caller.",
+"Procedural macros (derive, attribute, function-like) transform token streams."
+]
+},
+"21.1": {
+"idea": [
+"The final project builds a web server from scratch with only the standard library, which shows what frameworks do underneath. HTTP runs over **TCP**: a client opens a connection, sends a text **request**, and the server sends back a text **response**. `TcpListener::bind(\"127.0.0.1:7878\")` claims a port, and `listener.incoming()` yields a `TcpStream` for each connection.",
+"An HTTP request starts with a **request line**, `GET /index.html HTTP/1.1`, followed by headers and a blank line. Wrapping the stream in a `BufReader` and reading lines until the empty one gives you the request; often only the first line matters for routing. A response starts with a **status line**, `HTTP/1.1 200 OK`, then headers such as `Content-Length` (how many bytes of body follow), a blank line, and the body. Every line ends with `\\r\\n`.",
+"The first version serves `hello.html` for `GET /` and a 404 page for everything else, choosing the status line and file with a `match` on the request line. It handles one connection at a time, and binding can fail (for example when the port is already in use, or a port below 1024 needs administrator rights), so real code handles that error instead of unwrapping."
+],
+"how": [
+"`let listener = TcpListener::bind(addr)?;` `for stream in listener.incoming()`.",
+"Read the request line: `BufReader::new(&stream).lines().next()`.",
+"Response: status line, `Content-Length: N`, blank line, body; lines end with `\\r\\n`.",
+"Route with `match request_line.as_str() { \"GET / HTTP/1.1\" => ..., _ => 404 }`.",
+"Write with `stream.write_all(response.as_bytes())`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A server and a client in one program",
+"code": "use std::io::{BufRead, BufReader, Read, Write};\nuse std::net::{TcpListener, TcpStream};\nuse std::thread;\n\nfn handle(mut stream: TcpStream) {\n    let request_line = BufReader::new(&stream).lines().next().unwrap().unwrap();\n    let (status, body) = match request_line.as_str() {\n        \"GET / HTTP/1.1\" => (\"HTTP/1.1 200 OK\", \"<h1>Hello!</h1><p>Hi from Rust</p>\"),\n        _ => (\"HTTP/1.1 404 NOT FOUND\", \"<h1>Oops!</h1><p>Sorry, I don't know what you asked for.</p>\"),\n    };\n    let response = format!(\"{status}\\r\\nContent-Length: {}\\r\\nContent-Type: text/html\\r\\n\\r\\n{body}\", body.len());\n    stream.write_all(response.as_bytes()).unwrap();\n}\n\nfn get(addr: std::net::SocketAddr, path: &str) -> String {\n    let mut stream = TcpStream::connect(addr).unwrap();\n    write!(stream, \"GET {path} HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n\").unwrap();\n    let mut response = String::new();\n    stream.read_to_string(&mut response).unwrap();\n    response\n}\n\nfn main() {\n    let listener = TcpListener::bind(\"127.0.0.1:0\").unwrap();        // port 0: any free port\n    let addr = listener.local_addr().unwrap();\n    let server = thread::spawn(move || {\n        for stream in listener.incoming().take(2) {                    // serve two requests, then stop\n            handle(stream.unwrap());\n        }\n    });\n    for path in [\"/\", \"/missing\"] {\n        let response = get(addr, path);\n        let (head, body) = response.split_once(\"\\r\\n\\r\\n\").unwrap();\n        println!(\"GET {path:9} -> {} | body: {body}\", head.lines().next().unwrap());\n    }\n    server.join().unwrap();\n}",
+"note": "The server read only the request line and matched on it to pick a status and body, then wrote a response with a correct `Content-Length`. A client in the same program sent two raw HTTP requests, so the whole exchange is visible: 200 for `/` and 404 for anything else. Binding to port 0 lets the operating system choose a free port.",
+"output": "GET /         -> HTTP/1.1 200 OK | body: <h1>Hello!</h1><p>Hi from Rust</p>\nGET /missing  -> HTTP/1.1 404 NOT FOUND | body: <h1>Oops!</h1><p>Sorry, I don't know what you asked for.</p>"
+},
+{
+"lang": "rust",
+"title": "Binding can fail, so handle it",
+"code": "use std::net::TcpListener;\n\nfn main() {\n    let first = TcpListener::bind(\"127.0.0.1:0\").expect(\"a free port\");\n    let taken = first.local_addr().unwrap();\n    println!(\"first listener bound to a port chosen by the OS: {}\", taken.port() > 0);\n    match TcpListener::bind(taken) {\n        Ok(_) => println!(\"unexpectedly bound twice\"),\n        Err(e) => println!(\"second bind failed: {} ({:?})\", e, e.kind()),\n    }\n}",
+"note": "Binding the same address twice fails with `AddrInUse`, the same error you get when another program already uses your port. A real server reports this clearly (and exits with an error) instead of crashing on `unwrap`.",
+"output": "first listener bound to a port chosen by the OS: true\nsecond bind failed: Address already in use (os error 98) (AddrInUse)"
+}
+],
+"mistakes": [
+"**Forgetting `Content-Length` or the blank line.** Browsers wait or show garbage. Follow the format exactly, with `\\r\\n`.",
+"**Reading the whole request before responding.** Read up to the blank line; the body comes after.",
+"**Unwrapping `bind`.** Ports may be in use or need privileges; report the error."
+],
+"keys": [
+"`TcpListener::bind` and `incoming()` accept TCP connections.",
+"An HTTP request starts with a request line; read it with a BufReader.",
+"A response is a status line, headers, a blank line and a body.",
+"Route by matching on the request line; handle bind errors."
+]
+},
+"21.2": {
+"idea": [
+"A single-threaded server handles one request at a time, so one slow request blocks everyone. Adding a `/sleep` route that waits five seconds shows it: while it sleeps, even `/` has to wait. Spawning a new thread per connection fixes that but has no limit: a flood of requests would create thousands of threads and exhaust the machine.",
+"A **thread pool** keeps a fixed number of worker threads waiting for jobs. The Book designs the API first, the way you'd want to use it: `let pool = ThreadPool::new(4); pool.execute(|| handle(stream));`, mirroring `thread::spawn`. Then it builds the implementation to fit. `ThreadPool::new(size)` creates a **channel** and `size` **Workers**; each Worker owns a thread that loops, receiving jobs from the channel and running them. A job is a boxed closure: `type Job = Box<dyn FnOnce() + Send + 'static>;`. `execute` boxes the closure and sends it down the channel.",
+"Since every worker receives from the same channel and the receiver can't be cloned, it is shared as **`Arc<Mutex<Receiver<Job>>>`**: a worker locks the mutex, takes the next job, and **releases the lock before running the job** (by letting the guard drop at the end of the `let` statement), so other workers can pick up jobs concurrently. This is the producer-consumer pattern from chapter 16, applied."
+],
+"how": [
+"Design the API first: `ThreadPool::new(n)`, `pool.execute(closure)`.",
+"`type Job = Box<dyn FnOnce() + Send + 'static>;`",
+"Workers share `Arc<Mutex<mpsc::Receiver<Job>>>`.",
+"Worker loop: `let job = receiver.lock().unwrap().recv();` then run the job outside the lock.",
+"Validate `size > 0` in `new` (or return a Result from `build`)."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The ThreadPool, and why the lock must be released before running a job",
+"code": "use std::sync::{mpsc, Arc, Mutex};\nuse std::thread;\nuse std::time::{Duration, Instant};\n\ntype Job = Box<dyn FnOnce() + Send + 'static>;\n\npub struct ThreadPool {\n    sender: mpsc::Sender<Job>,\n    workers: Vec<thread::JoinHandle<()>>,\n}\n\nimpl ThreadPool {\n    pub fn new(size: usize) -> ThreadPool {\n        assert!(size > 0, \"a pool needs at least one thread\");\n        let (sender, receiver) = mpsc::channel::<Job>();\n        let receiver = Arc::new(Mutex::new(receiver));\n        let workers = (0..size)\n            .map(|_| {\n                let receiver = Arc::clone(&receiver);\n                thread::spawn(move || loop {\n                    let message = receiver.lock().unwrap().recv();   // guard dropped at the semicolon\n                    match message {\n                        Ok(job) => job(),                             // run without holding the lock\n                        Err(_) => break,                              // channel closed: stop\n                    }\n                })\n            })\n            .collect();\n        ThreadPool { sender, workers }\n    }\n\n    pub fn execute<F: FnOnce() + Send + 'static>(&self, f: F) {\n        self.sender.send(Box::new(f)).unwrap();\n    }\n\n    pub fn finish(self) {\n        drop(self.sender);                                            // close the channel\n        for w in self.workers {\n            w.join().unwrap();\n        }\n    }\n}\n\nfn main() {\n    let pool = ThreadPool::new(4);\n    let (done_tx, done_rx) = mpsc::channel();\n    let start = Instant::now();\n    for id in 0..8 {\n        let done_tx = done_tx.clone();\n        pool.execute(move || {\n            thread::sleep(Duration::from_millis(100));                 // a \"slow request\"\n            done_tx.send(id).unwrap();\n        });\n    }\n    drop(done_tx);\n    let mut finished: Vec<i32> = done_rx.iter().collect();\n    finished.sort();\n    let rounds = (start.elapsed().as_millis() as f64 / 100.0).round();\n    println!(\"finished {finished:?} in about {rounds} rounds of 100 ms (4 workers, 8 jobs)\");\n    pool.finish();\n}",
+"note": "Eight 100 ms jobs on four workers finished in about two rounds, so four ran at once. That only works because each worker drops the lock before running its job: the `let` statement ends the guard's life, so the next worker can receive immediately. Holding the lock while running (for example `while let Ok(job) = receiver.lock().unwrap().recv()`) would serialise the pool.",
+"output": "finished [0, 1, 2, 3, 4, 5, 6, 7] in about 2 rounds of 100 ms (4 workers, 8 jobs)"
+},
+{
+"lang": "rust",
+"title": "The mistake that serialises the pool",
+"code": "use std::sync::{mpsc, Arc, Mutex};\nuse std::thread;\nuse std::time::{Duration, Instant};\n\nfn main() {\n    let (tx, rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();\n    let rx = Arc::new(Mutex::new(rx));\n    let workers: Vec<_> = (0..4).map(|_| {\n        let rx = Arc::clone(&rx);\n        thread::spawn(move || {\n            while let Ok(job) = rx.lock().unwrap().recv() {   // the guard lives for the whole loop body\n                job();\n            }\n        })\n    }).collect();\n    let start = Instant::now();\n    for _ in 0..4 {\n        tx.send(Box::new(|| thread::sleep(Duration::from_millis(100)))).unwrap();\n    }\n    drop(tx);\n    for w in workers {\n        w.join().unwrap();\n    }\n    let rounds = (start.elapsed().as_millis() as f64 / 100.0).round();\n    println!(\"4 jobs on 4 workers took about {rounds} rounds: one at a time\");\n}",
+"note": "In a `while let`, the temporary lock guard lives until the end of the loop body, so each worker held the mutex while running its job, and the other workers waited. Four jobs on four workers took four rounds instead of one. The fix is to receive in a separate `let` statement, as in the previous example.",
+"output": "4 jobs on 4 workers took about 4 rounds: one at a time"
+}
+],
+"mistakes": [
+"**One thread per connection without a limit.** A burst of requests exhausts the machine. Use a pool.",
+"**Holding the mutex while running the job.** The pool becomes single-threaded. Receive in its own statement.",
+"**Designing the implementation before the API.** Write how you want to call it first."
+],
+"keys": [
+"A thread pool runs jobs on a fixed set of workers.",
+"Jobs are `Box<dyn FnOnce() + Send + 'static>` sent through a channel.",
+"Workers share the receiver as `Arc<Mutex<Receiver<Job>>>`.",
+"Release the lock before running each job."
+]
+},
+"21.3": {
+"idea": [
+"A server should shut down **gracefully**: stop accepting new work, let in-flight requests finish, and then stop the worker threads cleanly, instead of having the process killed mid-request. In the thread pool, that logic belongs in **`impl Drop for ThreadPool`**, so it happens automatically whenever the pool goes out of scope.",
+"Shutdown has two steps. First, **close the channel** by dropping the sender: each worker's `recv()` then returns `Err` once the queue is empty, which tells it to leave its loop. Second, **join every worker** so the program waits for them to finish their current job. Ownership makes both steps slightly tricky, because `drop` only receives `&mut self`, and you cannot move a field out of a borrowed struct. The Book's solution stores the sender as **`Option<Sender<Job>>`** and each worker's thread as `Option<JoinHandle<()>>` (or drains the vector), so `take()` can move them out, leaving `None` behind.",
+"The demo server then stops after two requests with `listener.incoming().take(2)`, and the logs show the shutdown sequence: the pool is dropped at the end of `main`, the channel closes, each worker reports that it is disconnecting, and the joins complete. The same pattern (signal, drain, join) applies to any service with background workers."
+],
+"how": [
+"`sender: Option<mpsc::Sender<Job>>`; `execute` uses `self.sender.as_ref().unwrap()`.",
+"In `Drop`: `drop(self.sender.take());` closes the channel.",
+"Then `for worker in self.workers.drain(..) { worker.thread.join().unwrap(); }`.",
+"Workers exit their loop when `recv()` returns `Err`.",
+"Demo: `incoming().take(2)` to stop after two requests."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Drop for ThreadPool shuts everything down cleanly",
+"code": "use std::sync::{mpsc, Arc, Mutex};\nuse std::thread;\n\ntype Job = Box<dyn FnOnce() + Send + 'static>;\n\nstruct Worker {\n    id: usize,\n    thread: thread::JoinHandle<()>,\n}\n\npub struct ThreadPool {\n    workers: Vec<Worker>,\n    sender: Option<mpsc::Sender<Job>>,\n}\n\nimpl ThreadPool {\n    pub fn new(size: usize) -> ThreadPool {\n        let (sender, receiver) = mpsc::channel::<Job>();\n        let receiver = Arc::new(Mutex::new(receiver));\n        let workers = (0..size)\n            .map(|id| {\n                let receiver = Arc::clone(&receiver);\n                let thread = thread::spawn(move || loop {\n                    let message = receiver.lock().unwrap().recv();\n                    match message {\n                        Ok(job) => job(),\n                        Err(_) => break,\n                    }\n                });\n                Worker { id, thread }\n            })\n            .collect();\n        ThreadPool { workers, sender: Some(sender) }\n    }\n\n    pub fn execute<F: FnOnce() + Send + 'static>(&self, f: F) {\n        self.sender.as_ref().unwrap().send(Box::new(f)).unwrap();\n    }\n}\n\nimpl Drop for ThreadPool {\n    fn drop(&mut self) {\n        drop(self.sender.take());                      // 1. close the channel\n        println!(\"channel closed; waiting for {} workers\", self.workers.len());\n        let mut ids = Vec::new();\n        for worker in self.workers.drain(..) {         // 2. join every worker\n            worker.thread.join().unwrap();\n            ids.push(worker.id);\n        }\n        println!(\"joined workers {ids:?}\");\n    }\n}\n\nfn main() {\n    let results = Arc::new(Mutex::new(Vec::new()));\n    {\n        let pool = ThreadPool::new(3);\n        for request in [\"/\", \"/sleep\", \"/about\", \"/\"] {\n            let results = Arc::clone(&results);\n            pool.execute(move || {\n                thread::sleep(std::time::Duration::from_millis(if request == \"/sleep\" { 80 } else { 10 }));\n                results.lock().unwrap().push(request);\n            });\n        }\n        println!(\"all jobs submitted; leaving the scope drops the pool\");\n    }\n    let mut done = results.lock().unwrap().clone();\n    done.sort();\n    println!(\"every in-flight request finished before shutdown: {done:?}\");\n}",
+"note": "When the pool went out of scope, `Drop` took the sender out of its `Option` and dropped it, so each worker's `recv` returned an error once the queue was empty and its loop ended; then every worker was joined. All four requests, including the slow `/sleep`, completed before the program moved on: a graceful shutdown.",
+"output": "all jobs submitted; leaving the scope drops the pool\nchannel closed; waiting for 3 workers\njoined workers [0, 1, 2]\nevery in-flight request finished before shutdown: [\"/\", \"/\", \"/about\", \"/sleep\"]"
+},
+{
+"lang": "rust",
+"title": "You can't move a field out of &mut self",
+"code": "use std::sync::mpsc;\n\nstruct Pool {\n    sender: mpsc::Sender<String>,\n}\n\nimpl Drop for Pool {\n    fn drop(&mut self) {\n        drop(self.sender);\n    }\n}\n\nfn main() {\n    let (tx, _rx) = mpsc::channel();\n    let _pool = Pool { sender: tx };\n}",
+"note": "`drop` gets `&mut self`, and moving `self.sender` out of a borrowed struct is not allowed: the compiler explains that the value is behind a mutable reference. Wrapping the field in an `Option` and calling `self.sender.take()` moves it out and leaves `None` in its place, which is exactly what the pool does.",
+"output": "error[E0507]: cannot move out of `self.sender` which is behind a mutable reference\n --> main.rs:9:14\n  |\n9 |         drop(self.sender);\n  |              ^^^^^^^^^^^ move occurs because `self.sender` has type `std::sync::mpsc::Sender<String>`, which does not implement the `Copy` trait\n  |\nhelp: consider cloning the value if the performance cost is acceptable\n  |\n9 |         drop(self.sender.clone());\n  |                         ++++++++",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Letting the process exit with workers mid-job.** Join them in `Drop`.",
+"**Joining before closing the channel.** Workers wait for jobs forever and the join never returns.",
+"**Moving fields out of `&mut self`.** Store them in `Option` and use `take()`."
+],
+"keys": [
+"Graceful shutdown: stop accepting work, finish in-flight jobs, join workers.",
+"Put shutdown logic in `Drop` so it happens automatically.",
+"Close the channel first, then join.",
+"`Option` + `take()` moves owned fields out inside `drop`."
+]
 }
 }
