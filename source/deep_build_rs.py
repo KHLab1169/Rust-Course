@@ -158,7 +158,7 @@ def run_example(lid, k, ex):
                     return lid, k, None, "expected a compile error"
                 out = compiler_errors(e)
             elif mode == "test":
-                rc, o, e = sh(["cargo", "test", "-q"] + tgt, d, 900)
+                rc, o, e = sh(["cargo", "test", "-q", "--lib" if not has_main else "--bins"] + tgt + ["--", "--format", "pretty", "--test-threads", "1"], d, 900)
                 out = test_summary(o + e)
                 if "test result:" not in out:
                     return lid, k, None, (o + e)[-2500:]
