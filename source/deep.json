@@ -1293,5 +1293,1090 @@
 "Encode rules in types with private fields and validating constructors.",
 "Once validated, the type carries the guarantee everywhere."
 ]
+},
+"10.1": {
+"idea": [
+"**Generics** let one piece of code work with many types. Instead of writing `largest_i32`, `largest_f64` and `largest_char`, write `fn largest<T: PartialOrd>(list: &[T]) -> &T` once. `<T>` declares a **type parameter**, and the **bound** `T: PartialOrd` says what the code needs from it: here, the ability to compare with `>`. Without the bound, the compiler refuses, because it cannot assume an arbitrary `T` supports comparison.",
+"Structs, enums and methods can be generic too: `struct Point<T> { x: T, y: T }` holds two values of the same type, and `Point<T, U>` allows different ones. `Option<T>` and `Result<T, E>` are generic enums you already use. In an `impl<T> Point<T>` block, methods work for every `T`; an `impl Point<f64>` block adds methods only for one concrete type (`distance_from_origin` makes sense for floats, not for strings).",
+"Generics cost **nothing at run time**. The compiler performs **monomorphisation**: for each concrete type you actually use, it generates a specialised copy of the code, as if you had written `largest_i32` and `largest_char` by hand. You get the convenience of writing code once with the speed of hand-written specialised code; the price is slightly longer compile times and larger binaries."
+],
+"how": [
+"`fn name<T: Bound>(x: T) -> T`; several parameters: `<T, U>`.",
+"`struct S<T> { field: T }`, `enum E<T> { A(T), B }`.",
+"`impl<T> S<T> { ... }` for all T; `impl S<f64> { ... }` for one type.",
+"Add bounds for every capability you use: `PartialOrd`, `Clone`, `Display`, `Copy`.",
+"Monomorphisation: zero run-time cost, specialised code per type."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "One largest, many types, and a generic Point",
+"code": "use std::fmt::Display;\n\nfn largest<T: PartialOrd>(list: &[T]) -> &T {\n    let mut best = &list[0];\n    for item in list {\n        if item > best {\n            best = item;\n        }\n    }\n    best\n}\n\n#[derive(Debug)]\nstruct Point<T> {\n    x: T,\n    y: T,\n}\n\nimpl<T: Display> Point<T> {\n    fn describe(&self) -> String {\n        format!(\"({}, {})\", self.x, self.y)\n    }\n}\n\nimpl Point<f64> {\n    fn distance_from_origin(&self) -> f64 {\n        (self.x.powi(2) + self.y.powi(2)).sqrt()\n    }\n}\n\nfn main() {\n    println!(\"{} {} {:?}\", largest(&[34, 50, 25, 100, 65]), largest(&[1.5, -2.0, 0.25]), largest(&['y', 'm', 'a', 'q']));\n    println!(\"{}\", largest(&[\"pear\", \"apple\", \"zucchini\"]));\n    let ints = Point { x: 5, y: 10 };\n    let floats = Point { x: 3.0, y: 4.0 };\n    println!(\"{} {} distance {}\", ints.describe(), floats.describe(), floats.distance_from_origin());\n}",
+"note": "One `largest` handled integers, floats, chars and strings, because all implement `PartialOrd`. `describe` exists for any Point whose coordinates can be displayed, while `distance_from_origin` is only defined for `Point<f64>`; calling it on `ints` would not compile.",
+"output": "100 1.5 'y'\nzucchini\n(5, 10) (3, 4) distance 5"
+},
+{
+"lang": "rust",
+"title": "Using a capability the bound did not promise",
+"code": "fn largest<T>(list: &[T]) -> &T {\n    let mut best = &list[0];\n    for item in list {\n        if item > best {\n            best = item;\n        }\n    }\n    best\n}\n\nfn main() {\n    println!(\"{}\", largest(&[1, 2, 3]));\n}",
+"note": "Without a bound, `T` could be any type, including ones that cannot be compared, so `item > best` is rejected; the compiler even suggests adding `T: PartialOrd`. Generic code may only use what its bounds promise, which is why generic Rust code never fails at run time for missing operations.",
+"output": "error[E0369]: binary operation `>` cannot be applied to type `&T`\n --> main.rs:4:17\n  |\n4 |         if item > best {\n  |            ---- ^ ---- &T\n  |            |\n  |            &T\n  |\nhelp: consider restricting type parameter `T` with trait `PartialOrd`\n  |\n1 | fn largest<T: std::cmp::PartialOrd>(list: &[T]) -> &T {\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Forgetting bounds.** Every operation on `T` needs a trait that provides it.",
+"**Over-generic code.** If a function is only ever used with `String`, take `&str`; generics are for real reuse.",
+"**Thinking generics are slow.** Monomorphisation makes them as fast as specialised code."
+],
+"keys": [
+"Type parameters `<T>` with bounds let code work for many types.",
+"Structs, enums and methods can be generic; `impl Point<f64>` specialises.",
+"Bounds state exactly what the code needs from `T`.",
+"Monomorphisation gives zero-cost generics."
+]
+},
+"10.2": {
+"idea": [
+"A **trait** defines behaviour that types can share: a set of method signatures, like an interface. `trait Summary { fn summarize(&self) -> String; }` says \"anything that implements Summary can produce a summary\". Each type provides its own implementation in an `impl Summary for Article` block. Traits can also provide **default methods** with a body, which implementors get for free and may override; a default method can call other methods of the trait, so implementing one small required method can unlock several.",
+"Traits become powerful as **bounds**. A function parameter `item: &impl Summary` accepts any type that implements the trait; the longer form `fn notify<T: Summary>(item: &T)` means the same and is needed when two parameters must be the same type. Combine traits with `+` (`T: Summary + Display`), and move long bounds into a **`where` clause** for readability. Returning `impl Trait` hides the concrete type behind the trait, which is essential for closures and iterators.",
+"One rule keeps the ecosystem coherent, the **orphan rule**: you can implement a trait for a type only if the trait or the type is defined in your crate. You can implement `Display` for your `Article`, or your `Summary` for `Vec<T>`, but not the standard `Display` for the standard `Vec`. Many useful traits can be **derived** automatically: `#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]`."
+],
+"how": [
+"`trait Name { fn required(&self) -> T; fn provided(&self) -> T { ... } }`.",
+"`impl Name for Type { ... }`; default methods may be overridden.",
+"Parameters: `&impl Trait` or `<T: Trait>`; combine with `+`; use `where` for long bounds.",
+"Return `impl Trait` to hide a concrete type.",
+"Orphan rule: your trait or your type. Derive common traits when possible."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A Summary trait with a default method and bounds",
+"code": "use std::fmt::{self, Display};\n\ntrait Summary {\n    fn author(&self) -> String;\n    fn summarize(&self) -> String {\n        format!(\"(Read more from {}...)\", self.author())   // default, built on the required method\n    }\n}\n\nstruct Article {\n    headline: String,\n    author: String,\n}\n\nstruct Post {\n    user: String,\n    text: String,\n}\n\nimpl Summary for Article {\n    fn author(&self) -> String {\n        self.author.clone()\n    }\n    fn summarize(&self) -> String {\n        format!(\"{}, by {}\", self.headline, self.author)   // override\n    }\n}\n\nimpl Summary for Post {\n    fn author(&self) -> String {\n        format!(\"@{}\", self.user)\n    }\n}\n\nimpl Display for Post {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, \"{}: {}\", self.author(), self.text)\n    }\n}\n\nfn notify(item: &impl Summary) -> String {\n    format!(\"Breaking! {}\", item.summarize())\n}\n\nfn headline_and_full<T>(item: &T) -> String\nwhere\n    T: Summary + Display,\n{\n    format!(\"{} || {}\", item.summarize(), item)\n}\n\nfn main() {\n    let a = Article { headline: String::from(\"Rust 2026 edition announced\"), author: String::from(\"Ada\") };\n    let p = Post { user: String::from(\"ferris\"), text: String::from(\"traits are great\") };\n    println!(\"{}\", notify(&a));\n    println!(\"{}\", notify(&p));\n    println!(\"{}\", headline_and_full(&p));\n}",
+"note": "Article overrides `summarize`, while Post relies on the default, which calls Post's own `author`. `notify` accepts anything that implements Summary; `headline_and_full` needs both Summary and Display, stated in a `where` clause, so it accepts the Post but would reject the Article, which has no Display.",
+"output": "Breaking! Rust 2026 edition announced, by Ada\nBreaking! (Read more from @ferris...)\n(Read more from @ferris...) || @ferris: traits are great"
+},
+{
+"lang": "rust",
+"title": "The orphan rule",
+"code": "use std::fmt;\n\nimpl fmt::Display for Vec<i32> {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, \"{} numbers\", self.len())\n    }\n}\n\nfn main() {\n    println!(\"{}\", vec![1, 2, 3]);\n}",
+"note": "Neither `Display` nor `Vec` belongs to this crate, so implementing one for the other is refused. Without this rule, two crates could implement the same trait for the same type differently and nobody could tell which one applies. The standard workaround is a newtype: `struct Numbers(Vec<i32>);` is yours, so it can implement `Display`.",
+"output": "error[E0117]: only traits defined in the current crate can be implemented for types defined outside of the crate\n --> main.rs:3:1\n  |\n3 | impl fmt::Display for Vec<i32> {\n  | ^^^^^^^^^^^^^^^^^^^^^^--------\n  |                       |\n  |                       `Vec` is not defined in the current crate\n  |\n  = note: impl doesn't have any local type before any uncovered type parameters\n  = note: for more information see https://doc.rust-lang.org/reference/items/implementations.html#orphan-rules\n  = note: define and implement a trait or new type instead",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Huge traits.** Small, focused traits are easier to implement and combine.",
+"**`&dyn Trait` everywhere when generics would do.** `impl Trait` is statically dispatched and usually faster (trait objects are chapter 18).",
+"**Fighting the orphan rule.** Wrap the foreign type in a newtype."
+],
+"keys": [
+"Traits define shared behaviour; types implement them.",
+"Default methods give behaviour for free and can build on required ones.",
+"Use traits as bounds: `impl Trait`, `<T: Trait>`, `+` and `where`.",
+"The orphan rule keeps implementations unambiguous."
+]
+},
+"10.3": {
+"idea": [
+"Every reference has a **lifetime**: the part of the program during which it is valid. Usually the compiler infers lifetimes and you never see them. The **borrow checker** compares lifetimes to guarantee that no reference outlives the data it points to, which is how Rust rules out dangling references entirely.",
+"Sometimes the compiler needs help. In `fn longest(x: &str, y: &str) -> &str`, the returned reference comes from either `x` or `y`, and the compiler cannot know which, so it cannot check callers. **Lifetime annotations** describe the relationship: `fn longest<'a>(x: &'a str, y: &'a str) -> &'a str` says \"the result lives at least as long as the shorter of the two inputs\". Annotations do not change how long anything lives; they **describe** constraints so the compiler can check them at every call site. A caller that uses the result after one of the inputs has been dropped is rejected.",
+"Structs that **hold references** need annotations too: `struct Excerpt<'a> { part: &'a str }` means an Excerpt cannot outlive the text it borrows from. Three **elision rules** let you omit annotations in the common cases (one input reference, or a method with `&self`), which is why most functions never show them. The special lifetime `'static` means \"valid for the whole program\", the lifetime of string literals."
+],
+"how": [
+"Annotate when a returned reference could come from several inputs: `fn f<'a>(x: &'a T, y: &'a T) -> &'a T`.",
+"Annotations describe relationships; they never extend a value's life.",
+"Structs holding references: `struct S<'a> { field: &'a str }`.",
+"Elision covers one-input functions and `&self` methods.",
+"`'static`: valid for the entire program (literals); don't add it to silence errors."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "longest, and a struct that borrows its text",
+"code": "fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {\n    if x.len() >= y.len() { x } else { y }\n}\n\n#[derive(Debug)]\nstruct Excerpt<'a> {\n    part: &'a str,\n}\n\nimpl<'a> Excerpt<'a> {\n    fn level(&self) -> usize {                           // elided: no annotation needed\n        self.part.split_whitespace().count()\n    }\n    fn announce(&self, note: &str) -> &str {             // elision: result tied to &self\n        println!(\"note: {note}\");\n        self.part\n    }\n}\n\nfn first_sentence(text: &str) -> Excerpt<'_> {\n    Excerpt { part: text.split('.').next().unwrap_or(text) }\n}\n\nfn main() {\n    let novel = String::from(\"Call me Ishmael. Some years ago, never mind how long precisely.\");\n    let excerpt = first_sentence(&novel);\n    println!(\"{excerpt:?}, {} words\", excerpt.level());\n    println!(\"{}\", excerpt.announce(\"checking\"));\n\n    let a = String::from(\"long string is long\");\n    let result;\n    {\n        let b = String::from(\"xyz\");\n        result = longest(a.as_str(), b.as_str()).to_string();   // copy out before b dies\n    }\n    println!(\"longest: {result}\");\n    let static_text: &'static str = \"lives for the whole program\";\n    println!(\"{}\", longest(static_text, &a));\n}",
+"note": "`longest` ties its result to both inputs, so the compiler checks every call. The Excerpt holds a slice of `novel` and cannot outlive it. Inside the block, the result was converted to an owned String before `b` was dropped, which keeps the borrow checker happy. The methods needed no annotations thanks to elision.",
+"output": "Excerpt { part: \"Call me Ishmael\" }, 3 words\nnote: checking\nCall me Ishmael\nlongest: long string is long\nlives for the whole program"
+},
+{
+"lang": "rust",
+"title": "A reference that would outlive its data",
+"code": "fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {\n    if x.len() >= y.len() { x } else { y }\n}\n\nfn main() {\n    let outer = String::from(\"a fairly long string\");\n    let result;\n    {\n        let inner = String::from(\"short\");\n        result = longest(outer.as_str(), inner.as_str());\n    }\n    println!(\"{result}\");\n}",
+"note": "The annotation says the result may come from `inner`, which is dropped at the end of the block, yet `result` is used after it. The borrow checker reports that `inner` does not live long enough. In this run the result would actually be `outer`, but the compiler checks the signature's promise, not one particular execution, which is exactly what makes it sound.",
+"output": "error[E0597]: `inner` does not live long enough\n  --> main.rs:10:42\n   |\n 9 |         let inner = String::from(\"short\");\n   |             ----- binding `inner` declared here\n10 |         result = longest(outer.as_str(), inner.as_str());\n   |                                          ^^^^^ borrowed value does not live long enough\n11 |     }\n   |     - `inner` dropped here while still borrowed\n12 |     println!(\"{result}\");\n   |                ------ borrow later used here",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Adding `'static` to make errors go away.** It usually just moves the error. Fix the ownership instead (often by returning an owned value).",
+"**Thinking annotations change lifetimes.** They only describe constraints.",
+"**Structs full of references early on.** Owned fields (`String`) avoid lifetime parameters entirely."
+],
+"keys": [
+"Lifetimes are the scopes during which references are valid.",
+"Annotations relate the lifetimes of inputs and outputs for the borrow checker.",
+"Structs holding references need lifetime parameters.",
+"Elision hides annotations in common cases; `'static` lasts the whole program."
+]
+},
+"10.4": {
+"idea": [
+"Real signatures often combine all three tools: type parameters, trait bounds and lifetimes. Reading them is a skill: take each part in turn. In `fn longest_with_note<'a, T>(x: &'a str, y: &'a str, note: T) -> &'a str where T: Display`, the angle brackets declare a lifetime `'a` and a type `T`; the parameters say `x` and `y` are borrowed for `'a` and `note` is any displayable value; the return borrows for `'a`; the `where` clause states the bound. Lifetimes come first in the list, by convention.",
+"The combination shines in data structures that **borrow** and work with **any type**. A `struct Labelled<'a, T> { label: &'a str, value: T }` can wrap anything while borrowing its label; an `impl<'a, T: Display> Labelled<'a, T>` gives it methods for displayable values. Generic functions over slices of references, such as \"find the longest item that matches a predicate\", naturally carry all three.",
+"The compiler checks each part independently: bounds say what operations `T` supports, lifetimes say how long references remain valid, and the types make sure everything fits. When a signature gets hard to read, a `where` clause, descriptive type parameter names (`Item` instead of `T`) and a short doc comment help more than clever tricks."
+],
+"how": [
+"Order: lifetimes, then types: `<'a, 'b, T, U>`.",
+"Put long bounds in `where`; name parameters meaningfully when it helps.",
+"Structs can be generic and borrow: `struct S<'a, T> { r: &'a str, v: T }`.",
+"`impl<'a, T: Bound> S<'a, T>` adds methods under conditions.",
+"Read signatures part by part: generics, parameters, return, bounds."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "All three in one signature",
+"code": "use std::fmt::Display;\n\nfn longest_with_note<'a, T>(x: &'a str, y: &'a str, note: T) -> &'a str\nwhere\n    T: Display,\n{\n    println!(\"note: {note}\");\n    if x.len() >= y.len() { x } else { y }\n}\n\nfn best_match<'a, Item, F>(items: &'a [Item], score: F) -> Option<&'a Item>\nwhere\n    F: Fn(&Item) -> i64,\n{\n    items.iter().max_by_key(|item| score(item))\n}\n\nstruct Labelled<'a, T> {\n    label: &'a str,\n    value: T,\n}\n\nimpl<'a, T: Display + PartialOrd> Labelled<'a, T> {\n    fn show(&self) -> String {\n        format!(\"{}: {}\", self.label, self.value)\n    }\n    fn larger<'b>(&'b self, other: &'b Labelled<'a, T>) -> &'b Labelled<'a, T> {\n        if self.value >= other.value { self } else { other }\n    }\n}\n\nfn main() {\n    println!(\"{}\", longest_with_note(\"apples\", \"kiwis\", 42));\n    let words = [\"tea\", \"rooibos\", \"matcha\", \"chai\"];\n    println!(\"{:?}\", best_match(&words, |w| w.len() as i64));\n    println!(\"{:?}\", best_match(&[3, -9, 7, 1], |n: &i32| -(*n as i64).abs()));\n    let names = String::from(\"speed\");\n    let a = Labelled { label: &names, value: 88.5 };\n    let b = Labelled { label: \"limit\", value: 100.0 };\n    println!(\"{} / {} -> larger: {}\", a.show(), b.show(), a.larger(&b).show());\n}",
+"note": "`longest_with_note` combines a lifetime with a bounded type. `best_match` borrows from a slice of any item type and takes a scoring closure: the second call finds the number closest to zero. `Labelled` is generic over its value while borrowing its label, and its methods exist only for values that can be displayed and compared.",
+"output": "note: 42\napples\nSome(\"rooibos\")\nSome(1)\nspeed: 88.5 / limit: 100 -> larger: limit: 100"
+},
+{
+"lang": "rust",
+"title": "A missing bound in a combined signature",
+"code": "struct Labelled<'a, T> {\n    label: &'a str,\n    value: T,\n}\n\nimpl<'a, T> Labelled<'a, T> {\n    fn show(&self) -> String {\n        format!(\"{}: {}\", self.label, self.value)\n    }\n}\n\nfn main() {\n    let x = Labelled { label: \"speed\", value: 88 };\n    println!(\"{}\", x.show());\n}",
+"note": "The lifetime part is fine, but `{}` needs `T: Display` and the impl block does not promise it, so the compiler rejects the method even though this particular call uses an integer. It suggests restricting `T` with `std::fmt::Display`. Each part of a signature is checked on its own.",
+"output": "error[E0277]: `T` doesn't implement `std::fmt::Display`\n --> main.rs:8:39\n  |\n8 |         format!(\"{}: {}\", self.label, self.value)\n  |                      --               ^^^^^^^^^^ `T` cannot be formatted with the default formatter\n  |                      |\n  |                      required by this formatting parameter\n  |\n  = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead\nhelp: consider restricting type parameter `T` with trait `Display`\n  |\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Cramming bounds into the angle brackets.** Use `where` for readability.",
+"**One lifetime for everything when inputs are independent.** Extra lifetimes (`'a`, `'b`) can make a function more flexible for callers.",
+"**Generic parameters that are never needed.** Every parameter should earn its place."
+],
+"keys": [
+"Lifetimes come first, then types, then bounds (often in `where`).",
+"Generic structs can also borrow, with methods under conditions.",
+"The compiler checks bounds, lifetimes and types independently.",
+"Readable names and `where` clauses keep complex signatures understandable."
+]
+},
+"11.1": {
+"idea": [
+"A **test** in Rust is a function annotated with `#[test]`. `cargo test` compiles your code in test mode, runs every test function (in parallel by default), and reports which passed and failed. A test fails when it panics, so checks are macros that panic on failure: `assert!(condition)`, `assert_eq!(left, right)` and `assert_ne!(left, right)`. The `_eq` forms print both values when they differ, which makes failures easy to diagnose; add a custom message after the values: `assert_eq!(total, 30, \"total for {items:?}\")`.",
+"Tests usually live in a module annotated `#[cfg(test)]` at the bottom of the file, with `use super::*;` to see the code under test. The `cfg(test)` attribute means the module is only compiled for `cargo test`, so tests add nothing to the release binary.",
+"To check that code panics when it should, add `#[should_panic]`, ideally with `expected = \"part of the message\"` so the test fails if it panics for the wrong reason. Tests can also return `Result<(), E>`: returning `Err` fails the test, and the `?` operator works inside, which is convenient for tests that call fallible functions."
+],
+"how": [
+"`#[cfg(test)] mod tests { use super::*; #[test] fn name() { ... } }`.",
+"`assert!`, `assert_eq!(left, right)`, `assert_ne!`, each with optional format arguments.",
+"`#[should_panic(expected = \"...\")]` for code that must panic.",
+"`fn t() -> Result<(), String>` lets you use `?`; return `Err` to fail.",
+"Values compared with `assert_eq!` need `PartialEq` and `Debug`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A tested module with every kind of check",
+"code": "pub fn split_bill(total_cents: u32, people: u32) -> Vec<u32> {\n    if people == 0 {\n        panic!(\"split_bill needs at least one person, got 0\");\n    }\n    let (share, extra) = (total_cents / people, total_cents % people);\n    (0..people).map(|i| share + u32::from(i < extra)).collect()\n}\n\npub fn parse_cents(text: &str) -> Result<u32, String> {\n    let (dollars, cents) = text.split_once('.').ok_or(format!(\"{text:?} has no decimal point\"))?;\n    let d: u32 = dollars.parse().map_err(|e| format!(\"dollars: {e}\"))?;\n    let c: u32 = cents.parse().map_err(|e| format!(\"cents: {e}\"))?;\n    Ok(d * 100 + c)\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn shares_add_up_exactly() {\n        let shares = split_bill(1000, 3);\n        assert_eq!(shares.iter().sum::<u32>(), 1000, \"shares were {shares:?}\");\n        assert_eq!(shares, vec![334, 333, 333]);\n    }\n\n    #[test]\n    fn nobody_pays_more_than_a_cent_extra() {\n        let shares = split_bill(101, 4);\n        assert!(shares.iter().max().unwrap() - shares.iter().min().unwrap() <= 1);\n    }\n\n    #[test]\n    #[should_panic(expected = \"at least one person\")]\n    fn zero_people_panics() {\n        split_bill(500, 0);\n    }\n\n    #[test]\n    fn parses_with_question_mark() -> Result<(), String> {\n        assert_eq!(parse_cents(\"12.34\")?, 1234);\n        assert_ne!(parse_cents(\"0.99\")?, 100);\n        Ok(())\n    }\n\n    #[test]\n    fn deliberately_failing_example() {\n        assert_eq!(split_bill(10, 3), vec![3, 3, 4], \"remainder should go to the first people\");\n    }\n}",
+"note": "Four tests passed, including the `should_panic` test, whose expected text matched the panic message, and the test returning `Result`, which used `?`. The last test is wrong on purpose: its failure report shows the left and right values and the custom message, which is exactly what you need to find the bug (here, a bug in the test's expectation).",
+"output": "running 5 tests\ntest tests::deliberately_failing_example ... FAILED\ntest tests::nobody_pays_more_than_a_cent_extra ... ok\ntest tests::parses_with_question_mark ... ok\ntest tests::shares_add_up_exactly ... ok\ntest tests::zero_people_panics - should panic ... ok\n---- tests::deliberately_failing_example stdout ----\nthread 'tests::deliberately_failing_example' panicked at lib.rs:48:9:\nassertion `left == right` failed: remainder should go to the first people\n  left: [4, 3, 3]\n right: [3, 3, 4]\ntest result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+},
+{
+"lang": "rust",
+"title": "assert_eq! needs Debug to print the values",
+"code": "#[derive(PartialEq)]\nstruct Money(u32);\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn equal_money() {\n        assert_eq!(Money(5), Money(5));\n    }\n}\n\nfn main() {}",
+"note": "`assert_eq!` prints both values when they differ, so it needs them to implement `Debug`, and the compiler says so (it checks even though this test would pass). Adding `#[derive(Debug, PartialEq)]` to the struct fixes it. Deriving `Debug` on your types is almost always worth it for this reason.",
+"output": "error[E0277]: `Money` doesn't implement `Debug`\n --> main.rs:9:9\n  |\n9 |         assert_eq!(Money(5), Money(5));\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Debug` is not implemented for `Money`\n  |\n  = note: add `#[derive(Debug)]` to `Money` or manually `impl Debug for Money`\nhelp: consider annotating `Money` with `#[derive(Debug)]`\n  |\n3 | struct Money(u32);",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**`assert!(a == b)` instead of `assert_eq!(a, b)`.** You lose the printed values on failure.",
+"**`#[should_panic]` without `expected`.** The test passes even if the code panics for the wrong reason.",
+"**Tests that depend on each other or on run order.** They run in parallel; each must stand alone."
+],
+"keys": [
+"`#[test]` functions run with `cargo test`; a panic means failure.",
+"`assert_eq!`/`assert_ne!` show both values; add custom messages.",
+"`#[should_panic(expected = ...)]` tests panics precisely.",
+"Tests can return `Result` and use `?`."
+]
+},
+"11.2": {
+"idea": [
+"`cargo test` accepts options for itself and, after `--`, for the **test binary**. The most useful ones change what runs and what you see. Tests run in **parallel** threads by default, which is fast but means tests must not share state such as a file or environment variable; `cargo test -- --test-threads=1` runs them one at a time when they must.",
+"Output from passing tests is **captured** (hidden) so the report stays readable; only failing tests show what they printed. `cargo test -- --show-output` (or `--nocapture`) shows everything, useful when debugging. To run a **subset**, pass a filter: `cargo test split` runs every test whose name contains \"split\", and `cargo test tests::exact_name -- --exact` runs one.",
+"Slow tests (network, large data) can be marked **`#[ignore]`** (optionally with a reason): they are skipped by default and listed as ignored, and `cargo test -- --ignored` runs only them, `--include-ignored` runs everything. `cargo test --release` tests optimised code, and `cargo test --doc` runs only documentation examples. Exit codes follow convention: 0 when all tests pass, non-zero otherwise, which is what CI relies on."
+],
+"how": [
+"Filter by name: `cargo test part_of_name`; exact: `cargo test path::name -- --exact`.",
+"One thread: `cargo test -- --test-threads=1`.",
+"Show prints from passing tests: `cargo test -- --show-output`.",
+"`#[ignore = \"reason\"]` to skip by default; `-- --ignored` / `--include-ignored` to run.",
+"`cargo test --lib`, `--doc`, `--test name` target kinds of tests."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Ignored tests and captured output",
+"code": "pub fn is_prime(n: u64) -> bool {\n    n >= 2 && (2..).take_while(|d| d * d <= n).all(|d| n % d != 0)\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn small_primes() {\n        println!(\"this print is captured because the test passes\");\n        let found: Vec<u64> = (1..30).filter(|&n| is_prime(n)).collect();\n        assert_eq!(found, vec![2, 3, 5, 7, 11, 13, 17, 19, 23, 29]);\n    }\n\n    #[test]\n    fn one_and_zero_are_not_prime() {\n        assert!(!is_prime(0) && !is_prime(1));\n    }\n\n    #[test]\n    #[ignore = \"slow: checks a large number\"]\n    fn big_prime() {\n        assert!(is_prime(1_000_000_007));\n    }\n}",
+"note": "Two tests ran and passed, and the slow one was reported as ignored with its reason instead of running. The `println!` inside the passing test was hidden; run with `-- --show-output` to see it, or `-- --ignored` to run only the slow test. Tests ran one at a time here; by default they would run in parallel.",
+"output": "running 3 tests\ntest tests::big_prime ... ignored, slow: checks a large number\ntest tests::one_and_zero_are_not_prime ... ok\ntest tests::small_primes ... ok\ntest result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+},
+{
+"lang": "bash",
+"title": "Selecting tests from the command line",
+"code": "$ cargo test split\nrunning 2 tests\ntest tests::split_even ... ok\ntest tests::split_with_remainder ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out\n\n$ cargo test -- --ignored\nrunning 1 test\ntest tests::big_prime ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out\n\n$ cargo test small_primes -- --show-output\nrunning 1 test\ntest tests::small_primes ... ok\n\nsuccesses:\n\n---- tests::small_primes stdout ----\nthis print is captured because the test passes\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out",
+"note": "A filter runs only matching tests and reports how many were filtered out. `--ignored` runs just the slow tests, and `--show-output` reveals what passing tests printed, grouped per test. Options before `--` are for Cargo; options after it go to the test binary.",
+"output": ""
+}
+],
+"mistakes": [
+"**Tests sharing files or environment variables while running in parallel.** Use separate temp paths, or `--test-threads=1` as a last resort.",
+"**Debugging with prints and wondering where they went.** Use `--show-output` (or `--nocapture`).",
+"**Deleting slow tests.** Mark them `#[ignore]` and run them in a nightly CI job."
+],
+"keys": [
+"Filters select tests by name; `--exact` for one.",
+"Tests run in parallel; `--test-threads=1` serialises them.",
+"Output of passing tests is captured; `--show-output` shows it.",
+"`#[ignore]` skips slow tests by default; `--ignored` runs them."
+]
+},
+"11.3": {
+"idea": [
+"Rust projects use two kinds of tests. **Unit tests** sit next to the code they test, inside a `#[cfg(test)] mod tests` in the same file. Because a child module can see its parent's private items, unit tests can test **private functions** too, which is handy for tricky internal helpers.",
+"**Integration tests** live in the `tests/` folder at the top of the package, one crate per file. They use your library exactly as an outside user would: only its **public API**, imported by the package name (`use mylib::parse;`). No `#[cfg(test)]` is needed; Cargo compiles them only for `cargo test`. They catch problems unit tests miss: a function you forgot to make public, or modules that work alone but not together.",
+"Shared setup code for integration tests goes in **`tests/common/mod.rs`** (not `tests/common.rs`, which Cargo would treat as a test file of its own) and is pulled in with `mod common;`. Binary crates cannot be tested this way, because a binary exposes no API, which is another reason to keep logic in `src/lib.rs` with a thin `src/main.rs`. `cargo test --test name` runs one integration test file."
+],
+"how": [
+"Unit tests: `#[cfg(test)] mod tests { use super::*; }` in each source file; may test private items.",
+"Integration tests: `tests/*.rs`, each a separate crate using only the public API.",
+"Shared helpers: `tests/common/mod.rs`, included with `mod common;`.",
+"Logic in `lib.rs` so integration tests can reach it.",
+"`cargo test --lib` (unit only), `cargo test --test api` (one file)."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Unit tests can reach private helpers",
+"code": "mod pricing {\n    pub fn total_with_tax(cents: u32) -> u32 {\n        cents + tax(cents)\n    }\n\n    fn tax(cents: u32) -> u32 {                   // private: not part of the API\n        (cents * 15 + 50) / 100                       // 15%, rounded to the nearest cent\n    }\n\n    #[cfg(test)]\n    mod tests {\n        use super::*;\n\n        #[test]\n        fn private_tax_rounds_to_nearest_cent() {\n            assert_eq!(tax(10), 2);                   // 1.5 cents rounds up\n            assert_eq!(tax(13), 2);                   // 1.95 rounds to 2\n            assert_eq!(tax(3), 0);                    // 0.45 rounds down\n        }\n\n        #[test]\n        fn public_total() {\n            assert_eq!(total_with_tax(1000), 1150);\n        }\n    }\n}\n\npub use pricing::total_with_tax;",
+"note": "The test module is a child of `pricing`, so `use super::*` brings in the private `tax` function, and its rounding rules can be tested directly. An integration test in `tests/` could only call `total_with_tax`, because `tax` is not public.",
+"output": "running 2 tests\ntest pricing::tests::private_tax_rounds_to_nearest_cent ... ok\ntest pricing::tests::public_total ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+},
+{
+"lang": "bash",
+"title": "An integration test in tests/, with shared setup",
+"code": "$ tree tests\ntests\n├── common\n│   └── mod.rs\n└── checkout.rs\n$ cat tests/common/mod.rs\npub fn cart() -> Vec<u32> {\n    vec![1000, 250, 4999]\n}\n$ cat tests/checkout.rs\nmod common;\nuse shop::total_with_tax;            // only the public API, by package name\n\n#[test]\nfn whole_cart_with_tax() {\n    let total: u32 = common::cart().iter().map(|&c| total_with_tax(c)).sum();\n    assert_eq!(total, 7130);\n}\n$ cargo test --test checkout\nrunning 1 test\ntest whole_cart_with_tax ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"note": "The integration test is its own crate: it imports the library by its package name and can only use public items. Shared setup lives in `tests/common/mod.rs`, so Cargo does not mistake it for a test file, and `--test checkout` runs just this one file.",
+"output": ""
+}
+],
+"mistakes": [
+"**Putting helpers in `tests/common.rs`.** Cargo runs it as a test crate. Use `tests/common/mod.rs`.",
+"**Logic in `main.rs`.** Integration tests cannot reach a binary. Move it to `lib.rs`.",
+"**Only unit tests.** Integration tests verify the public API works as a whole."
+],
+"keys": [
+"Unit tests live beside the code and may test private items.",
+"Integration tests in `tests/` use only the public API, as users do.",
+"Shared integration helpers go in `tests/common/mod.rs`.",
+"Keep logic in the library so both kinds of test can reach it."
+]
+},
+"12.1": {
+"idea": [
+"The chapter's project is **minigrep**, a small version of the classic `grep` tool: `minigrep QUERY FILE` prints every line of the file that contains the query. It brings together much of the first half of the book: command-line arguments, files, strings, error handling, modules and tests.",
+"Arguments come from **`std::env::args()`**, an iterator over the program's arguments as `String`s; the first is the program's own path. `let args: Vec<String> = env::args().collect();` gathers them; `collect` needs the type annotation to know what collection to build. (`env::args` panics if an argument is not valid Unicode; `env::args_os` returns `OsString`s for programs that must handle any file name.)",
+"Reading the whole file is one call: **`fs::read_to_string(path)`** returns `Result<String, io::Error>`. The first version keeps everything in `main`, uses indexing for the arguments and `expect` for the file, and simply prints what it read. It works for the happy path, and it is deliberately naive: missing arguments panic with an index-out-of-bounds message and errors are reported crudely. The next lessons fix that step by step, which is how real programs grow."
+],
+"how": [
+"`let args: Vec<String> = env::args().collect();` (args[0] is the program).",
+"Run with `cargo run -- the poem.txt`; arguments after `--` go to the program.",
+"`fs::read_to_string(path)` returns `Result<String, io::Error>`.",
+"First version: indexing and `expect` (to be improved).",
+"`env::args_os` when file names may not be valid Unicode."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The first version of minigrep",
+"code": "use std::env;\nuse std::fs;\n\nfn main() {\n    fs::write(\"poem.txt\", \"I'm nobody! Who are you?\\nAre you nobody, too?\\nThen there's a pair of us - don't tell!\\nHow dreary to be somebody!\\n\").unwrap();\n\n    let args: Vec<String> = vec![\"minigrep\".into(), \"body\".into(), \"poem.txt\".into()];   // env::args().collect()\n    let query = &args[1];\n    let file_path = &args[2];\n    println!(\"Searching for {query:?} in {file_path}\");\n\n    let contents = fs::read_to_string(file_path).expect(\"Should have been able to read the file\");\n    for line in contents.lines() {\n        if line.contains(query.as_str()) {\n            println!(\"{line}\");\n        }\n    }\n}",
+"note": "The argument vector is built by hand here so the example runs without a terminal; in the real program it is `env::args().collect()`, with the same shape: the program name first, then the query and the file. The file is read in one call and each matching line is printed. Missing arguments would still panic with an unhelpful message.",
+"output": "Searching for \"body\" in poem.txt\nI'm nobody! Who are you?\nAre you nobody, too?\nHow dreary to be somebody!"
+},
+{
+"lang": "rust",
+"title": "What the naive version does with too few arguments",
+"code": "fn main() {\n    let args: Vec<String> = vec![\"minigrep\".into(), \"body\".into()];        // the user forgot the file\n    println!(\"got {} arguments: {:?}\", args.len(), args);\n    let file_path = &args[2];\n    println!(\"never reached: {file_path}\");\n}",
+"note": "Indexing past the end of the argument list panics with \"index out of bounds: the len is 2 but the index is 2\", which tells a user nothing about how to run the program. The next lesson replaces indexing with a `Config::build` function that returns a clear error instead.",
+"output": "got 2 arguments: [\"minigrep\", \"body\"]\n\nthread 'main' panicked at main.rs:4:26:\nindex out of bounds: the len is 2 but the index is 2\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+}
+],
+"mistakes": [
+"**Forgetting that `args[0]` is the program name.** The first user argument is at index 1.",
+"**Indexing arguments directly in real programs.** Missing arguments panic. Validate and report usage.",
+"**`expect` messages that blame the user vaguely.** Error messages should say what to do."
+],
+"keys": [
+"`env::args().collect::<Vec<String>>()` gathers command-line arguments.",
+"`fs::read_to_string` reads a whole file into a String, returning a Result.",
+"The first version keeps everything in main, on purpose.",
+"Its weaknesses (panics, poor messages) motivate the refactoring."
+]
+},
+"12.2": {
+"idea": [
+"The refactoring separates **concerns**. Argument parsing moves into a `Config` struct with a `build` function: `Config::build(&args) -> Result<Config, &'static str>`. It checks there are enough arguments and returns `Err(\"not enough arguments\")` instead of panicking. Grouping `query` and `file_path` in a struct also documents that they belong together.",
+"The program logic moves into **`run(config) -> Result<(), Box<dyn Error>>`**: read the file with `?`, search, print. `Box<dyn Error>` means \"any kind of error\", so `run` can propagate I/O errors (and later others) with `?` without defining an error type yet.",
+"`main` becomes a thin shell: build the config, call `run`, and turn any error into a message on standard error and a non-zero exit code with **`process::exit(1)`**. `unwrap_or_else(|err| { ...; process::exit(1) })` handles the config error in one expression, and `if let Err(e) = run(config)` handles the run error. Finally, `Config` and `run` move into **`src/lib.rs`**, so they can be tested, while `src/main.rs` keeps only the wiring. This structure (parse, run, report) suits almost every command-line program."
+],
+"how": [
+"`struct Config { query: String, file_path: String }` with `fn build(args: &[String]) -> Result<Config, &'static str>`.",
+"`fn run(config: Config) -> Result<(), Box<dyn Error>>` with `?` inside.",
+"`main`: `Config::build(&args).unwrap_or_else(|e| { eprintln!(...); process::exit(1) })`.",
+"`if let Err(e) = run(config) { eprintln!(...); process::exit(1); }`.",
+"Move `Config` and `run` to `lib.rs`; `main.rs` keeps the wiring."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Config, run and a thin main",
+"code": "use std::error::Error;\nuse std::fs;\n\npub struct Config {\n    pub query: String,\n    pub file_path: String,\n}\n\nimpl Config {\n    pub fn build(args: &[String]) -> Result<Config, &'static str> {\n        if args.len() < 3 {\n            return Err(\"not enough arguments (usage: minigrep QUERY FILE)\");\n        }\n        Ok(Config { query: args[1].clone(), file_path: args[2].clone() })\n    }\n}\n\npub fn run(config: Config) -> Result<(), Box<dyn Error>> {\n    let contents = fs::read_to_string(&config.file_path)?;\n    for line in contents.lines().filter(|l| l.contains(&config.query)) {\n        println!(\"{line}\");\n    }\n    Ok(())\n}\n\nfn main_with(args: &[&str]) -> i32 {\n    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();\n    let config = match Config::build(&args) {\n        Ok(c) => c,\n        Err(err) => {\n            eprintln!(\"Problem parsing arguments: {err}\");\n            return 1;                                        // real main: process::exit(1)\n        }\n    };\n    if let Err(e) = run(config) {\n        eprintln!(\"Application error: {e}\");\n        return 1;\n    }\n    0\n}\n\nfn main() {\n    fs::write(\"poem.txt\", \"Then there's a pair of us\\nHow dreary to be somebody!\\n\").unwrap();\n    for args in [vec![\"minigrep\", \"dreary\", \"poem.txt\"], vec![\"minigrep\", \"dreary\"], vec![\"minigrep\", \"x\", \"missing.txt\"]] {\n        println!(\"$ {}\", args.join(\" \"));\n        println!(\"  exit code {}\", main_with(&args));\n    }\n}",
+"note": "`Config::build` turned a missing argument into a clear message instead of a panic, and `run` propagated the missing-file error with `?`, which `main` reported and turned into exit code 1. `main_with` stands in for `main` so three runs fit in one example; the real program calls `process::exit(1)`.",
+"output": "$ minigrep dreary poem.txt\nHow dreary to be somebody!\n  exit code 0\n$ minigrep dreary\nProblem parsing arguments: not enough arguments (usage: minigrep QUERY FILE)\n  exit code 1\n$ minigrep x missing.txt\nApplication error: No such file or directory (os error 2)\n  exit code 1"
+},
+{
+"lang": "rust",
+"title": "The same pieces with unwrap_or_else and process::exit",
+"code": "use std::process;\n\nstruct Config {\n    query: String,\n}\n\nimpl Config {\n    fn build(args: &[String]) -> Result<Config, &'static str> {\n        args.get(1).map(|q| Config { query: q.clone() }).ok_or(\"missing QUERY\")\n    }\n}\n\nfn main() {\n    let args: Vec<String> = vec![\"minigrep\".to_string(), \"rust\".to_string()];\n    let config = Config::build(&args).unwrap_or_else(|err| {\n        eprintln!(\"Problem parsing arguments: {err}\");\n        process::exit(1);\n    });\n    println!(\"searching for {:?}\", config.query);\n}",
+"note": "`unwrap_or_else` takes a closure that runs only on `Err`; because `process::exit` never returns (its type is `!`), the closure's type fits, and `config` is a plain `Config` afterwards. `ok_or` converted the `Option` from `args.get(1)` into a `Result` with a message.",
+"output": "searching for \"rust\""
+}
+],
+"mistakes": [
+"**Panicking on user mistakes.** Return errors and print usage.",
+"**Error messages on stdout.** They mix with real output. Use `eprintln!`.",
+"**Exiting with 0 after an error.** Scripts think it succeeded. Use `process::exit(1)`."
+],
+"keys": [
+"`Config::build` validates arguments and returns a Result.",
+"`run` holds the logic and propagates errors with `?` into `Box<dyn Error>`.",
+"`main` only wires things up and reports errors with a non-zero exit code.",
+"Logic in `lib.rs`, wiring in `main.rs`."
+]
+},
+"12.3": {
+"idea": [
+"The search logic is developed **test first**. Write a test describing the behaviour (given this query and these contents, the result is exactly these lines), watch it fail, then write just enough code to make it pass. The test pins down details before you write them: does \"duct\" match \"productive\"? (Yes: it is a substring search.)",
+"The function signature needs an explicit **lifetime**: `pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str>`. The returned lines are slices of `contents`, not of `query`, and the annotation tells the compiler exactly that: the results live as long as `contents`. Without it, the compiler cannot tell which input the returned references borrow from and asks for the annotation. Returning slices instead of new Strings avoids copying every matching line.",
+"The implementation is a loop: for each line in `contents.lines()`, if `line.contains(query)`, push it onto a result vector. Once the test passes, `run` calls `search` and prints each result. Because `search` takes text, not a file name, it is easy to test with string literals, a design that falls out naturally when tests come first."
+],
+"how": [
+"Write the test first: query, contents, expected `Vec<&str>`; see it fail.",
+"`fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str>`.",
+"Loop over `contents.lines()`, keep lines that `contains(query)`.",
+"Test pure functions on strings; keep file I/O in `run`.",
+"Re-run the tests after every change."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "search, written test first",
+"code": "pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {\n    let mut results = Vec::new();\n    for line in contents.lines() {\n        if line.contains(query) {\n            results.push(line);\n        }\n    }\n    results\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    const TEXT: &str = \"\\\nRust:\nsafe, fast, productive.\nPick three.\nDuct tape.\";\n\n    #[test]\n    fn one_result() {\n        assert_eq!(vec![\"safe, fast, productive.\"], search(\"duct\", TEXT));\n    }\n\n    #[test]\n    fn several_results() {\n        assert_eq!(vec![\"safe, fast, productive.\", \"Pick three.\"], search(\"e\", TEXT).into_iter().filter(|l| !l.starts_with(\"Duct\")).collect::<Vec<_>>());\n    }\n\n    #[test]\n    fn no_results() {\n        assert!(search(\"monomorphisation\", TEXT).is_empty());\n    }\n\n    #[test]\n    fn search_is_case_sensitive() {\n        assert_eq!(search(\"rust\", TEXT), Vec::<&str>::new());\n    }\n}",
+"note": "The tests fixed the behaviour before the loop existed: \"duct\" matches inside \"productive\" but not \"Duct\" (search is case-sensitive), and a missing word gives an empty vector. The backslash after the opening quote keeps the text from starting with a newline. All four pass.",
+"output": "running 4 tests\ntest tests::no_results ... ok\ntest tests::one_result ... ok\ntest tests::search_is_case_sensitive ... ok\ntest tests::several_results ... ok\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+},
+{
+"lang": "rust",
+"title": "Without the lifetime the compiler cannot tell what the result borrows",
+"code": "pub fn search(query: &str, contents: &str) -> Vec<&str> {\n    contents.lines().filter(|l| l.contains(query)).collect()\n}\n\nfn main() {}",
+"note": "With two reference parameters, the elision rules cannot decide whether the returned slices borrow from `query` or from `contents`, so the compiler asks for a lifetime parameter and suggests one. Adding `<'a>` on `contents` and the return type states the truth: results come from the contents.",
+"output": "error[E0106]: missing lifetime specifier\n --> main.rs:1:51\n  |\n1 | pub fn search(query: &str, contents: &str) -> Vec<&str> {\n  |                      ----            ----         ^ expected named lifetime parameter\n  |\n  = help: this function's return type contains a borrowed value, but the signature does not say whether it is borrowed from `query` or `contents`\nhelp: consider introducing a named lifetime parameter\n  |\n1 | pub fn search<'a>(query: &'a str, contents: &'a str) -> Vec<&'a str> {\n  |              ++++         ++                 ++              ++",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Writing the code before the test.** The test is what pins down edge cases like substrings and case.",
+"**Returning `Vec<String>`.** It copies every line; slices of `contents` are free.",
+"**Testing through files.** Test the pure function with string literals; test I/O separately."
+],
+"keys": [
+"Write a failing test first, then the minimum code to pass.",
+"The lifetime ties returned slices to `contents`.",
+"Pure functions on strings are easy to test.",
+"Tests document details such as substring and case behaviour."
+]
+},
+"12.4": {
+"idea": [
+"The last feature is an option: **case-insensitive** search, controlled by an **environment variable**. Environment variables suit settings that should persist across many runs without retyping a flag: `IGNORE_CASE=1 cargo run -- to poem.txt`. **`env::var(\"IGNORE_CASE\")`** returns a `Result`: `Ok(value)` if set, `Err` if not; `.is_ok()` turns that into \"is it set at all?\". The value is read once in `Config::build` and stored in an `ignore_case: bool` field, so `run` does not depend on the environment.",
+"`search_case_insensitive` lowercases the query and each line before comparing (`to_lowercase` returns a new String, which handles Unicode correctly, unlike ASCII-only tricks). It gets its own test first, like `search`.",
+"The program also separates its two output streams properly. Results go to **standard output** with `println!`, and error messages to **standard error** with **`eprintln!`**. That way `minigrep body poem.txt > results.txt` writes only results to the file while errors still appear on the screen, and a pipeline does not silently pass error text to the next program. This is a convention every command-line tool should follow."
+],
+"how": [
+"`env::var(\"NAME\")` → `Result<String, VarError>`; `.is_ok()` for a flag.",
+"Read the environment once in `Config::build`; store the result in the config.",
+"`search_case_insensitive`: lowercase query and line with `to_lowercase()`.",
+"Results with `println!` (stdout), errors with `eprintln!` (stderr).",
+"Test with redirection: `cargo run -- x poem.txt > out.txt` keeps errors visible."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Both searches, tested, and a config that reads the environment",
+"code": "pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {\n    contents.lines().filter(|line| line.contains(query)).collect()\n}\n\npub fn search_case_insensitive<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {\n    let query = query.to_lowercase();\n    contents.lines().filter(|line| line.to_lowercase().contains(&query)).collect()\n}\n\npub struct Config {\n    pub query: String,\n    pub ignore_case: bool,\n}\n\nimpl Config {\n    pub fn build_with(query: &str, env_value: Option<&str>) -> Config {\n        Config { query: query.to_string(), ignore_case: env_value.is_some() }   // real code: env::var(\"IGNORE_CASE\").is_ok()\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    const TEXT: &str = \"Rust:\\nsafe, fast, productive.\\nTrust me.\\nÉCOLE de rustiques\";\n\n    #[test]\n    fn case_sensitive() {\n        assert_eq!(search(\"rust\", TEXT), vec![\"Trust me.\", \"ÉCOLE de rustiques\"]);\n    }\n\n    #[test]\n    fn case_insensitive() {\n        assert_eq!(search_case_insensitive(\"rUsT\", TEXT), vec![\"Rust:\", \"Trust me.\", \"ÉCOLE de rustiques\"]);\n    }\n\n    #[test]\n    fn unicode_lowercasing() {\n        assert_eq!(search_case_insensitive(\"école\", TEXT), vec![\"ÉCOLE de rustiques\"]);\n    }\n\n    #[test]\n    fn config_reads_the_flag() {\n        assert!(Config::build_with(\"x\", Some(\"1\")).ignore_case);\n        assert!(!Config::build_with(\"x\", None).ignore_case);\n    }\n}",
+"note": "The case-insensitive search found \"Rust:\" too, and `to_lowercase` handled the accented capital É, which ASCII-only lowercasing would miss. Passing the environment value into the constructor makes the configuration testable without changing the real environment, which matters because tests run in parallel.",
+"output": "running 4 tests\ntest tests::case_insensitive ... ok\ntest tests::case_sensitive ... ok\ntest tests::config_reads_the_flag ... ok\ntest tests::unicode_lowercasing ... ok\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+},
+{
+"lang": "rust",
+"title": "stdout for results, stderr for errors",
+"code": "use std::env;\n\nfn main() {\n    let ignore_case = env::var(\"IGNORE_CASE\").is_ok();\n    println!(\"IGNORE_CASE set? {ignore_case}\");\n    match env::var(\"HOME_OF_THE_BRAVE\") {\n        Ok(v) => println!(\"value: {v}\"),\n        Err(e) => eprintln!(\"error: HOME_OF_THE_BRAVE: {e}\"),\n    }\n    println!(\"result line 1\");\n    eprintln!(\"warning: 1 file skipped\");\n    println!(\"result line 2\");\n}",
+"note": "`env::var` returned an error for an unset variable, and `is_ok()` turned the IGNORE_CASE lookup into a boolean. Error and warning lines went to standard error; with `> results.txt` they would stay on the screen while only the two result lines and the first status line went to the file.",
+"output": "IGNORE_CASE set? false\nerror: HOME_OF_THE_BRAVE: environment variable not found\nresult line 1\nwarning: 1 file skipped\nresult line 2"
+}
+],
+"mistakes": [
+"**Reading environment variables deep inside the logic.** Read them once into the config; it keeps code testable.",
+"**ASCII-only case folding.** Use `to_lowercase()` for real text.",
+"**Printing errors with `println!`.** They pollute redirected output. Use `eprintln!`."
+],
+"keys": [
+"`env::var(...).is_ok()` turns an environment variable into a flag.",
+"Store settings in the config; keep logic independent of the environment.",
+"`to_lowercase` gives Unicode-aware case-insensitive matching.",
+"Results to stdout, errors to stderr."
+]
+},
+"13.1": {
+"idea": [
+"A **closure** is an anonymous function you can store in a variable or pass to another function, and unlike a regular `fn`, it can **capture** values from the scope where it is defined: `let limit = 10; let small = |n: i32| n < limit;`. Closures are written with pipes around the parameters, and types are usually **inferred**, though you can annotate them. Once inferred for a closure, the types are fixed: calling it first with an `i32` and then with a `String` is an error.",
+"A closure captures each variable in the least demanding way its body allows: by **shared reference** if it only reads, by **mutable reference** if it changes the variable, and by **value** (moving it in) if it consumes it. The `move` keyword forces capture by value, which is required when the closure must outlive the current scope, such as a closure passed to a new thread.",
+"How a closure captures determines which **`Fn` traits** it implements, and functions that take closures state which they need. **`FnOnce`**: can be called at least once (every closure; one that moves a captured value out can only be called once). **`FnMut`**: can be called repeatedly and may mutate captured state. **`Fn`**: can be called repeatedly without mutating anything. `unwrap_or_else` takes an `FnOnce`, `sort_by_key` an `FnMut`, and a function you call from several threads would need `Fn`."
+],
+"how": [
+"`let add = |a: i32, b: i32| a + b;` or with inferred types `|x| x + 1`.",
+"Captures by reference, mutable reference or value, as the body needs.",
+"`move |x| ...` forces capture by value (threads, returned closures).",
+"Accept closures with `impl Fn(T) -> U`, `impl FnMut(...)`, `impl FnOnce(...)`.",
+"`FnOnce` ⊇ `FnMut` ⊇ `Fn`: ask for the least restrictive trait you can."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The three ways of capturing",
+"code": "fn apply_twice(f: impl Fn(i32) -> i32, x: i32) -> i32 {\n    f(f(x))\n}\n\nfn call_n_times(mut f: impl FnMut(), n: usize) {\n    for _ in 0..n {\n        f();\n    }\n}\n\nfn consume(f: impl FnOnce() -> String) -> String {\n    f()\n}\n\nfn make_adder(amount: i32) -> impl Fn(i32) -> i32 {\n    move |x| x + amount                          // `amount` must move in: the closure outlives this call\n}\n\nfn main() {\n    let bonus = 5;\n    let add_bonus = |x| x + bonus;               // captures `bonus` by shared reference\n    println!(\"apply_twice: {}\", apply_twice(add_bonus, 10));\n\n    let mut clicks = 0;\n    call_n_times(|| clicks += 1, 3);             // captures `clicks` by mutable reference\n    println!(\"clicks: {clicks}\");\n\n    let name = String::from(\"Ferris\");\n    let greet = move || format!(\"hello, {name}\");    // `name` moved into the closure\n    println!(\"{}\", consume(greet));\n\n    let add10 = make_adder(10);\n    println!(\"make_adder(10)(32) = {}\", add10(32));\n\n    let mut words = vec![\"banana\", \"fig\", \"cherry\"];\n    let mut comparisons = 0;\n    words.sort_by_key(|w| { comparisons += 1; w.len() });\n    println!(\"{words:?} after {comparisons} key calls\");\n}",
+"note": "Each closure captured as little as it needed: `add_bonus` only read `bonus`, the click counter mutated `clicks` (an FnMut), and `greet` took ownership of `name` with `move`. `make_adder` returns a closure that carries its own copy of `amount`. `sort_by_key` accepts an FnMut, so the closure could count how often it was called.",
+"output": "apply_twice: 20\nclicks: 3\nhello, Ferris\nmake_adder(10)(32) = 42\n[\"fig\", \"banana\", \"cherry\"] after 4 key calls"
+},
+{
+"lang": "rust",
+"title": "A closure that consumes its capture can only be called once",
+"code": "fn main() {\n    let report = String::from(\"quarterly numbers\");\n    let send = move || {\n        let sent = report;                   // moves the String out of the closure\n        println!(\"sent: {sent}\");\n    };\n    send();\n    send();\n}",
+"note": "The closure moves `report` out of itself when it runs, so it implements only `FnOnce`, and the compiler rejects the second call, explaining that the closure cannot be called twice because it moves a captured variable. Borrowing (`println!(\"{report}\")`) instead of moving would make it callable many times.",
+"output": "error[E0382]: use of moved value: `send`\n --> main.rs:8:5\n  |\n7 |     send();\n  |     ------ `send` moved due to this call\n8 |     send();\n  |     ^^^^ value used here after move\n  |\n --> main.rs:4:20\n  |\n4 |         let sent = report;                   // moves the String out of the closure\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Asking for `Fn` when `FnMut` or `FnOnce` would do.** Callers can then pass fewer closures. Ask for the least you need.",
+"**Forgetting `move` for threads or returned closures.** The borrow would outlive the data.",
+"**Expecting a closure's types to stay generic.** After the first call they are fixed."
+],
+"keys": [
+"Closures are anonymous functions that capture their environment.",
+"They capture by reference, mutable reference or value; `move` forces value.",
+"`Fn`, `FnMut` and `FnOnce` describe how a closure may be called.",
+"Functions accept closures with `impl Fn...` bounds."
+]
+},
+"13.2": {
+"idea": [
+"An **iterator** produces a sequence of values one at a time. The `Iterator` trait requires one method, `next(&mut self) -> Option<Self::Item>`, returning `Some(item)` until the sequence is exhausted and then `None`. `for` loops call `next` for you. Collections offer three ways to iterate: `iter()` yields shared references, `iter_mut()` mutable references, and `into_iter()` owned values, consuming the collection.",
+"Iterator methods come in two kinds. **Iterator adaptors** (`map`, `filter`, `enumerate`, `zip`, `skip`, `take`, `rev`, `chain`, `flat_map`...) wrap an iterator in a new one and are **lazy**: nothing happens until something consumes them, and the compiler warns about an unused adaptor chain. **Consuming adaptors** (`sum`, `count`, `collect`, `max`, `min_by_key`, `fold`, `any`, `all`, `find`, `position`...) call `next` until done and produce a result. `collect` can build a `Vec`, `String`, `HashMap` and more; tell it which with a type annotation or the turbofish (`collect::<Vec<_>>()`).",
+"Chains of adaptors read like a description of the computation (`filter` the valid ones, `map` to prices, `sum`), and because of laziness and inlining they compile to code as fast as a hand-written loop. Your own types become iterators by implementing `next`, and then get every adaptor for free."
+],
+"how": [
+"`iter()` → `&T`, `iter_mut()` → `&mut T`, `into_iter()` → `T`.",
+"Adaptors are lazy: `map`, `filter`, `enumerate`, `zip`, `take`, `skip`, `rev`, `chain`, `flat_map`.",
+"Consumers: `sum`, `count`, `collect`, `fold`, `any`, `all`, `find`, `max_by_key`, `position`.",
+"`collect::<Vec<_>>()` or annotate the target type.",
+"Implement `Iterator` with `type Item` and `fn next` to get all adaptors."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Iterator chains, lazily evaluated",
+"code": "#[derive(Debug)]\nstruct Order {\n    item: &'static str,\n    qty: u32,\n    cents: u32,\n    paid: bool,\n}\n\nfn main() {\n    let orders = vec![\n        Order { item: \"tea\", qty: 3, cents: 450, paid: true },\n        Order { item: \"cake\", qty: 1, cents: 650, paid: false },\n        Order { item: \"scone\", qty: 4, cents: 300, paid: true },\n        Order { item: \"tea\", qty: 2, cents: 450, paid: true },\n    ];\n\n    let revenue: u32 = orders.iter().filter(|o| o.paid).map(|o| o.qty * o.cents).sum();\n    println!(\"paid revenue: ${}.{:02}\", revenue / 100, revenue % 100);\n\n    let names: Vec<String> = orders.iter().enumerate().map(|(i, o)| format!(\"{}:{}\", i + 1, o.item)).collect();\n    println!(\"{names:?}\");\n    println!(\"biggest order: {:?}\", orders.iter().max_by_key(|o| o.qty * o.cents).map(|o| o.item));\n    println!(\"any unpaid? {} | all small? {}\", orders.iter().any(|o| !o.paid), orders.iter().all(|o| o.qty < 10));\n\n    let calls = std::cell::Cell::new(0);             // a counter the closure can bump through &\n    let lazy = orders.iter().map(|o| { calls.set(calls.get() + 1); o.qty });\n    println!(\"map created, closure calls so far: {}\", calls.get());\n    let first_two: Vec<u32> = lazy.take(2).collect();\n    println!(\"took {first_two:?}, closure calls now: {}\", calls.get());\n}",
+"note": "Each chain reads like its description: filter paid orders, map to amounts, sum. The last part shows laziness: creating the `map` ran nothing, and `take(2)` pulled exactly two items through it, so the closure ran only twice even though there are four orders.",
+"output": "paid revenue: $34.50\n[\"1:tea\", \"2:cake\", \"3:scone\", \"4:tea\"]\nbiggest order: Some(\"tea\")\nany unpaid? true | all small? true\nmap created, closure calls so far: 0\ntook [3, 1], closure calls now: 2"
+},
+{
+"lang": "rust",
+"title": "Your own iterator gets every adaptor for free",
+"code": "struct Fibonacci {\n    current: u64,\n    next: u64,\n}\n\nimpl Iterator for Fibonacci {\n    type Item = u64;\n    fn next(&mut self) -> Option<u64> {\n        let value = self.current;\n        self.current = self.next;\n        self.next = self.next.checked_add(value)?;       // stop instead of overflowing\n        Some(value)\n    }\n}\n\nfn fibonacci() -> Fibonacci {\n    Fibonacci { current: 0, next: 1 }\n}\n\nfn main() {\n    println!(\"{:?}\", fibonacci().take(12).collect::<Vec<_>>());\n    println!(\"first over 1000: {:?}\", fibonacci().find(|&n| n > 1000));\n    println!(\"sum of even ones below 4 million: {}\", fibonacci().take_while(|&n| n < 4_000_000).filter(|n| n % 2 == 0).sum::<u64>());\n    println!(\"how many fit in a u64: {}\", fibonacci().count());\n}",
+"note": "Implementing just `next` gave the type `take`, `find`, `take_while`, `filter`, `sum` and `count`. The sequence is infinite in principle, so adaptors like `take` and `take_while` bound it; `checked_add` with `?` makes the iterator end cleanly instead of overflowing, which is why `count` terminates.",
+"output": "[0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89]\nfirst over 1000: Some(1597)\nsum of even ones below 4 million: 4613732\nhow many fit in a u64: 92"
+}
+],
+"mistakes": [
+"**Building an adaptor chain and never consuming it.** Nothing runs; the compiler warns \"iterators are lazy\".",
+"**`collect()` without saying what to build.** Annotate the type or use the turbofish.",
+"**Index loops over vectors.** Iterator chains are clearer, safer and just as fast."
+],
+"keys": [
+"Iterators produce values through `next`; `for` loops use them.",
+"`iter`, `iter_mut` and `into_iter` borrow, mutably borrow or consume.",
+"Adaptors are lazy; consumers drive the iteration.",
+"Implementing `next` unlocks every adaptor; chains are zero-cost."
+]
+},
+"13.3": {
+"idea": [
+"With closures and iterators, minigrep gets cleaner. `Config::build` used to take `&[String]` and **clone** the query and file path, because it could not take ownership of strings inside a borrowed slice. Instead, it can take the **argument iterator itself**: `fn build(mut args: impl Iterator<Item = String>) -> Result<Config, &'static str>`. Calling `args.next()` hands over owned Strings directly, skipping the program name and returning a clear error when an argument is missing (`match args.next() { Some(arg) => arg, None => return Err(...) }`). No clones, and `main` passes `env::args()` straight in.",
+"`search` becomes a single expression: `contents.lines().filter(|line| line.contains(query)).collect()`. It says what it does, has no mutable state, and is easier to change (adding `.map(str::trim)` or making it lazy is one step).",
+"Is the iterator version slower? The Book benchmarks it, and the answer is no: iterators are a **zero-cost abstraction**. The compiler inlines the closures and adaptors and often produces exactly the machine code of the hand-written loop, sometimes better, because it can drop bounds checks and unroll loops. Write the clear version, and measure if performance matters."
+],
+"how": [
+"`fn build(mut args: impl Iterator<Item = String>)`; call `args.next()` for each argument.",
+"`args.next();` first to skip the program name.",
+"Return `Err` when `next()` is `None`; no indexing, no cloning.",
+"`search` as `lines().filter(...).collect()`.",
+"Benchmark in release mode before assuming loops are faster."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Config from an iterator, search as a filter chain",
+"code": "#[derive(Debug)]\npub struct Config {\n    pub query: String,\n    pub file_path: String,\n    pub ignore_case: bool,\n}\n\nimpl Config {\n    pub fn build(mut args: impl Iterator<Item = String>, ignore_case: bool) -> Result<Config, &'static str> {\n        args.next();                                         // skip the program name\n        let query = args.next().ok_or(\"didn't get a query string\")?;\n        let file_path = args.next().ok_or(\"didn't get a file path\")?;\n        Ok(Config { query, file_path, ignore_case })\n    }\n}\n\npub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {\n    contents.lines().filter(|line| line.contains(query)).collect()\n}\n\nfn args(list: &[&str]) -> impl Iterator<Item = String> {\n    list.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()     // stands in for env::args()\n}\n\nfn main() {\n    println!(\"{:?}\", Config::build(args(&[\"minigrep\", \"to\", \"poem.txt\"]), false));\n    println!(\"{:?}\", Config::build(args(&[\"minigrep\", \"to\"]), false));\n    println!(\"{:?}\", Config::build(args(&[\"minigrep\"]), false));\n    let text = \"I'm nobody! Who are you?\\nAre you nobody, too?\\nHow public, like a frog\";\n    println!(\"{:?}\", search(\"nobody\", text));\n}",
+"note": "`build` takes ownership of each argument from the iterator, so nothing is cloned, and `ok_or` with `?` turns a missing argument into a specific error. In the real program, `main` calls `Config::build(env::args(), env::var(\"IGNORE_CASE\").is_ok())`. `search` is now one readable expression.",
+"output": "Ok(Config { query: \"to\", file_path: \"poem.txt\", ignore_case: false })\nErr(\"didn't get a file path\")\nErr(\"didn't get a query string\")\n[\"I'm nobody! Who are you?\", \"Are you nobody, too?\"]"
+},
+{
+"lang": "rust",
+"title": "A loop and an iterator chain do the same work",
+"code": "use std::time::Instant;\n\nfn count_loop(text: &str, query: &str) -> usize {\n    let mut n = 0;\n    for line in text.lines() {\n        if line.contains(query) {\n            n += 1;\n        }\n    }\n    n\n}\n\nfn count_iter(text: &str, query: &str) -> usize {\n    text.lines().filter(|l| l.contains(query)).count()\n}\n\nfn main() {\n    let text = \"the quick brown fox\\njumps over\\nthe lazy dog\\n\".repeat(50_000);\n    let start = Instant::now();\n    let a = count_loop(&text, \"the\");\n    let t_loop = start.elapsed();\n    let start = Instant::now();\n    let b = count_iter(&text, \"the\");\n    let t_iter = start.elapsed();\n    println!(\"same answer: {} ({a} lines)\", a == b);\n    println!(\"iterator within 2x of the loop: {}\", t_iter.as_secs_f64() < 2.0 * t_loop.as_secs_f64() + 0.001);\n}",
+"note": "Both versions find the same lines, and the iterator version runs about as fast as the loop. (This example is built without optimisations; in a release build the compiler typically produces near-identical machine code for both.) Timings vary, so only the comparisons are printed. For real measurements, use a benchmark harness like criterion in release mode.",
+"output": "same answer: true (100000 lines)\niterator within 2x of the loop: true"
+}
+],
+"mistakes": [
+"**Cloning out of a borrowed slice of arguments.** Take the iterator and own the values.",
+"**Assuming loops beat iterators.** Measure in release mode; usually they are equal.",
+"**Benchmarking debug builds.** Optimisations change everything; use `--release`."
+],
+"keys": [
+"Taking `impl Iterator<Item = String>` lets `build` own arguments without cloning.",
+"`next()` with `ok_or` and `?` gives clear errors for missing arguments.",
+"Filter chains express search logic in one line.",
+"Iterators are zero-cost: as fast as hand-written loops."
+]
+},
+"14.1": {
+"idea": [
+"Cargo builds with **profiles**: predefined sets of compiler settings. `dev` (used by `cargo build` and `cargo run`) compiles fast with no optimisation (`opt-level = 0`) and full debug info, ideal while writing code. `release` (`cargo build --release`) optimises heavily (`opt-level = 3`), takes longer to compile and produces much faster programs, so it is what you ship and benchmark. Override settings in `Cargo.toml` under `[profile.dev]` or `[profile.release]`: for example `opt-level = 1` in dev for faster tests, or `lto = true` and `codegen-units = 1` in release for a little more speed.",
+"Rust has special comments for **documentation**. `///` documents the item that follows (function, struct, method) using **Markdown**, and `//!` documents the enclosing item, usually the crate or module at the top of `lib.rs`. `cargo doc --open` turns them into an HTML site like the standard library's, including your dependencies' docs.",
+"By convention, doc comments use **sections**: `# Examples` (the most important), `# Panics` (when the function panics), `# Errors` (what errors a `Result` can contain and why), and `# Safety` (for `unsafe` functions). Code blocks inside doc comments are **doc tests**: `cargo test` compiles and runs them, so examples in documentation are guaranteed to stay correct."
+],
+"how": [
+"Profiles: `dev` (fast compile) and `release` (fast program); customise in `[profile.*]`.",
+"`///` for the next item, `//!` for the enclosing crate or module; Markdown inside.",
+"Sections: `# Examples`, `# Panics`, `# Errors`, `# Safety`.",
+"Code blocks in docs are compiled and run by `cargo test` (doc tests).",
+"`cargo doc --open` builds and opens the HTML docs."
+],
+"examples": [
+{
+"lang": "toml",
+"title": "Customising profiles",
+"code": "[package]\nname = \"minigrep\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[profile.dev]\nopt-level = 1          # a little optimisation: faster tests, still quick to build\n\n[profile.release]\nopt-level = 3          # the default for release\nlto = true             # link-time optimisation across crates\ncodegen-units = 1      # slower build, slightly faster binary\npanic = \"abort\"        # smaller binary; no unwinding on panic\nstrip = true           # remove debug symbols from the shipped binary",
+"note": "Only the settings you list change; everything else keeps the profile's defaults. The dev tweak speeds up test runs that do heavy computation, while the release settings trade build time for a smaller, faster binary. `panic = \"abort\"` means destructors do not run on panic, which is fine for many command-line tools.",
+"output": ""
+},
+{
+"lang": "rust",
+"title": "A documented function whose examples are tested",
+"code": "//! Small helpers for splitting restaurant bills.\n\n/// Splits `total_cents` among `people` so the shares add up exactly.\n///\n/// Leftover cents go to the first people in the list.\n///\n/// # Examples\n///\n/// ```\n/// let shares = bills::split(1000, 3);\n/// assert_eq!(shares, vec![334, 333, 333]);\n/// assert_eq!(shares.iter().sum::<u32>(), 1000);\n/// ```\n///\n/// # Panics\n///\n/// Panics if `people` is zero.\npub fn split(total_cents: u32, people: u32) -> Vec<u32> {\n    assert!(people > 0, \"cannot split a bill among zero people\");\n    let (share, extra) = (total_cents / people, total_cents % people);\n    (0..people).map(|i| share + u32::from(i < extra)).collect()\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn rendered_docs_have_an_example_section() {\n        let doc = include_str!(\"lib.rs\");\n        assert!(doc.contains(\"# Examples\") && doc.contains(\"# Panics\"));\n    }\n\n    #[test]\n    #[should_panic(expected = \"zero people\")]\n    fn zero_people() {\n        super::split(10, 0);\n    }\n}",
+"note": "The `//!` line documents the crate and the `///` block documents `split`, with Examples and Panics sections. In a real crate named `bills`, `cargo test` would also compile and run the example inside the doc comment as a doc test, so the documented output can never drift from the real behaviour. Here the unit tests run.",
+"output": "running 2 tests\ntest tests::rendered_docs_have_an_example_section ... ok\ntest tests::zero_people - should panic ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+}
+],
+"mistakes": [
+"**Benchmarking or shipping debug builds.** They can be many times slower. Use `--release`.",
+"**Docs without examples.** Examples are what readers look for first, and doc tests keep them honest.",
+"**Undocumented panics and errors.** Callers need the `# Panics` and `# Errors` sections to use the function safely."
+],
+"keys": [
+"`dev` profile for fast builds, `release` for fast programs; tune in `[profile.*]`.",
+"`///` and `//!` doc comments are Markdown, rendered by `cargo doc`.",
+"Use Examples, Panics, Errors and Safety sections.",
+"Code in doc comments runs as doc tests."
+]
+},
+"14.2": {
+"idea": [
+"Publishing a library to **crates.io** shares it with every Rust user through `cargo add`. Before publishing, shape the **public API**. Your internal module structure may be deep (`art::kinds::PrimaryColor`, `art::utils::mix`), which is awkward for users. **`pub use`** re-exports the important items at the crate root, so users write `use art::{PrimaryColor, mix};`, and the docs list them on the front page, while you keep organising internals however you like.",
+"crates.io requires **metadata** in `Cargo.toml`: a unique `name`, a `version`, a `description`, a `license` (an SPDX identifier such as `\"MIT OR Apache-2.0\"`, the Rust ecosystem's common dual licence), and usually `repository`, `readme`, `keywords` and `categories`. `cargo publish --dry-run` checks everything without uploading, and `cargo package --list` shows exactly which files will be included.",
+"Publishing is **permanent**: a version can never be overwritten or deleted, so that crates depending on it never break. Publish fixes as a new version, following semantic versioning (a breaking change in a 1.x crate means 2.0.0). If a release is broken, **`cargo yank --vers 1.0.1`** stops new projects from selecting it, while existing projects with that version in their `Cargo.lock` keep working. Log in once with an API token from crates.io (`cargo login`)."
+],
+"how": [
+"Re-export with `pub use` at the crate root for a flat, convenient API.",
+"Required metadata: `description`, `license` (SPDX), plus `repository`, `readme`, `keywords`, `categories`.",
+"`cargo publish --dry-run` and `cargo package --list` before publishing.",
+"Versions are permanent; publish fixes as new SemVer versions.",
+"`cargo yank --vers X` hides a broken version from new resolutions; `--undo` reverses."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A deep module tree with a flat public API",
+"code": "pub mod kinds {\n    #[derive(Debug, Clone, Copy, PartialEq)]\n    pub enum PrimaryColor {\n        Red,\n        Yellow,\n        Blue,\n    }\n\n    #[derive(Debug, PartialEq)]\n    pub enum SecondaryColor {\n        Orange,\n        Green,\n        Purple,\n    }\n}\n\npub mod utils {\n    use crate::kinds::{PrimaryColor, SecondaryColor};\n\n    pub fn mix(a: PrimaryColor, b: PrimaryColor) -> Option<SecondaryColor> {\n        use PrimaryColor::*;\n        match (a, b) {\n            (Red, Yellow) | (Yellow, Red) => Some(SecondaryColor::Orange),\n            (Yellow, Blue) | (Blue, Yellow) => Some(SecondaryColor::Green),\n            (Red, Blue) | (Blue, Red) => Some(SecondaryColor::Purple),\n            _ => None,\n        }\n    }\n}\n\npub use self::kinds::{PrimaryColor, SecondaryColor};\npub use self::utils::mix;\n\nfn main() {\n    // A user of the crate writes `use art::{PrimaryColor, mix};` thanks to the re-exports.\n    use PrimaryColor::*;\n    for (a, b) in [(Red, Yellow), (Blue, Yellow), (Blue, Red), (Red, Red)] {\n        println!(\"{a:?} + {b:?} = {:?}\", mix(a, b));\n    }\n}",
+"note": "Internally, the types live in `kinds` and the function in `utils`, but the `pub use` lines make them available directly at the crate root. Users get a short, flat import path, the documentation front page lists them, and the internal structure can change later without breaking anyone.",
+"output": "Red + Yellow = Some(Orange)\nBlue + Yellow = Some(Green)\nBlue + Red = Some(Purple)\nRed + Red = None"
+},
+{
+"lang": "toml",
+"title": "Metadata for crates.io",
+"code": "[package]\nname = \"billsplit\"\nversion = \"0.2.1\"\nedition = \"2024\"\ndescription = \"Split restaurant bills to the cent, fairly.\"\nlicense = \"MIT OR Apache-2.0\"\nrepository = \"https://github.com/you/billsplit\"\nreadme = \"README.md\"\nkeywords = [\"money\", \"bill\", \"split\", \"restaurant\"]\ncategories = [\"finance\", \"command-line-utilities\"]\nrust-version = \"1.85\"\nexclude = [\"tests/fixtures/big/*\", \".github/*\"]\n\n# then:\n#   cargo publish --dry-run      # build and check without uploading\n#   cargo package --list         # exactly which files ship\n#   cargo publish                # permanent!\n#   cargo yank --vers 0.2.0      # if 0.2.0 turns out to be broken",
+"note": "These fields are what crates.io shows on the crate's page and uses for search; `description` and `license` are mandatory. `rust-version` declares the oldest compiler you support, and `exclude` keeps large test fixtures out of the uploaded package. The dry run catches missing metadata before anything becomes permanent.",
+"output": ""
+}
+],
+"mistakes": [
+"**Publishing your internal module structure as the API.** Re-export what users need at the root.",
+"**Publishing without a dry run.** Mistakes are permanent; versions cannot be replaced.",
+"**Breaking changes in a minor version.** SemVer tells Cargo it is safe to upgrade; users' builds break."
+],
+"keys": [
+"`pub use` re-exports give a convenient, stable public API.",
+"crates.io needs a description and licence; add repository, readme, keywords.",
+"`--dry-run` and `package --list` before publishing.",
+"Versions are permanent; yank broken ones and publish fixes."
+]
+},
+"14.3": {
+"idea": [
+"As a project grows into several related crates (a library, a command-line tool, a web server sharing the same core), a **workspace** keeps them together. A workspace is a folder with a top-level `Cargo.toml` containing a `[workspace]` section listing its **members**; each member is an ordinary package in its own folder. All members share **one `Cargo.lock`** (so they agree on dependency versions) and **one `target/` directory** (so shared dependencies are compiled once).",
+"Members depend on each other **by path**: `adder` depends on `add_one = { path = \"../add_one\" }`. Commands run from the workspace root apply to everything (`cargo build`, `cargo test`), and `-p name` targets one member (`cargo run -p adder`, `cargo test -p add_one`). Common settings can be inherited: `[workspace.package]` for version and edition, `[workspace.dependencies]` for shared dependency versions that members reference with `serde.workspace = true`.",
+"Two more Cargo features round out the picture. **`cargo install`** builds a binary crate from crates.io (or a path or git repository) and puts it in `~/.cargo/bin`, the standard way to install Rust tools like `ripgrep` or `cargo-watch`. And Cargo is **extensible**: any program named `cargo-something` on your PATH can be run as `cargo something`, which is how `cargo watch`, `cargo audit` and `cargo nextest` work."
+],
+"how": [
+"Root `Cargo.toml`: `[workspace] members = [\"adder\", \"add_one\"]`, `resolver = \"3\"`.",
+"Path dependencies between members: `add_one = { path = \"../add_one\" }`.",
+"One `Cargo.lock` and `target/` for all members.",
+"`cargo build`, `cargo test` at the root; `-p name` for one member.",
+"`cargo install name` puts binaries in `~/.cargo/bin`; `cargo-xyz` binaries become `cargo xyz`."
+],
+"examples": [
+{
+"lang": "bash",
+"title": "A workspace with an app and a library",
+"code": "$ cat Cargo.toml\n[workspace]\nmembers = [\"adder\", \"add_one\"]\nresolver = \"3\"\n\n[workspace.package]\nedition = \"2024\"\nversion = \"0.1.0\"\n$ cat adder/Cargo.toml\n[package]\nname = \"adder\"\nversion.workspace = true\nedition.workspace = true\n\n[dependencies]\nadd_one = { path = \"../add_one\" }\n$ cat add_one/src/lib.rs\npub fn add_one(x: i32) -> i32 { x + 1 }\n$ cat adder/src/main.rs\nfn main() { println!(\"10 plus one is {}\", add_one::add_one(10)); }\n$ cargo run -p adder --quiet\n10 plus one is 11\n$ ls\nCargo.lock  Cargo.toml  add_one  adder  target",
+"note": "The root manifest lists the members and shares the version and edition through `[workspace.package]`. `adder` depends on its sibling by path. There is a single `Cargo.lock` and a single `target/` at the root, and `-p adder` chose which member to run.",
+"output": ""
+},
+{
+"lang": "rust",
+"title": "Code shared between members, as one program sees it",
+"code": "mod add_one {\n    // add_one/src/lib.rs in the workspace\n    pub fn add_one(x: i32) -> i32 {\n        x + 1\n    }\n\n    #[cfg(test)]\n    mod tests {\n        #[test]\n        fn adds() {\n            assert_eq!(super::add_one(2), 3);\n        }\n    }\n}\n\nmod add_two {\n    // a third member, add_two/src/lib.rs, that reuses add_one\n    pub fn add_two(x: i32) -> i32 {\n        crate::add_one::add_one(crate::add_one::add_one(x))\n    }\n}\n\nfn main() {\n    // adder/src/main.rs\n    println!(\"10 plus one is {}\", add_one::add_one(10));\n    println!(\"10 plus two is {}\", add_two::add_two(10));\n}",
+"note": "Modules stand in for workspace members here so the example runs as one file, but the relationships are the same: one library builds on another and the binary uses both. In a real workspace, each would be its own package depending on the others by path, all compiled into the shared `target/` folder.",
+"output": "10 plus one is 11\n10 plus two is 12"
+}
+],
+"mistakes": [
+"**Separate repositories for tightly coupled crates.** Version drift and duplicate builds. Use a workspace.",
+"**Different versions of the same dependency in each member.** Centralise them in `[workspace.dependencies]`.",
+"**Committing `target/`.** It is shared build output; ignore it."
+],
+"keys": [
+"A workspace groups packages with one lock file and one target folder.",
+"Members depend on each other by path.",
+"`-p name` targets a member; shared settings live in `[workspace.*]`.",
+"`cargo install` installs binaries; `cargo-xyz` programs extend Cargo."
+]
+},
+"15.1": {
+"idea": [
+"A **smart pointer** is a struct that acts like a pointer but carries extra capabilities and ownership rules. `String` and `Vec` are smart pointers; the chapter adds the general-purpose ones. The simplest is **`Box<T>`**: it stores a value on the **heap** and keeps only a pointer on the stack. `let b = Box::new(5);` works like any value: it is dropped (stack pointer and heap data) when it goes out of scope, and you use it like the value inside thanks to dereferencing.",
+"Box has three main uses. First, **recursive types**: a type that contains itself, like a cons list (`List::Cons(1, rest)`) or a tree node with children. Rust must know every type's size at compile time, and a type that contains itself directly would be infinitely large; a `Box<List>` field is just a pointer of known size, which breaks the recursion. Second, **large values** you want to move without copying many bytes: moving a Box moves only the pointer. Third, **trait objects**, `Box<dyn Trait>`, holding values of different types behind one interface (chapter 18).",
+"Box has no run-time overhead beyond the heap allocation itself, and none of the extra features of `Rc` or `RefCell`. Reach for it when you need indirection or heap allocation with a single owner."
+],
+"how": [
+"`Box::new(value)` puts the value on the heap; `*b` dereferences.",
+"Recursive types: `enum List { Cons(i32, Box<List>), Nil }`.",
+"Trees: `Option<Box<Node>>` for optional children.",
+"Moving a Box moves only the pointer.",
+"Dropped automatically, heap data included, when it goes out of scope."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A cons list and a binary search tree with Box",
+"code": "#[derive(Debug)]\nenum List {\n    Cons(i32, Box<List>),\n    Nil,\n}\n\nuse List::{Cons, Nil};\n\nimpl List {\n    fn sum(&self) -> i32 {\n        match self {\n            Cons(value, rest) => value + rest.sum(),\n            Nil => 0,\n        }\n    }\n}\n\n#[derive(Debug)]\nstruct Node {\n    value: i32,\n    left: Option<Box<Node>>,\n    right: Option<Box<Node>>,\n}\n\nimpl Node {\n    fn new(value: i32) -> Self {\n        Node { value, left: None, right: None }\n    }\n    fn insert(&mut self, value: i32) {\n        let side = if value < self.value { &mut self.left } else { &mut self.right };\n        match side {\n            Some(child) => child.insert(value),\n            None => *side = Some(Box::new(Node::new(value))),\n        }\n    }\n    fn in_order(&self, out: &mut Vec<i32>) {\n        if let Some(l) = &self.left { l.in_order(out); }\n        out.push(self.value);\n        if let Some(r) = &self.right { r.in_order(out); }\n    }\n}\n\nfn main() {\n    let list = Cons(1, Box::new(Cons(2, Box::new(Cons(3, Box::new(Nil))))));\n    println!(\"{list:?} sums to {}\", list.sum());\n\n    let mut root = Node::new(50);\n    for v in [30, 70, 20, 40, 60, 80, 35] {\n        root.insert(v);\n    }\n    let mut sorted = Vec::new();\n    root.in_order(&mut sorted);\n    println!(\"in order: {sorted:?}\");\n    println!(\"a Box is {} bytes, an Option<Box<Node>> too: {}\", std::mem::size_of::<Box<Node>>(), std::mem::size_of::<Option<Box<Node>>>());\n}",
+"note": "Each `Cons` holds its value and a Box pointing to the rest, so the type has a fixed size. The tree's children are `Option<Box<Node>>`: no child is `None`, and inserting walks down until it finds an empty spot. A Box is a single 8-byte pointer, and thanks to an optimisation `Option<Box<T>>` is the same size, using the null pointer for `None`.",
+"output": "Cons(1, Cons(2, Cons(3, Nil))) sums to 6\nin order: [20, 30, 35, 40, 50, 60, 70, 80]\na Box is 8 bytes, an Option<Box<Node>> too: 8"
+},
+{
+"lang": "rust",
+"title": "A type that contains itself directly",
+"code": "#[derive(Debug)]\nenum List {\n    Cons(i32, List),\n    Nil,\n}\n\nfn main() {}",
+"note": "Without a Box, a `List` would contain a `List`, which contains a `List`, without end, so its size would be infinite. The compiler names the problem (\"recursive type has infinite size\") and suggests the fix: insert some indirection such as `Box`.",
+"output": "error[E0072]: recursive type `List` has infinite size\n --> main.rs:2:1\n  |\n2 | enum List {\n  | ^^^^^^^^^\n3 |     Cons(i32, List),\n  |               ---- recursive without indirection\n  |\nhelp: insert some indirection (e.g., a `Box`, `Rc`, or `&`) to break the cycle\n  |\n3 |     Cons(i32, Box<List>),\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Boxing everything.** Box adds a heap allocation; use it for recursion, large values or trait objects.",
+"**Recursive types without indirection.** Infinite size; use Box (or Vec, Rc).",
+"**Thinking Box is like a garbage-collected reference.** It has exactly one owner and is freed when that owner goes away."
+],
+"keys": [
+"`Box<T>` stores a value on the heap with a single owner.",
+"Recursive types need a Box to have a known size.",
+"Moving a Box moves only the pointer.",
+"Use it for recursion, large values and trait objects."
+]
+},
+"15.2": {
+"idea": [
+"Two traits make smart pointers feel like the values they hold. **`Deref`** lets a type behave like a reference: implementing `fn deref(&self) -> &Self::Target` makes `*my_box` work, and Rust inserts that call for you. More importantly, it enables **deref coercion**: when a function expects `&str` and you pass `&String` (or `&Box<String>`), Rust applies `deref` as many times as needed to make the types match. That is why `&String` works wherever `&str` is expected, and why you rarely write `&*` by hand. `DerefMut` does the same for mutable references.",
+"**`Drop`** customises what happens when a value goes out of scope: implement `fn drop(&mut self)` and Rust calls it automatically, which is how Box frees its heap memory, files close themselves and locks release. Values are dropped in **reverse order** of declaration, so things created later, which may depend on earlier ones, are cleaned up first.",
+"You cannot call `drop` as a method yourself (that would risk a double free when Rust calls it again at the end of scope). To clean up early, call the function **`std::mem::drop(value)`** (in the prelude as `drop`), which takes ownership and lets the value go out of scope immediately: useful for releasing a lock or closing a file before the end of a function."
+],
+"how": [
+"`impl Deref for T { type Target = U; fn deref(&self) -> &U { ... } }`.",
+"Deref coercion: `&String` → `&str`, `&Box<T>` → `&T`, automatically.",
+"`impl Drop for T { fn drop(&mut self) { ... } }` for cleanup.",
+"Drop order: reverse of declaration.",
+"`drop(value)` releases early; `value.drop()` is not allowed."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "MyBox with Deref, and a custom Drop",
+"code": "use std::ops::Deref;\n\nstruct MyBox<T>(T);\n\nimpl<T> Deref for MyBox<T> {\n    type Target = T;\n    fn deref(&self) -> &T {\n        &self.0\n    }\n}\n\nfn hello(name: &str) -> String {\n    format!(\"Hello, {name}!\")\n}\n\nstruct Connection(&'static str);\n\nimpl Drop for Connection {\n    fn drop(&mut self) {\n        println!(\"  closing connection {}\", self.0);\n    }\n}\n\nfn main() {\n    let x = MyBox(5);\n    println!(\"*x + 1 = {}\", *x + 1);\n\n    let name = MyBox(String::from(\"Rust\"));\n    println!(\"{}\", hello(&name));            // &MyBox<String> -> &String -> &str\n    println!(\"length via deref: {}\", name.len());\n\n    let _a = Connection(\"A\");\n    let b = Connection(\"B\");\n    let _c = Connection(\"C\");\n    println!(\"dropping B early\");\n    drop(b);\n    println!(\"end of main\");\n}",
+"note": "`*x` works because MyBox implements Deref. Passing `&name` to a function expecting `&str` triggered two automatic derefs, and calling `name.len()` found String's method through Deref too. `drop(b)` closed B early; at the end of `main`, the remaining values were dropped in reverse order: C, then A.",
+"output": "*x + 1 = 6\nHello, Rust!\nlength via deref: 4\ndropping B early\n  closing connection B\nend of main\n  closing connection C\n  closing connection A"
+},
+{
+"lang": "rust",
+"title": "Calling drop as a method",
+"code": "struct Guard;\n\nimpl Drop for Guard {\n    fn drop(&mut self) {\n        println!(\"released\");\n    }\n}\n\nfn main() {\n    let g = Guard;\n    g.drop();\n}",
+"note": "Calling the destructor directly is refused (\"explicit destructor calls not allowed\"), because Rust would call it again when `g` goes out of scope, freeing the same resource twice. The compiler suggests `drop(g)`, which takes ownership so the automatic call never happens.",
+"output": "error[E0040]: explicit use of destructor method\n  --> main.rs:11:7\n   |\n11 |     g.drop();\n   |       ^^^^ explicit destructor calls not allowed\n   |\nhelp: consider using `drop` function",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Writing `&*value` everywhere.** Deref coercion usually does it for you.",
+"**Implementing Deref to simulate inheritance.** It is meant for smart pointers; it surprises readers elsewhere.",
+"**Calling `.drop()`.** Use `drop(value)` for early cleanup."
+],
+"keys": [
+"`Deref` makes a smart pointer usable like a reference.",
+"Deref coercion converts `&Box<String>` → `&String` → `&str` automatically.",
+"`Drop` runs cleanup code at the end of scope, in reverse order.",
+"`drop(value)` releases a value early."
+]
+},
+"15.3": {
+"idea": [
+"Sometimes one value genuinely has **several owners**: a node in a graph pointed to by many edges, or a shared configuration used by many parts of a program, where nobody can say which part will finish last. **`Rc<T>`** (reference counted) enables this for single-threaded code. `Rc::new(value)` puts the value on the heap with a counter; **`Rc::clone(&rc)`** creates another owner by incrementing the counter, without copying the data. When an owner is dropped the count goes down, and when it reaches zero the value itself is dropped.",
+"`Rc::strong_count(&rc)` shows how many owners exist, which is handy for learning and debugging. The convention is to write `Rc::clone(&a)` rather than `a.clone()`, to make it obvious at a glance that this is a cheap pointer copy, not a deep clone.",
+"Rc gives **shared, read-only** access: you cannot get a `&mut T` from an `Rc<T>`, because several owners modifying the same data would break the borrowing rules. Combine it with `RefCell` (next lesson) when shared data must change. Rc is **not thread-safe** (its counter is not atomic), and the compiler stops you from sending it to another thread; the thread-safe equivalent is `Arc` (chapter 16)."
+],
+"how": [
+"`let a = Rc::new(value);` `let b = Rc::clone(&a);` (cheap: increments a counter).",
+"`Rc::strong_count(&a)` shows the number of owners.",
+"The value is dropped when the last Rc is dropped.",
+"Shared access is read-only; add RefCell for mutation.",
+"Single-threaded only; use `Arc` across threads."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Two lists sharing a tail",
+"code": "use std::rc::Rc;\n\n#[derive(Debug)]\nenum List {\n    Cons(i32, Rc<List>),\n    Nil,\n}\n\nuse List::{Cons, Nil};\n\nfn values(list: &List) -> Vec<i32> {\n    let mut out = Vec::new();\n    let mut cur = list;\n    while let Cons(v, next) = cur {\n        out.push(*v);\n        cur = next;\n    }\n    out\n}\n\nfn main() {\n    let shared = Rc::new(Cons(5, Rc::new(Cons(10, Rc::new(Nil)))));\n    println!(\"count after creating shared = {}\", Rc::strong_count(&shared));\n    let b = Cons(3, Rc::clone(&shared));\n    println!(\"count after b = {}\", Rc::strong_count(&shared));\n    {\n        let c = Cons(4, Rc::clone(&shared));\n        println!(\"count after c = {}\", Rc::strong_count(&shared));\n        println!(\"b = {:?}, c = {:?}\", values(&b), values(&c));\n    }\n    println!(\"count after c goes out of scope = {}\", Rc::strong_count(&shared));\n    println!(\"same allocation? {}\", matches!(&b, Cons(_, rest) if Rc::ptr_eq(rest, &shared)));\n}",
+"note": "`b` and `c` both own the shared tail, so its count went from 1 to 3; when `c` went out of scope it dropped back to 2. Cloning the Rc never copied the list: `Rc::ptr_eq` confirms `b` points at the very same allocation. The tail will be freed only when the last owner is gone.",
+"output": "count after creating shared = 1\ncount after b = 2\ncount after c = 3\nb = [3, 5, 10], c = [4, 5, 10]\ncount after c goes out of scope = 2\nsame allocation? true"
+},
+{
+"lang": "rust",
+"title": "Rc gives no mutable access",
+"code": "use std::rc::Rc;\n\nfn main() {\n    let scores = Rc::new(vec![10, 20]);\n    let other = Rc::clone(&scores);\n    scores.push(30);\n    println!(\"{other:?}\");\n}",
+"note": "`push` needs `&mut Vec`, but an `Rc` only hands out shared references, because another owner (`other`) might be reading at the same time. The compiler refuses to borrow the data mutably. Shared data that must change needs `Rc<RefCell<Vec<i32>>>`, the next lesson's pattern.",
+"output": "error[E0596]: cannot borrow data in an `Rc` as mutable\n --> main.rs:6:5\n  |\n6 |     scores.push(30);\n  |     ^^^^^^ cannot borrow as mutable\n  |\n  = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `Rc<Vec<i32>>`",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Using Rc when a single owner would do.** Plain ownership or borrowing is simpler and free.",
+"**`a.clone()` that looks like a deep copy.** Write `Rc::clone(&a)` to signal a cheap pointer copy.",
+"**Sending Rc to threads.** It is not thread-safe; use Arc."
+],
+"keys": [
+"`Rc<T>` allows several owners of one heap value, single-threaded.",
+"`Rc::clone` increments a counter; the value drops when the count reaches zero.",
+"Access through Rc is read-only.",
+"Use Arc for the same idea across threads."
+]
+},
+"15.4": {
+"idea": [
+"The borrowing rules are normally checked at compile time. **`RefCell<T>`** moves the check to **run time**: it allows **interior mutability**, changing data through a shared reference, while still enforcing \"many readers or one writer\". `cell.borrow()` returns a `Ref<T>` (a shared borrow) and `cell.borrow_mut()` a `RefMut<T>` (a mutable borrow); RefCell counts the active borrows, and if you break the rules, for example by calling `borrow_mut` while another borrow is alive, the program **panics** instead of refusing to compile.",
+"Why give up compile-time checking? Some correct designs are impossible to express statically. A classic case is a **mock object** in tests: a trait method takes `&self`, but the mock needs to record each call, which means mutating itself. With a `RefCell<Vec<String>>` field, the mock can push messages through `&self`. For simple Copy values, `Cell<T>` offers `get`/`set` with no borrowing at all.",
+"Combining **`Rc<RefCell<T>>`** gives **shared, mutable** data with several owners: each owner can borrow mutably when needed, one at a time. It is powerful but moves errors to run time, so keep borrows short (borrow, use, drop in one expression), and prefer plain ownership when it works. Like Rc, RefCell is single-threaded; the thread-safe counterparts are `Mutex` and `RwLock`."
+],
+"how": [
+"`RefCell::new(v)`; `.borrow()` → `Ref<T>`, `.borrow_mut()` → `RefMut<T>`.",
+"Breaking the rules panics at run time (\"already borrowed\").",
+"`try_borrow_mut()` returns a Result instead of panicking.",
+"`Cell<T>` for Copy values: `get`, `set`, no borrows.",
+"`Rc<RefCell<T>>` = several owners that can mutate; keep borrows short."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A mock messenger and shared mutable data",
+"code": "use std::cell::RefCell;\nuse std::rc::Rc;\n\ntrait Messenger {\n    fn send(&self, msg: &str);\n}\n\nstruct LimitTracker<'a, T: Messenger> {\n    messenger: &'a T,\n    max: usize,\n}\n\nimpl<'a, T: Messenger> LimitTracker<'a, T> {\n    fn set_value(&self, value: usize) {\n        let percent = value * 100 / self.max;\n        if percent >= 100 {\n            self.messenger.send(\"Error: you are over your quota!\");\n        } else if percent >= 75 {\n            self.messenger.send(\"Warning: over 75% of your quota used\");\n        }\n    }\n}\n\nstruct MockMessenger {\n    sent: RefCell<Vec<String>>,                // mutated through &self\n}\n\nimpl Messenger for MockMessenger {\n    fn send(&self, msg: &str) {\n        self.sent.borrow_mut().push(msg.to_string());\n    }\n}\n\nfn main() {\n    let mock = MockMessenger { sent: RefCell::new(vec![]) };\n    let tracker = LimitTracker { messenger: &mock, max: 100 };\n    for v in [10, 80, 120] {\n        tracker.set_value(v);\n    }\n    println!(\"recorded: {:?}\", mock.sent.borrow());\n\n    let shared = Rc::new(RefCell::new(vec![1, 2]));\n    let a = Rc::clone(&shared);\n    let b = Rc::clone(&shared);\n    a.borrow_mut().push(3);\n    b.borrow_mut().push(4);\n    println!(\"everyone sees {:?} ({} owners)\", shared.borrow(), Rc::strong_count(&shared));\n}",
+"note": "`send` takes `&self` because the trait says so, yet the mock records every message by mutating its `RefCell` field. With `Rc<RefCell<Vec<i32>>>`, two owners each pushed to the same vector, one short mutable borrow at a time, and all owners see both changes.",
+"output": "recorded: [\"Warning: over 75% of your quota used\", \"Error: you are over your quota!\"]\neveryone sees [1, 2, 3, 4] (3 owners)"
+},
+{
+"lang": "rust",
+"title": "Breaking the rules is caught at run time",
+"code": "use std::cell::RefCell;\n\nfn main() {\n    let log = RefCell::new(vec![\"start\"]);\n    println!(\"try_borrow_mut while reading: {:?}\", {\n        let _reader = log.borrow();\n        log.try_borrow_mut().map(|_| ()).map_err(|e| e.to_string())\n    });\n    let reader = log.borrow();\n    println!(\"first entry: {}\", reader[0]);\n    let mut writer = log.borrow_mut();          // a mutable borrow while `reader` is alive\n    writer.push(\"never\");\n}",
+"note": "`try_borrow_mut` reported the conflict as an error value. The plain `borrow_mut` then panicked with \"already borrowed\": a mutable borrow while a shared one was still alive. The compiler would have rejected the same mistake with ordinary references; RefCell trades that compile-time error for a run-time panic.",
+"output": "try_borrow_mut while reading: Err(\"RefCell already borrowed\")\nfirst entry: start\n\nthread 'main' panicked at main.rs:11:26:\nRefCell already borrowed\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+}
+],
+"mistakes": [
+"**Holding a `borrow()` across code that calls `borrow_mut()`.** Panics at run time. Keep borrows short.",
+"**Reaching for RefCell first.** Restructure ownership if you can; RefCell is for cases the compiler cannot verify.",
+"**Using RefCell across threads.** It is not thread-safe; use Mutex or RwLock."
+],
+"keys": [
+"`RefCell<T>` checks borrowing rules at run time, enabling interior mutability.",
+"`borrow`/`borrow_mut` panic on conflicts; `try_` versions return Results.",
+"Mocks that record calls through `&self` are a classic use.",
+"`Rc<RefCell<T>>` gives shared, mutable, single-threaded data."
+]
+},
+"15.5": {
+"idea": [
+"Rust's guarantees prevent memory errors, but not **memory leaks**. With `Rc` and `RefCell`, two values can point at each other: A holds an Rc to B and B holds an Rc to A. Each keeps the other's strong count above zero, so when the program drops its own references, neither count reaches zero and neither value is ever freed: a **reference cycle**.",
+"The fix is **`Weak<T>`**, a non-owning reference. `Rc::downgrade(&rc)` creates a Weak pointer, which increments a separate `weak_count` but not the strong count, so it does not keep the value alive. To use it, call **`upgrade()`**, which returns `Option<Rc<T>>`: `Some` if the value still exists, `None` if it has been dropped. Code must handle that possibility, which is exactly right for a reference that does not own its target.",
+"The rule of thumb for trees and graphs: **owning** relationships use `Rc` (a parent owns its children), and **back-references** use `Weak` (a child refers to its parent without owning it). Dropping the parent then frees it, and its children's `Weak` parent links simply return `None` from `upgrade`."
+],
+"how": [
+"Cycles of `Rc` leak: counts never reach zero.",
+"`Rc::downgrade(&rc)` → `Weak<T>`; doesn't affect the strong count.",
+"`weak.upgrade()` → `Option<Rc<T>>`; `None` once the value is gone.",
+"Parents own children with `Rc`; children point to parents with `Weak`.",
+"`Rc::strong_count` and `Rc::weak_count` help check ownership."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A tree with Weak parent links",
+"code": "use std::cell::RefCell;\nuse std::rc::{Rc, Weak};\n\n#[derive(Debug)]\nstruct Node {\n    name: String,\n    parent: RefCell<Weak<Node>>,\n    children: RefCell<Vec<Rc<Node>>>,\n}\n\nfn node(name: &str) -> Rc<Node> {\n    Rc::new(Node { name: name.to_string(), parent: RefCell::new(Weak::new()), children: RefCell::new(vec![]) })\n}\n\nfn main() {\n    let leaf = node(\"leaf\");\n    println!(\"leaf's parent before: {:?}\", leaf.parent.borrow().upgrade().map(|p| p.name.clone()));\n    {\n        let branch = node(\"branch\");\n        *leaf.parent.borrow_mut() = Rc::downgrade(&branch);\n        branch.children.borrow_mut().push(Rc::clone(&leaf));\n\n        println!(\"leaf's parent: {:?}\", leaf.parent.borrow().upgrade().map(|p| p.name.clone()));\n        println!(\"branch strong = {}, weak = {}\", Rc::strong_count(&branch), Rc::weak_count(&branch));\n        println!(\"leaf strong = {}, weak = {}\", Rc::strong_count(&leaf), Rc::weak_count(&leaf));\n    }\n    println!(\"after branch is dropped, leaf's parent: {:?}\", leaf.parent.borrow().upgrade().map(|p| p.name.clone()));\n    println!(\"leaf strong = {}\", Rc::strong_count(&leaf));\n}",
+"note": "The branch owns the leaf through an Rc (leaf's strong count is 2: `leaf` and the branch's children list), while the leaf points back with a Weak, which only raised branch's weak count. When the branch went out of scope its strong count hit zero and it was freed; the leaf's `upgrade()` now returns None instead of keeping the branch alive.",
+"output": "leaf's parent before: None\nleaf's parent: Some(\"branch\")\nbranch strong = 1, weak = 1\nleaf strong = 2, weak = 0\nafter branch is dropped, leaf's parent: None\nleaf strong = 1"
+},
+{
+"lang": "rust",
+"title": "Two Rc values in a cycle never get freed",
+"code": "use std::cell::RefCell;\nuse std::rc::Rc;\n\nstruct Person {\n    name: &'static str,\n    friend: RefCell<Option<Rc<Person>>>,\n}\n\nimpl Drop for Person {\n    fn drop(&mut self) {\n        println!(\"  freeing {}\", self.name);\n    }\n}\n\nfn main() {\n    {\n        let ada = Rc::new(Person { name: \"Ada\", friend: RefCell::new(None) });\n        println!(\"no cycle: Ada alone\");\n        let _ = ada;\n    }\n    {\n        let ben = Rc::new(Person { name: \"Ben\", friend: RefCell::new(None) });\n        let cy = Rc::new(Person { name: \"Cy\", friend: RefCell::new(None) });\n        *ben.friend.borrow_mut() = Some(Rc::clone(&cy));\n        *cy.friend.borrow_mut() = Some(Rc::clone(&ben));\n        println!(\"cycle: Ben strong = {}, Cy strong = {}\", Rc::strong_count(&ben), Rc::strong_count(&cy));\n    }\n    println!(\"end of main: Ben and Cy were never freed (a leak)\");\n}",
+"note": "Ada was freed when her scope ended. Ben and Cy each held an Rc to the other, so when the scope ended their counts only dropped from 2 to 1, and their `Drop` messages never appeared: the memory leaked. Making one of the links a `Weak` breaks the cycle.",
+"output": "no cycle: Ada alone\n  freeing Ada\ncycle: Ben strong = 2, Cy strong = 2\nend of main: Ben and Cy were never freed (a leak)"
+}
+],
+"mistakes": [
+"**Rc in both directions of a relationship.** Cycles leak. Use Weak for back-references.",
+"**Unwrapping `upgrade()` without thought.** The target may be gone; handle `None`.",
+"**Assuming Rust prevents all leaks.** It prevents memory unsafety, not cycles."
+],
+"keys": [
+"Rc cycles keep counts above zero: a memory leak.",
+"`Weak<T>` refers without owning; `upgrade()` returns an Option.",
+"Owners use Rc; back-references use Weak.",
+"Check ownership with `strong_count` and `weak_count`."
+]
+},
+"16.1": {
+"idea": [
+"A **thread** runs code concurrently with the rest of the program. `thread::spawn(|| { ... })` starts one with a closure and returns a **`JoinHandle`**; calling **`handle.join()`** waits for the thread to finish and returns its result (or an error if it panicked). When `main` returns, the process ends and any threads still running are stopped, so join the threads whose work you need. The order in which threads run is up to the operating system and differs between runs.",
+"A spawned thread may outlive the function that created it, so its closure cannot borrow local variables. Rust requires a **`move` closure** that takes ownership of what it uses: `thread::spawn(move || { println!(\"{v:?}\"); })`. The compiler explains this if you forget, because a borrow could otherwise dangle.",
+"When threads only need to borrow data for a bounded time, **`thread::scope`** is simpler: threads spawned inside a scope are guaranteed to finish before the scope ends, so they **can** borrow local variables, even mutably for distinct parts. Rust's ownership and borrowing rules apply across threads, which is why the compiler catches data races before the program runs: the \"fearless concurrency\" of the chapter's title."
+],
+"how": [
+"`let h = thread::spawn(move || work());` then `h.join().unwrap()` for the result.",
+"Unjoined threads stop when main returns.",
+"`move` closures transfer ownership into the thread.",
+"`thread::scope(|s| { s.spawn(|| ...); })` lets threads borrow locals.",
+"Thread order is not deterministic; don't rely on it."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "spawn, join, move and scope",
+"code": "use std::thread;\nuse std::time::Duration;\n\nfn main() {\n    let handles: Vec<_> = (1..=3)\n        .map(|id| {\n            thread::spawn(move || {\n                thread::sleep(Duration::from_millis(30 * (4 - id)));\n                id * id                                   // the thread's result\n            })\n        })\n        .collect();\n    let results: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap()).collect();\n    println!(\"results in join order: {results:?}\");\n\n    let words = vec![\"alpha\", \"beta\", \"gamma\", \"delta\"];\n    let owned = words.clone();\n    let counter = thread::spawn(move || owned.iter().map(|w| w.len()).sum::<usize>());\n    println!(\"letters: {}\", counter.join().unwrap());\n\n    let mut totals = [0u64; 2];\n    let numbers: Vec<u64> = (1..=1000).collect();\n    let (left, right) = numbers.split_at(500);\n    let (t0, t1) = totals.split_at_mut(1);\n    thread::scope(|s| {\n        s.spawn(|| t0[0] = left.iter().sum());           // borrows locals: allowed in a scope\n        s.spawn(|| t1[0] = right.iter().sum());\n    });\n    println!(\"sums {totals:?}, total {}\", totals[0] + totals[1]);\n    println!(\"words still usable here: {words:?}\");\n}",
+"note": "Each thread returned a value that `join` delivered; joining in spawn order gives a predictable result order even though the threads finished in reverse. The second thread needed `move` to own its copy of the words. Inside `thread::scope`, two threads borrowed halves of the data and wrote into separate halves of `totals`, with no `move` and no copies.",
+"output": "results in join order: [1, 4, 9]\nletters: 19\nsums [125250, 375250], total 500500\nwords still usable here: [\"alpha\", \"beta\", \"gamma\", \"delta\"]"
+},
+{
+"lang": "rust",
+"title": "A thread cannot borrow a local without move",
+"code": "use std::thread;\n\nfn main() {\n    let scores = vec![1, 2, 3];\n    let handle = thread::spawn(|| {\n        println!(\"{scores:?}\");\n    });\n    handle.join().unwrap();\n}",
+"note": "The new thread might outlive `main`'s `scores`, so borrowing it is refused; the compiler explains that the closure may outlive the current function and suggests `move`. With `move ||`, the vector's ownership transfers into the thread, and `main` can no longer use it, which is exactly what makes it safe.",
+"output": "error[E0373]: closure may outlive the current function, but it borrows `scores`, which is owned by the current function\n --> main.rs:5:32\n  |\n5 |     let handle = thread::spawn(|| {\n  |                                ^^ may outlive borrowed value `scores`\n6 |         println!(\"{scores:?}\");\n  |                    ------ `scores` is borrowed here\n  |\n --> main.rs:5:18\n  |\n5 |       let handle = thread::spawn(|| {\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Forgetting to join.** Threads are stopped when main returns, possibly mid-work.",
+"**Relying on thread execution order.** It varies between runs.",
+"**Fighting `move` when you only need short borrows.** Use `thread::scope`."
+],
+"keys": [
+"`thread::spawn` starts a thread; `join` waits and returns its result.",
+"Spawned closures must `move` what they use.",
+"`thread::scope` allows borrowing locals safely.",
+"Ownership rules apply across threads, preventing data races at compile time."
+]
+},
+"16.2": {
+"idea": [
+"One way for threads to cooperate is to **send messages** instead of sharing memory. A **channel** has a transmitter and a receiver: `let (tx, rx) = mpsc::channel();`. Any thread holding `tx` can `send(value)`, and the thread holding `rx` receives values in the order they were sent. `mpsc` means multiple producer, single consumer: **clone the transmitter** (`tx.clone()`) to give one to each producer thread.",
+"Sending **moves** the value into the channel: after `tx.send(report)`, the sending thread can no longer use `report`. That is ownership doing its job: two threads can never both access the same value, so no lock is needed.",
+"On the receiving side, **`recv()`** blocks until a value arrives, returning `Ok(value)`, or `Err` once every transmitter has been dropped and the channel is empty; `try_recv()` returns immediately; and the receiver can be used as an **iterator** (`for msg in rx`), which ends automatically when all senders are gone. That makes dropping the senders the natural \"no more work\" signal; forgetting to drop the original `tx` in the main thread is a classic reason for a program that hangs forever. `mpsc::sync_channel(n)` creates a bounded channel whose `send` blocks when it is full."
+],
+"how": [
+"`let (tx, rx) = mpsc::channel();` then `tx.clone()` for each producer.",
+"`tx.send(v)` moves `v` into the channel; returns Err if the receiver is gone.",
+"`rx.recv()` blocks; `try_recv()` doesn't; `recv_timeout(d)` waits a while.",
+"`for msg in rx` ends when all transmitters are dropped.",
+"Drop the original `tx` once producers have their clones, or the loop never ends."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Several producers, one consumer",
+"code": "use std::sync::mpsc;\nuse std::thread;\nuse std::time::Duration;\n\n#[derive(Debug)]\nstruct Reading {\n    sensor: &'static str,\n    value: f64,\n}\n\nfn main() {\n    let (tx, rx) = mpsc::channel();\n    for (sensor, values, delay) in [(\"kitchen\", vec![21.5, 21.7, 22.0], 10), (\"garage\", vec![4.0, 3.5], 15)] {\n        let tx = tx.clone();\n        thread::spawn(move || {\n            for value in values {\n                let reading = Reading { sensor, value };\n                tx.send(reading).unwrap();                    // the reading moves into the channel\n                thread::sleep(Duration::from_millis(delay));\n            }\n        });\n    }\n    drop(tx);                                                // otherwise `for` would wait forever\n\n    let mut all: Vec<Reading> = rx.iter().collect();         // ends when both producers finish\n    all.sort_by(|a, b| a.sensor.cmp(b.sensor).then(a.value.total_cmp(&b.value)));\n    for r in &all {\n        println!(\"{:8} {:5.1}°C\", r.sensor, r.value);\n    }\n    println!(\"{} readings received\", all.len());\n}",
+"note": "Each producer got its own clone of the transmitter and moved its readings into the channel. Dropping the original `tx` meant that once both producers finished, every transmitter was gone and the receiver's iterator ended. Arrival order depends on timing, so the readings are sorted before printing.",
+"output": "garage     3.5°C\ngarage     4.0°C\nkitchen   21.5°C\nkitchen   21.7°C\nkitchen   22.0°C\n5 readings received"
+},
+{
+"lang": "rust",
+"title": "A sent value belongs to the channel",
+"code": "use std::sync::mpsc;\nuse std::thread;\n\nfn main() {\n    let (tx, rx) = mpsc::channel();\n    thread::spawn(move || {\n        let message = String::from(\"report ready\");\n        tx.send(message).unwrap();\n        println!(\"sent: {message}\");\n    });\n    println!(\"{}\", rx.recv().unwrap());\n}",
+"note": "`send` took ownership of `message`, so using it afterwards in the sending thread is a compile error: the receiving thread may already be changing or dropping it. If the sender needs to keep the text, it can send a clone, or print before sending.",
+"output": "error[E0382]: borrow of moved value: `message`\n --> main.rs:9:26\n  |\n7 |         let message = String::from(\"report ready\");\n  |             ------- move occurs because `message` has type `String`, which does not implement the `Copy` trait\n8 |         tx.send(message).unwrap();\n  |                 ------- value moved here\n9 |         println!(\"sent: {message}\");\n  |                          ^^^^^^^ value borrowed here after move",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Keeping the original transmitter alive.** The receiver's loop never ends. Drop it.",
+"**Using a value after sending it.** It moved; send a clone or finish with it first.",
+"**Unbounded channels with fast producers and slow consumers.** Memory grows; use `sync_channel(n)` for back-pressure."
+],
+"keys": [
+"Channels move values between threads; no shared memory, no locks.",
+"Clone the transmitter for multiple producers.",
+"`recv` blocks; iterating the receiver ends when all senders are dropped.",
+"Sending moves ownership, so values can't be used by two threads at once."
+]
+},
+"16.3": {
+"idea": [
+"The other way to cooperate is **shared state** protected by a lock. A **`Mutex<T>`** (mutual exclusion) wraps data so that only one thread at a time can access it. `mutex.lock()` waits until the lock is free and returns a **`MutexGuard`**, a smart pointer to the data; when the guard is dropped (at the end of its scope), the lock is released automatically. You cannot forget to unlock, and you cannot reach the data without locking, because the data is inside the Mutex.",
+"To share one Mutex between threads, it needs several owners. `Rc` is not thread-safe, so Rust provides **`Arc<T>`** (atomically reference counted): the same idea with an atomic counter, safe to clone across threads. `Arc<Mutex<T>>` is the standard pattern for shared mutable state.",
+"`lock()` returns a `Result`: if a thread panicked while holding the lock, the Mutex is **poisoned**, and other threads get an error, since the data may be half-updated; most code calls `.unwrap()` or `.expect()`. Keep critical sections **short** (lock, update, release) to avoid slowing other threads, and beware **deadlocks**: two threads each holding one lock and waiting for the other's. Always taking locks in the same order prevents them. For simple counters, atomic types (`AtomicUsize`) avoid locks entirely."
+],
+"how": [
+"`let m = Arc::new(Mutex::new(value));` clone the Arc for each thread.",
+"`let mut guard = m.lock().unwrap(); *guard += 1;` unlocks when the guard drops.",
+"Arc is the thread-safe Rc; Rc cannot cross threads.",
+"Keep critical sections short; drop guards early with a block or `drop(guard)`.",
+"Avoid deadlocks: consistent lock order; consider atomics or channels."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Ten threads, one counter, and a shared log",
+"code": "use std::sync::{Arc, Mutex};\nuse std::thread;\n\nfn main() {\n    let counter = Arc::new(Mutex::new(0));\n    let log = Arc::new(Mutex::new(Vec::new()));\n    let mut handles = vec![];\n    for id in 0..10 {\n        let counter = Arc::clone(&counter);\n        let log = Arc::clone(&log);\n        handles.push(thread::spawn(move || {\n            for _ in 0..1000 {\n                *counter.lock().unwrap() += 1;                 // lock, add, unlock at the semicolon\n            }\n            log.lock().unwrap().push(id);\n        }));\n    }\n    for h in handles {\n        h.join().unwrap();\n    }\n    let mut ids = log.lock().unwrap().clone();\n    ids.sort();\n    println!(\"counter = {} (expected 10000)\", *counter.lock().unwrap());\n    println!(\"threads that finished: {ids:?}\");\n    println!(\"Arc owners left: {}\", Arc::strong_count(&counter));\n}",
+"note": "Every increment happened under the lock, so all 10,000 were counted, which a plain shared integer could not guarantee. Each guard was a temporary dropped at the end of its statement, keeping critical sections tiny. After all threads were joined, only `main`'s Arc remained.",
+"output": "counter = 10000 (expected 10000)\nthreads that finished: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]\nArc owners left: 1"
+},
+{
+"lang": "rust",
+"title": "A poisoned lock after a panic",
+"code": "use std::sync::{Arc, Mutex};\nuse std::thread;\n\nfn main() {\n    let balance = Arc::new(Mutex::new(100));\n    let b = Arc::clone(&balance);\n    let result = thread::spawn(move || {\n        let mut guard = b.lock().unwrap();\n        *guard -= 30;\n        panic!(\"crashed halfway through a transfer\");\n    })\n    .join();\n    println!(\"worker thread failed: {}\", result.is_err());\n    match balance.lock() {\n        Ok(v) => println!(\"balance {}\", *v),\n        Err(poisoned) => println!(\"lock is poisoned; the data may be inconsistent: {}\", *poisoned.into_inner()),\n    }\n}",
+"note": "The worker panicked while holding the lock, after changing the balance but before finishing its work. The Mutex became poisoned, so the next `lock()` returned an error, warning that the data may be in a half-updated state (here 70). `into_inner` still gives access when you decide the data is usable.",
+"output": "\nthread '<unnamed>' panicked at main.rs:10:9:\ncrashed halfway through a transfer\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nworker thread failed: true\nlock is poisoned; the data may be inconsistent: 70"
+}
+],
+"mistakes": [
+"**Using Rc with threads.** The compiler refuses; use Arc.",
+"**Holding a guard while doing slow work.** Other threads wait. Copy what you need and release.",
+"**Taking two locks in different orders in different threads.** Deadlock. Fix one order."
+],
+"keys": [
+"`Mutex<T>` guards data; `lock()` returns a guard that unlocks on drop.",
+"`Arc<Mutex<T>>` shares mutable state across threads.",
+"Poisoned locks signal a panic mid-update.",
+"Short critical sections and consistent lock order avoid contention and deadlocks."
+]
+},
+"16.4": {
+"idea": [
+"How does the compiler know that `Arc` is safe to share between threads but `Rc` is not? Two **marker traits** with no methods carry that information. A type is **`Send`** if ownership of a value can be **transferred** to another thread. A type is **`Sync`** if it can be **referenced** from several threads at once; precisely, `T` is Sync when `&T` is Send.",
+"Almost every type is both, and the compiler implements them **automatically**: a struct made only of Send fields is Send, and likewise for Sync. The exceptions are deliberate. **`Rc<T>`** is neither, because two threads cloning it at the same moment could corrupt its non-atomic counter. **`RefCell<T>`** is Send but not Sync, because its borrow tracking is not thread-safe. Raw pointers are neither. Their thread-safe counterparts, `Arc`, `Mutex`, `RwLock` and the atomics, are Send and Sync.",
+"`thread::spawn` requires its closure, and everything the closure captures, to be **Send**. So trying to move an Rc into a thread is not a run-time bug waiting to happen; it is a compile error that names the problem. You rarely implement these traits yourself: doing so requires `unsafe`, and it is only needed when building new concurrency primitives."
+],
+"how": [
+"`Send`: safe to move to another thread. `Sync`: safe to share `&T` between threads.",
+"Auto-implemented for types made of Send/Sync parts.",
+"Not Send/Sync: `Rc`, raw pointers; `RefCell`/`Cell` are not Sync.",
+"Thread-safe alternatives: `Arc`, `Mutex`, `RwLock`, atomics.",
+"`thread::spawn` requires `F: Send + 'static`; errors name the non-Send type."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The compiler refusing Rc across threads",
+"code": "use std::rc::Rc;\nuse std::thread;\n\nfn main() {\n    let shared = Rc::new(vec![1, 2, 3]);\n    let clone = Rc::clone(&shared);\n    let handle = thread::spawn(move || {\n        println!(\"{clone:?}\");\n    });\n    handle.join().unwrap();\n}",
+"note": "The error says that `Rc<Vec<i32>>` cannot be sent between threads safely, because it does not implement `Send`, and points at the closure capturing it. The same program with `Arc` instead of `Rc` compiles and runs: the type system encodes which types are thread-safe, so the data race never gets a chance to happen.",
+"output": "error[E0277]: `Rc<Vec<i32>>` cannot be sent between threads safely\n --> main.rs:7:32\n  |\n7 |       let handle = thread::spawn(move || {\n  |                    ------------- ^------\n  |                    |             |\n  |  __________________|_____________within this `{closure@main.rs:7:32: 7:39}`\n  | |                  |\n  | |                  required by a bound introduced by this call\n8 | |         println!(\"{clone:?}\");\n9 | |     });\n  ...",
+"label": "Compiler output"
+},
+{
+"lang": "rust",
+"title": "Checking Send and Sync with generic functions",
+"code": "use std::cell::RefCell;\nuse std::rc::Rc;\nuse std::sync::{Arc, Mutex};\n\nfn is_send<T: Send>() {}\nfn is_sync<T: Sync>() {}\n\nstruct Settings {\n    name: String,\n    limits: Vec<u32>,\n}\n\nfn main() {\n    is_send::<Settings>();                    // auto-implemented: all fields are Send\n    is_sync::<Settings>();\n    is_send::<Arc<Mutex<Vec<u8>>>>();\n    is_sync::<Arc<Mutex<Vec<u8>>>>();\n    is_send::<RefCell<i32>>();                // Send, but not Sync\n    // is_sync::<RefCell<i32>>();             // would not compile\n    // is_send::<Rc<i32>>();                  // would not compile\n    let _ = (Rc::new(1), RefCell::new(1));\n    println!(\"Settings, Arc<Mutex<_>> and RefCell (Send only) all passed the checks\");\n\n    let shared = Arc::new(Mutex::new(Settings { name: \"prod\".into(), limits: vec![10, 20] }));\n    let s = Arc::clone(&shared);\n    std::thread::spawn(move || s.lock().unwrap().limits.push(30)).join().unwrap();\n    let guard = shared.lock().unwrap();\n    println!(\"{} limits: {:?}\", guard.name, guard.limits);\n}",
+"note": "Generic functions with `Send` or `Sync` bounds act as compile-time checks: the program compiles only if each type satisfies them. `Settings` got both traits automatically because its fields have them; RefCell is Send but not Sync, and Rc is neither, which is why those lines are commented out. Wrapped in `Arc<Mutex<_>>`, Settings is shared and modified across threads.",
+"output": "Settings, Arc<Mutex<_>> and RefCell (Send only) all passed the checks\nprod limits: [10, 20, 30]"
+}
+],
+"mistakes": [
+"**Trying to `impl Send` to silence an error.** It requires unsafe and is almost always wrong. Change the type (Rc → Arc, RefCell → Mutex).",
+"**Thinking Send/Sync are checked at run time.** They are purely compile-time.",
+"**Forgetting that captured values must be Send.** The closure is only as Send as what it captures."
+],
+"keys": [
+"`Send`: transferable to another thread; `Sync`: shareable by reference.",
+"Implemented automatically from a type's fields.",
+"Rc and RefCell are not thread-safe; Arc and Mutex are.",
+"`thread::spawn` requires Send, turning data races into compile errors."
+]
 }
 }

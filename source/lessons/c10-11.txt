@@ -1,0 +1,589 @@
+=== 10.1
+@idea
+**Generics** let one piece of code work with many types. Instead of writing `largest_i32`, `largest_f64` and `largest_char`, write `fn largest<T: PartialOrd>(list: &[T]) -> &T` once. `<T>` declares a **type parameter**, and the **bound** `T: PartialOrd` says what the code needs from it: here, the ability to compare with `>`. Without the bound, the compiler refuses, because it cannot assume an arbitrary `T` supports comparison.
+
+Structs, enums and methods can be generic too: `struct Point<T> { x: T, y: T }` holds two values of the same type, and `Point<T, U>` allows different ones. `Option<T>` and `Result<T, E>` are generic enums you already use. In an `impl<T> Point<T>` block, methods work for every `T`; an `impl Point<f64>` block adds methods only for one concrete type (`distance_from_origin` makes sense for floats, not for strings).
+
+Generics cost **nothing at run time**. The compiler performs **monomorphisation**: for each concrete type you actually use, it generates a specialised copy of the code, as if you had written `largest_i32` and `largest_char` by hand. You get the convenience of writing code once with the speed of hand-written specialised code; the price is slightly longer compile times and larger binaries.
+@how
+- `fn name<T: Bound>(x: T) -> T`; several parameters: `<T, U>`.
+- `struct S<T> { field: T }`, `enum E<T> { A(T), B }`.
+- `impl<T> S<T> { ... }` for all T; `impl S<f64> { ... }` for one type.
+- Add bounds for every capability you use: `PartialOrd`, `Clone`, `Display`, `Copy`.
+- Monomorphisation: zero run-time cost, specialised code per type.
+@example rust: One largest, many types, and a generic Point
+use std::fmt::Display;
+
+fn largest<T: PartialOrd>(list: &[T]) -> &T {
+    let mut best = &list[0];
+    for item in list {
+        if item > best {
+            best = item;
+        }
+    }
+    best
+}
+
+#[derive(Debug)]
+struct Point<T> {
+    x: T,
+    y: T,
+}
+
+impl<T: Display> Point<T> {
+    fn describe(&self) -> String {
+        format!("({}, {})", self.x, self.y)
+    }
+}
+
+impl Point<f64> {
+    fn distance_from_origin(&self) -> f64 {
+        (self.x.powi(2) + self.y.powi(2)).sqrt()
+    }
+}
+
+fn main() {
+    println!("{} {} {:?}", largest(&[34, 50, 25, 100, 65]), largest(&[1.5, -2.0, 0.25]), largest(&['y', 'm', 'a', 'q']));
+    println!("{}", largest(&["pear", "apple", "zucchini"]));
+    let ints = Point { x: 5, y: 10 };
+    let floats = Point { x: 3.0, y: 4.0 };
+    println!("{} {} distance {}", ints.describe(), floats.describe(), floats.distance_from_origin());
+}
+@note
+One `largest` handled integers, floats, chars and strings, because all implement `PartialOrd`. `describe` exists for any Point whose coordinates can be displayed, while `distance_from_origin` is only defined for `Point<f64>`; calling it on `ints` would not compile.
+@example rust fail: Using a capability the bound did not promise
+fn largest<T>(list: &[T]) -> &T {
+    let mut best = &list[0];
+    for item in list {
+        if item > best {
+            best = item;
+        }
+    }
+    best
+}
+
+fn main() {
+    println!("{}", largest(&[1, 2, 3]));
+}
+@note
+Without a bound, `T` could be any type, including ones that cannot be compared, so `item > best` is rejected; the compiler even suggests adding `T: PartialOrd`. Generic code may only use what its bounds promise, which is why generic Rust code never fails at run time for missing operations.
+@mistakes
+- **Forgetting bounds.** Every operation on `T` needs a trait that provides it.
+- **Over-generic code.** If a function is only ever used with `String`, take `&str`; generics are for real reuse.
+- **Thinking generics are slow.** Monomorphisation makes them as fast as specialised code.
+@keys
+- Type parameters `<T>` with bounds let code work for many types.
+- Structs, enums and methods can be generic; `impl Point<f64>` specialises.
+- Bounds state exactly what the code needs from `T`.
+- Monomorphisation gives zero-cost generics.
+
+=== 10.2
+@idea
+A **trait** defines behaviour that types can share: a set of method signatures, like an interface. `trait Summary { fn summarize(&self) -> String; }` says "anything that implements Summary can produce a summary". Each type provides its own implementation in an `impl Summary for Article` block. Traits can also provide **default methods** with a body, which implementors get for free and may override; a default method can call other methods of the trait, so implementing one small required method can unlock several.
+
+Traits become powerful as **bounds**. A function parameter `item: &impl Summary` accepts any type that implements the trait; the longer form `fn notify<T: Summary>(item: &T)` means the same and is needed when two parameters must be the same type. Combine traits with `+` (`T: Summary + Display`), and move long bounds into a **`where` clause** for readability. Returning `impl Trait` hides the concrete type behind the trait, which is essential for closures and iterators.
+
+One rule keeps the ecosystem coherent, the **orphan rule**: you can implement a trait for a type only if the trait or the type is defined in your crate. You can implement `Display` for your `Article`, or your `Summary` for `Vec<T>`, but not the standard `Display` for the standard `Vec`. Many useful traits can be **derived** automatically: `#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]`.
+@how
+- `trait Name { fn required(&self) -> T; fn provided(&self) -> T { ... } }`.
+- `impl Name for Type { ... }`; default methods may be overridden.
+- Parameters: `&impl Trait` or `<T: Trait>`; combine with `+`; use `where` for long bounds.
+- Return `impl Trait` to hide a concrete type.
+- Orphan rule: your trait or your type. Derive common traits when possible.
+@example rust: A Summary trait with a default method and bounds
+use std::fmt::{self, Display};
+
+trait Summary {
+    fn author(&self) -> String;
+    fn summarize(&self) -> String {
+        format!("(Read more from {}...)", self.author())   // default, built on the required method
+    }
+}
+
+struct Article {
+    headline: String,
+    author: String,
+}
+
+struct Post {
+    user: String,
+    text: String,
+}
+
+impl Summary for Article {
+    fn author(&self) -> String {
+        self.author.clone()
+    }
+    fn summarize(&self) -> String {
+        format!("{}, by {}", self.headline, self.author)   // override
+    }
+}
+
+impl Summary for Post {
+    fn author(&self) -> String {
+        format!("@{}", self.user)
+    }
+}
+
+impl Display for Post {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}: {}", self.author(), self.text)
+    }
+}
+
+fn notify(item: &impl Summary) -> String {
+    format!("Breaking! {}", item.summarize())
+}
+
+fn headline_and_full<T>(item: &T) -> String
+where
+    T: Summary + Display,
+{
+    format!("{} || {}", item.summarize(), item)
+}
+
+fn main() {
+    let a = Article { headline: String::from("Rust 2026 edition announced"), author: String::from("Ada") };
+    let p = Post { user: String::from("ferris"), text: String::from("traits are great") };
+    println!("{}", notify(&a));
+    println!("{}", notify(&p));
+    println!("{}", headline_and_full(&p));
+}
+@note
+Article overrides `summarize`, while Post relies on the default, which calls Post's own `author`. `notify` accepts anything that implements Summary; `headline_and_full` needs both Summary and Display, stated in a `where` clause, so it accepts the Post but would reject the Article, which has no Display.
+@example rust fail: The orphan rule
+use std::fmt;
+
+impl fmt::Display for Vec<i32> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} numbers", self.len())
+    }
+}
+
+fn main() {
+    println!("{}", vec![1, 2, 3]);
+}
+@note
+Neither `Display` nor `Vec` belongs to this crate, so implementing one for the other is refused. Without this rule, two crates could implement the same trait for the same type differently and nobody could tell which one applies. The standard workaround is a newtype: `struct Numbers(Vec<i32>);` is yours, so it can implement `Display`.
+@mistakes
+- **Huge traits.** Small, focused traits are easier to implement and combine.
+- **`&dyn Trait` everywhere when generics would do.** `impl Trait` is statically dispatched and usually faster (trait objects are chapter 18).
+- **Fighting the orphan rule.** Wrap the foreign type in a newtype.
+@keys
+- Traits define shared behaviour; types implement them.
+- Default methods give behaviour for free and can build on required ones.
+- Use traits as bounds: `impl Trait`, `<T: Trait>`, `+` and `where`.
+- The orphan rule keeps implementations unambiguous.
+
+=== 10.3
+@idea
+Every reference has a **lifetime**: the part of the program during which it is valid. Usually the compiler infers lifetimes and you never see them. The **borrow checker** compares lifetimes to guarantee that no reference outlives the data it points to, which is how Rust rules out dangling references entirely.
+
+Sometimes the compiler needs help. In `fn longest(x: &str, y: &str) -> &str`, the returned reference comes from either `x` or `y`, and the compiler cannot know which, so it cannot check callers. **Lifetime annotations** describe the relationship: `fn longest<'a>(x: &'a str, y: &'a str) -> &'a str` says "the result lives at least as long as the shorter of the two inputs". Annotations do not change how long anything lives; they **describe** constraints so the compiler can check them at every call site. A caller that uses the result after one of the inputs has been dropped is rejected.
+
+Structs that **hold references** need annotations too: `struct Excerpt<'a> { part: &'a str }` means an Excerpt cannot outlive the text it borrows from. Three **elision rules** let you omit annotations in the common cases (one input reference, or a method with `&self`), which is why most functions never show them. The special lifetime `'static` means "valid for the whole program", the lifetime of string literals.
+@how
+- Annotate when a returned reference could come from several inputs: `fn f<'a>(x: &'a T, y: &'a T) -> &'a T`.
+- Annotations describe relationships; they never extend a value's life.
+- Structs holding references: `struct S<'a> { field: &'a str }`.
+- Elision covers one-input functions and `&self` methods.
+- `'static`: valid for the entire program (literals); don't add it to silence errors.
+@example rust: longest, and a struct that borrows its text
+fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() >= y.len() { x } else { y }
+}
+
+#[derive(Debug)]
+struct Excerpt<'a> {
+    part: &'a str,
+}
+
+impl<'a> Excerpt<'a> {
+    fn level(&self) -> usize {                           // elided: no annotation needed
+        self.part.split_whitespace().count()
+    }
+    fn announce(&self, note: &str) -> &str {             // elision: result tied to &self
+        println!("note: {note}");
+        self.part
+    }
+}
+
+fn first_sentence(text: &str) -> Excerpt<'_> {
+    Excerpt { part: text.split('.').next().unwrap_or(text) }
+}
+
+fn main() {
+    let novel = String::from("Call me Ishmael. Some years ago, never mind how long precisely.");
+    let excerpt = first_sentence(&novel);
+    println!("{excerpt:?}, {} words", excerpt.level());
+    println!("{}", excerpt.announce("checking"));
+
+    let a = String::from("long string is long");
+    let result;
+    {
+        let b = String::from("xyz");
+        result = longest(a.as_str(), b.as_str()).to_string();   // copy out before b dies
+    }
+    println!("longest: {result}");
+    let static_text: &'static str = "lives for the whole program";
+    println!("{}", longest(static_text, &a));
+}
+@note
+`longest` ties its result to both inputs, so the compiler checks every call. The Excerpt holds a slice of `novel` and cannot outlive it. Inside the block, the result was converted to an owned String before `b` was dropped, which keeps the borrow checker happy. The methods needed no annotations thanks to elision.
+@example rust fail: A reference that would outlive its data
+fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() >= y.len() { x } else { y }
+}
+
+fn main() {
+    let outer = String::from("a fairly long string");
+    let result;
+    {
+        let inner = String::from("short");
+        result = longest(outer.as_str(), inner.as_str());
+    }
+    println!("{result}");
+}
+@note
+The annotation says the result may come from `inner`, which is dropped at the end of the block, yet `result` is used after it. The borrow checker reports that `inner` does not live long enough. In this run the result would actually be `outer`, but the compiler checks the signature's promise, not one particular execution, which is exactly what makes it sound.
+@mistakes
+- **Adding `'static` to make errors go away.** It usually just moves the error. Fix the ownership instead (often by returning an owned value).
+- **Thinking annotations change lifetimes.** They only describe constraints.
+- **Structs full of references early on.** Owned fields (`String`) avoid lifetime parameters entirely.
+@keys
+- Lifetimes are the scopes during which references are valid.
+- Annotations relate the lifetimes of inputs and outputs for the borrow checker.
+- Structs holding references need lifetime parameters.
+- Elision hides annotations in common cases; `'static` lasts the whole program.
+
+=== 10.4
+@idea
+Real signatures often combine all three tools: type parameters, trait bounds and lifetimes. Reading them is a skill: take each part in turn. In `fn longest_with_note<'a, T>(x: &'a str, y: &'a str, note: T) -> &'a str where T: Display`, the angle brackets declare a lifetime `'a` and a type `T`; the parameters say `x` and `y` are borrowed for `'a` and `note` is any displayable value; the return borrows for `'a`; the `where` clause states the bound. Lifetimes come first in the list, by convention.
+
+The combination shines in data structures that **borrow** and work with **any type**. A `struct Labelled<'a, T> { label: &'a str, value: T }` can wrap anything while borrowing its label; an `impl<'a, T: Display> Labelled<'a, T>` gives it methods for displayable values. Generic functions over slices of references, such as "find the longest item that matches a predicate", naturally carry all three.
+
+The compiler checks each part independently: bounds say what operations `T` supports, lifetimes say how long references remain valid, and the types make sure everything fits. When a signature gets hard to read, a `where` clause, descriptive type parameter names (`Item` instead of `T`) and a short doc comment help more than clever tricks.
+@how
+- Order: lifetimes, then types: `<'a, 'b, T, U>`.
+- Put long bounds in `where`; name parameters meaningfully when it helps.
+- Structs can be generic and borrow: `struct S<'a, T> { r: &'a str, v: T }`.
+- `impl<'a, T: Bound> S<'a, T>` adds methods under conditions.
+- Read signatures part by part: generics, parameters, return, bounds.
+@example rust: All three in one signature
+use std::fmt::Display;
+
+fn longest_with_note<'a, T>(x: &'a str, y: &'a str, note: T) -> &'a str
+where
+    T: Display,
+{
+    println!("note: {note}");
+    if x.len() >= y.len() { x } else { y }
+}
+
+fn best_match<'a, Item, F>(items: &'a [Item], score: F) -> Option<&'a Item>
+where
+    F: Fn(&Item) -> i64,
+{
+    items.iter().max_by_key(|item| score(item))
+}
+
+struct Labelled<'a, T> {
+    label: &'a str,
+    value: T,
+}
+
+impl<'a, T: Display + PartialOrd> Labelled<'a, T> {
+    fn show(&self) -> String {
+        format!("{}: {}", self.label, self.value)
+    }
+    fn larger<'b>(&'b self, other: &'b Labelled<'a, T>) -> &'b Labelled<'a, T> {
+        if self.value >= other.value { self } else { other }
+    }
+}
+
+fn main() {
+    println!("{}", longest_with_note("apples", "kiwis", 42));
+    let words = ["tea", "rooibos", "matcha", "chai"];
+    println!("{:?}", best_match(&words, |w| w.len() as i64));
+    println!("{:?}", best_match(&[3, -9, 7, 1], |n: &i32| -(*n as i64).abs()));
+    let names = String::from("speed");
+    let a = Labelled { label: &names, value: 88.5 };
+    let b = Labelled { label: "limit", value: 100.0 };
+    println!("{} / {} -> larger: {}", a.show(), b.show(), a.larger(&b).show());
+}
+@note
+`longest_with_note` combines a lifetime with a bounded type. `best_match` borrows from a slice of any item type and takes a scoring closure: the second call finds the number closest to zero. `Labelled` is generic over its value while borrowing its label, and its methods exist only for values that can be displayed and compared.
+@example rust fail: A missing bound in a combined signature
+struct Labelled<'a, T> {
+    label: &'a str,
+    value: T,
+}
+
+impl<'a, T> Labelled<'a, T> {
+    fn show(&self) -> String {
+        format!("{}: {}", self.label, self.value)
+    }
+}
+
+fn main() {
+    let x = Labelled { label: "speed", value: 88 };
+    println!("{}", x.show());
+}
+@note
+The lifetime part is fine, but `{}` needs `T: Display` and the impl block does not promise it, so the compiler rejects the method even though this particular call uses an integer. It suggests restricting `T` with `std::fmt::Display`. Each part of a signature is checked on its own.
+@mistakes
+- **Cramming bounds into the angle brackets.** Use `where` for readability.
+- **One lifetime for everything when inputs are independent.** Extra lifetimes (`'a`, `'b`) can make a function more flexible for callers.
+- **Generic parameters that are never needed.** Every parameter should earn its place.
+@keys
+- Lifetimes come first, then types, then bounds (often in `where`).
+- Generic structs can also borrow, with methods under conditions.
+- The compiler checks bounds, lifetimes and types independently.
+- Readable names and `where` clauses keep complex signatures understandable.
+
+=== 11.1
+@idea
+A **test** in Rust is a function annotated with `#[test]`. `cargo test` compiles your code in test mode, runs every test function (in parallel by default), and reports which passed and failed. A test fails when it panics, so checks are macros that panic on failure: `assert!(condition)`, `assert_eq!(left, right)` and `assert_ne!(left, right)`. The `_eq` forms print both values when they differ, which makes failures easy to diagnose; add a custom message after the values: `assert_eq!(total, 30, "total for {items:?}")`.
+
+Tests usually live in a module annotated `#[cfg(test)]` at the bottom of the file, with `use super::*;` to see the code under test. The `cfg(test)` attribute means the module is only compiled for `cargo test`, so tests add nothing to the release binary.
+
+To check that code panics when it should, add `#[should_panic]`, ideally with `expected = "part of the message"` so the test fails if it panics for the wrong reason. Tests can also return `Result<(), E>`: returning `Err` fails the test, and the `?` operator works inside, which is convenient for tests that call fallible functions.
+@how
+- `#[cfg(test)] mod tests { use super::*; #[test] fn name() { ... } }`.
+- `assert!`, `assert_eq!(left, right)`, `assert_ne!`, each with optional format arguments.
+- `#[should_panic(expected = "...")]` for code that must panic.
+- `fn t() -> Result<(), String>` lets you use `?`; return `Err` to fail.
+- Values compared with `assert_eq!` need `PartialEq` and `Debug`.
+@example rust test: A tested module with every kind of check
+pub fn split_bill(total_cents: u32, people: u32) -> Vec<u32> {
+    if people == 0 {
+        panic!("split_bill needs at least one person, got 0");
+    }
+    let (share, extra) = (total_cents / people, total_cents % people);
+    (0..people).map(|i| share + u32::from(i < extra)).collect()
+}
+
+pub fn parse_cents(text: &str) -> Result<u32, String> {
+    let (dollars, cents) = text.split_once('.').ok_or(format!("{text:?} has no decimal point"))?;
+    let d: u32 = dollars.parse().map_err(|e| format!("dollars: {e}"))?;
+    let c: u32 = cents.parse().map_err(|e| format!("cents: {e}"))?;
+    Ok(d * 100 + c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shares_add_up_exactly() {
+        let shares = split_bill(1000, 3);
+        assert_eq!(shares.iter().sum::<u32>(), 1000, "shares were {shares:?}");
+        assert_eq!(shares, vec![334, 333, 333]);
+    }
+
+    #[test]
+    fn nobody_pays_more_than_a_cent_extra() {
+        let shares = split_bill(101, 4);
+        assert!(shares.iter().max().unwrap() - shares.iter().min().unwrap() <= 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one person")]
+    fn zero_people_panics() {
+        split_bill(500, 0);
+    }
+
+    #[test]
+    fn parses_with_question_mark() -> Result<(), String> {
+        assert_eq!(parse_cents("12.34")?, 1234);
+        assert_ne!(parse_cents("0.99")?, 100);
+        Ok(())
+    }
+
+    #[test]
+    fn deliberately_failing_example() {
+        assert_eq!(split_bill(10, 3), vec![3, 3, 4], "remainder should go to the first people");
+    }
+}
+@note
+Four tests passed, including the `should_panic` test, whose expected text matched the panic message, and the test returning `Result`, which used `?`. The last test is wrong on purpose: its failure report shows the left and right values and the custom message, which is exactly what you need to find the bug (here, a bug in the test's expectation).
+@example rust fail: assert_eq! needs Debug to print the values
+#[derive(PartialEq)]
+struct Money(u32);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn equal_money() {
+        assert_eq!(Money(5), Money(5));
+    }
+}
+
+fn main() {}
+@note
+`assert_eq!` prints both values when they differ, so it needs them to implement `Debug`, and the compiler says so (it checks even though this test would pass). Adding `#[derive(Debug, PartialEq)]` to the struct fixes it. Deriving `Debug` on your types is almost always worth it for this reason.
+@mistakes
+- **`assert!(a == b)` instead of `assert_eq!(a, b)`.** You lose the printed values on failure.
+- **`#[should_panic]` without `expected`.** The test passes even if the code panics for the wrong reason.
+- **Tests that depend on each other or on run order.** They run in parallel; each must stand alone.
+@keys
+- `#[test]` functions run with `cargo test`; a panic means failure.
+- `assert_eq!`/`assert_ne!` show both values; add custom messages.
+- `#[should_panic(expected = ...)]` tests panics precisely.
+- Tests can return `Result` and use `?`.
+
+=== 11.2
+@idea
+`cargo test` accepts options for itself and, after `--`, for the **test binary**. The most useful ones change what runs and what you see. Tests run in **parallel** threads by default, which is fast but means tests must not share state such as a file or environment variable; `cargo test -- --test-threads=1` runs them one at a time when they must.
+
+Output from passing tests is **captured** (hidden) so the report stays readable; only failing tests show what they printed. `cargo test -- --show-output` (or `--nocapture`) shows everything, useful when debugging. To run a **subset**, pass a filter: `cargo test split` runs every test whose name contains "split", and `cargo test tests::exact_name -- --exact` runs one.
+
+Slow tests (network, large data) can be marked **`#[ignore]`** (optionally with a reason): they are skipped by default and listed as ignored, and `cargo test -- --ignored` runs only them, `--include-ignored` runs everything. `cargo test --release` tests optimised code, and `cargo test --doc` runs only documentation examples. Exit codes follow convention: 0 when all tests pass, non-zero otherwise, which is what CI relies on.
+@how
+- Filter by name: `cargo test part_of_name`; exact: `cargo test path::name -- --exact`.
+- One thread: `cargo test -- --test-threads=1`.
+- Show prints from passing tests: `cargo test -- --show-output`.
+- `#[ignore = "reason"]` to skip by default; `-- --ignored` / `--include-ignored` to run.
+- `cargo test --lib`, `--doc`, `--test name` target kinds of tests.
+@example rust test: Ignored tests and captured output
+pub fn is_prime(n: u64) -> bool {
+    n >= 2 && (2..).take_while(|d| d * d <= n).all(|d| n % d != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_primes() {
+        println!("this print is captured because the test passes");
+        let found: Vec<u64> = (1..30).filter(|&n| is_prime(n)).collect();
+        assert_eq!(found, vec![2, 3, 5, 7, 11, 13, 17, 19, 23, 29]);
+    }
+
+    #[test]
+    fn one_and_zero_are_not_prime() {
+        assert!(!is_prime(0) && !is_prime(1));
+    }
+
+    #[test]
+    #[ignore = "slow: checks a large number"]
+    fn big_prime() {
+        assert!(is_prime(1_000_000_007));
+    }
+}
+@note
+Two tests ran and passed, and the slow one was reported as ignored with its reason instead of running. The `println!` inside the passing test was hidden; run with `-- --show-output` to see it, or `-- --ignored` to run only the slow test. Tests ran one at a time here; by default they would run in parallel.
+@example bash: Selecting tests from the command line
+$ cargo test split
+running 2 tests
+test tests::split_even ... ok
+test tests::split_with_remainder ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out
+
+$ cargo test -- --ignored
+running 1 test
+test tests::big_prime ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out
+
+$ cargo test small_primes -- --show-output
+running 1 test
+test tests::small_primes ... ok
+
+successes:
+
+---- tests::small_primes stdout ----
+this print is captured because the test passes
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out
+@note
+A filter runs only matching tests and reports how many were filtered out. `--ignored` runs just the slow tests, and `--show-output` reveals what passing tests printed, grouped per test. Options before `--` are for Cargo; options after it go to the test binary.
+@mistakes
+- **Tests sharing files or environment variables while running in parallel.** Use separate temp paths, or `--test-threads=1` as a last resort.
+- **Debugging with prints and wondering where they went.** Use `--show-output` (or `--nocapture`).
+- **Deleting slow tests.** Mark them `#[ignore]` and run them in a nightly CI job.
+@keys
+- Filters select tests by name; `--exact` for one.
+- Tests run in parallel; `--test-threads=1` serialises them.
+- Output of passing tests is captured; `--show-output` shows it.
+- `#[ignore]` skips slow tests by default; `--ignored` runs them.
+
+=== 11.3
+@idea
+Rust projects use two kinds of tests. **Unit tests** sit next to the code they test, inside a `#[cfg(test)] mod tests` in the same file. Because a child module can see its parent's private items, unit tests can test **private functions** too, which is handy for tricky internal helpers.
+
+**Integration tests** live in the `tests/` folder at the top of the package, one crate per file. They use your library exactly as an outside user would: only its **public API**, imported by the package name (`use mylib::parse;`). No `#[cfg(test)]` is needed; Cargo compiles them only for `cargo test`. They catch problems unit tests miss: a function you forgot to make public, or modules that work alone but not together.
+
+Shared setup code for integration tests goes in **`tests/common/mod.rs`** (not `tests/common.rs`, which Cargo would treat as a test file of its own) and is pulled in with `mod common;`. Binary crates cannot be tested this way, because a binary exposes no API, which is another reason to keep logic in `src/lib.rs` with a thin `src/main.rs`. `cargo test --test name` runs one integration test file.
+@how
+- Unit tests: `#[cfg(test)] mod tests { use super::*; }` in each source file; may test private items.
+- Integration tests: `tests/*.rs`, each a separate crate using only the public API.
+- Shared helpers: `tests/common/mod.rs`, included with `mod common;`.
+- Logic in `lib.rs` so integration tests can reach it.
+- `cargo test --lib` (unit only), `cargo test --test api` (one file).
+@example rust test: Unit tests can reach private helpers
+mod pricing {
+    pub fn total_with_tax(cents: u32) -> u32 {
+        cents + tax(cents)
+    }
+
+    fn tax(cents: u32) -> u32 {                   // private: not part of the API
+        (cents * 15 + 50) / 100                       // 15%, rounded to the nearest cent
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn private_tax_rounds_to_nearest_cent() {
+            assert_eq!(tax(10), 2);                   // 1.5 cents rounds up
+            assert_eq!(tax(13), 2);                   // 1.95 rounds to 2
+            assert_eq!(tax(3), 0);                    // 0.45 rounds down
+        }
+
+        #[test]
+        fn public_total() {
+            assert_eq!(total_with_tax(1000), 1150);
+        }
+    }
+}
+
+pub use pricing::total_with_tax;
+@note
+The test module is a child of `pricing`, so `use super::*` brings in the private `tax` function, and its rounding rules can be tested directly. An integration test in `tests/` could only call `total_with_tax`, because `tax` is not public.
+@example bash: An integration test in tests/, with shared setup
+$ tree tests
+tests
+├── common
+│   └── mod.rs
+└── checkout.rs
+$ cat tests/common/mod.rs
+pub fn cart() -> Vec<u32> {
+    vec![1000, 250, 4999]
+}
+$ cat tests/checkout.rs
+mod common;
+use shop::total_with_tax;            // only the public API, by package name
+
+#[test]
+fn whole_cart_with_tax() {
+    let total: u32 = common::cart().iter().map(|&c| total_with_tax(c)).sum();
+    assert_eq!(total, 7130);
+}
+$ cargo test --test checkout
+running 1 test
+test whole_cart_with_tax ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+@note
+The integration test is its own crate: it imports the library by its package name and can only use public items. Shared setup lives in `tests/common/mod.rs`, so Cargo does not mistake it for a test file, and `--test checkout` runs just this one file.
+@mistakes
+- **Putting helpers in `tests/common.rs`.** Cargo runs it as a test crate. Use `tests/common/mod.rs`.
+- **Logic in `main.rs`.** Integration tests cannot reach a binary. Move it to `lib.rs`.
+- **Only unit tests.** Integration tests verify the public API works as a whole.
+@keys
+- Unit tests live beside the code and may test private items.
+- Integration tests in `tests/` use only the public API, as users do.
+- Shared integration helpers go in `tests/common/mod.rs`.
+- Keep logic in the library so both kinds of test can reach it.

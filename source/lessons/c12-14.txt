@@ -1,0 +1,806 @@
+=== 12.1
+@idea
+The chapter's project is **minigrep**, a small version of the classic `grep` tool: `minigrep QUERY FILE` prints every line of the file that contains the query. It brings together much of the first half of the book: command-line arguments, files, strings, error handling, modules and tests.
+
+Arguments come from **`std::env::args()`**, an iterator over the program's arguments as `String`s; the first is the program's own path. `let args: Vec<String> = env::args().collect();` gathers them; `collect` needs the type annotation to know what collection to build. (`env::args` panics if an argument is not valid Unicode; `env::args_os` returns `OsString`s for programs that must handle any file name.)
+
+Reading the whole file is one call: **`fs::read_to_string(path)`** returns `Result<String, io::Error>`. The first version keeps everything in `main`, uses indexing for the arguments and `expect` for the file, and simply prints what it read. It works for the happy path, and it is deliberately naive: missing arguments panic with an index-out-of-bounds message and errors are reported crudely. The next lessons fix that step by step, which is how real programs grow.
+@how
+- `let args: Vec<String> = env::args().collect();` (args[0] is the program).
+- Run with `cargo run -- the poem.txt`; arguments after `--` go to the program.
+- `fs::read_to_string(path)` returns `Result<String, io::Error>`.
+- First version: indexing and `expect` (to be improved).
+- `env::args_os` when file names may not be valid Unicode.
+@example rust: The first version of minigrep
+use std::env;
+use std::fs;
+
+fn main() {
+    fs::write("poem.txt", "I'm nobody! Who are you?\nAre you nobody, too?\nThen there's a pair of us - don't tell!\nHow dreary to be somebody!\n").unwrap();
+
+    let args: Vec<String> = vec!["minigrep".into(), "body".into(), "poem.txt".into()];   // env::args().collect()
+    let query = &args[1];
+    let file_path = &args[2];
+    println!("Searching for {query:?} in {file_path}");
+
+    let contents = fs::read_to_string(file_path).expect("Should have been able to read the file");
+    for line in contents.lines() {
+        if line.contains(query.as_str()) {
+            println!("{line}");
+        }
+    }
+}
+@note
+The argument vector is built by hand here so the example runs without a terminal; in the real program it is `env::args().collect()`, with the same shape: the program name first, then the query and the file. The file is read in one call and each matching line is printed. Missing arguments would still panic with an unhelpful message.
+@example rust: What the naive version does with too few arguments
+fn main() {
+    let args: Vec<String> = vec!["minigrep".into(), "body".into()];        // the user forgot the file
+    println!("got {} arguments: {:?}", args.len(), args);
+    let file_path = &args[2];
+    println!("never reached: {file_path}");
+}
+@note
+Indexing past the end of the argument list panics with "index out of bounds: the len is 2 but the index is 2", which tells a user nothing about how to run the program. The next lesson replaces indexing with a `Config::build` function that returns a clear error instead.
+@mistakes
+- **Forgetting that `args[0]` is the program name.** The first user argument is at index 1.
+- **Indexing arguments directly in real programs.** Missing arguments panic. Validate and report usage.
+- **`expect` messages that blame the user vaguely.** Error messages should say what to do.
+@keys
+- `env::args().collect::<Vec<String>>()` gathers command-line arguments.
+- `fs::read_to_string` reads a whole file into a String, returning a Result.
+- The first version keeps everything in main, on purpose.
+- Its weaknesses (panics, poor messages) motivate the refactoring.
+
+=== 12.2
+@idea
+The refactoring separates **concerns**. Argument parsing moves into a `Config` struct with a `build` function: `Config::build(&args) -> Result<Config, &'static str>`. It checks there are enough arguments and returns `Err("not enough arguments")` instead of panicking. Grouping `query` and `file_path` in a struct also documents that they belong together.
+
+The program logic moves into **`run(config) -> Result<(), Box<dyn Error>>`**: read the file with `?`, search, print. `Box<dyn Error>` means "any kind of error", so `run` can propagate I/O errors (and later others) with `?` without defining an error type yet.
+
+`main` becomes a thin shell: build the config, call `run`, and turn any error into a message on standard error and a non-zero exit code with **`process::exit(1)`**. `unwrap_or_else(|err| { ...; process::exit(1) })` handles the config error in one expression, and `if let Err(e) = run(config)` handles the run error. Finally, `Config` and `run` move into **`src/lib.rs`**, so they can be tested, while `src/main.rs` keeps only the wiring. This structure (parse, run, report) suits almost every command-line program.
+@how
+- `struct Config { query: String, file_path: String }` with `fn build(args: &[String]) -> Result<Config, &'static str>`.
+- `fn run(config: Config) -> Result<(), Box<dyn Error>>` with `?` inside.
+- `main`: `Config::build(&args).unwrap_or_else(|e| { eprintln!(...); process::exit(1) })`.
+- `if let Err(e) = run(config) { eprintln!(...); process::exit(1); }`.
+- Move `Config` and `run` to `lib.rs`; `main.rs` keeps the wiring.
+@example rust: Config, run and a thin main
+use std::error::Error;
+use std::fs;
+
+pub struct Config {
+    pub query: String,
+    pub file_path: String,
+}
+
+impl Config {
+    pub fn build(args: &[String]) -> Result<Config, &'static str> {
+        if args.len() < 3 {
+            return Err("not enough arguments (usage: minigrep QUERY FILE)");
+        }
+        Ok(Config { query: args[1].clone(), file_path: args[2].clone() })
+    }
+}
+
+pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
+    let contents = fs::read_to_string(&config.file_path)?;
+    for line in contents.lines().filter(|l| l.contains(&config.query)) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+fn main_with(args: &[&str]) -> i32 {
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let config = match Config::build(&args) {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("Problem parsing arguments: {err}");
+            return 1;                                        // real main: process::exit(1)
+        }
+    };
+    if let Err(e) = run(config) {
+        eprintln!("Application error: {e}");
+        return 1;
+    }
+    0
+}
+
+fn main() {
+    fs::write("poem.txt", "Then there's a pair of us\nHow dreary to be somebody!\n").unwrap();
+    for args in [vec!["minigrep", "dreary", "poem.txt"], vec!["minigrep", "dreary"], vec!["minigrep", "x", "missing.txt"]] {
+        println!("$ {}", args.join(" "));
+        println!("  exit code {}", main_with(&args));
+    }
+}
+@note
+`Config::build` turned a missing argument into a clear message instead of a panic, and `run` propagated the missing-file error with `?`, which `main` reported and turned into exit code 1. `main_with` stands in for `main` so three runs fit in one example; the real program calls `process::exit(1)`.
+@example rust: The same pieces with unwrap_or_else and process::exit
+use std::process;
+
+struct Config {
+    query: String,
+}
+
+impl Config {
+    fn build(args: &[String]) -> Result<Config, &'static str> {
+        args.get(1).map(|q| Config { query: q.clone() }).ok_or("missing QUERY")
+    }
+}
+
+fn main() {
+    let args: Vec<String> = vec!["minigrep".to_string(), "rust".to_string()];
+    let config = Config::build(&args).unwrap_or_else(|err| {
+        eprintln!("Problem parsing arguments: {err}");
+        process::exit(1);
+    });
+    println!("searching for {:?}", config.query);
+}
+@note
+`unwrap_or_else` takes a closure that runs only on `Err`; because `process::exit` never returns (its type is `!`), the closure's type fits, and `config` is a plain `Config` afterwards. `ok_or` converted the `Option` from `args.get(1)` into a `Result` with a message.
+@mistakes
+- **Panicking on user mistakes.** Return errors and print usage.
+- **Error messages on stdout.** They mix with real output. Use `eprintln!`.
+- **Exiting with 0 after an error.** Scripts think it succeeded. Use `process::exit(1)`.
+@keys
+- `Config::build` validates arguments and returns a Result.
+- `run` holds the logic and propagates errors with `?` into `Box<dyn Error>`.
+- `main` only wires things up and reports errors with a non-zero exit code.
+- Logic in `lib.rs`, wiring in `main.rs`.
+
+=== 12.3
+@idea
+The search logic is developed **test first**. Write a test describing the behaviour (given this query and these contents, the result is exactly these lines), watch it fail, then write just enough code to make it pass. The test pins down details before you write them: does "duct" match "productive"? (Yes: it is a substring search.)
+
+The function signature needs an explicit **lifetime**: `pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str>`. The returned lines are slices of `contents`, not of `query`, and the annotation tells the compiler exactly that: the results live as long as `contents`. Without it, the compiler cannot tell which input the returned references borrow from and asks for the annotation. Returning slices instead of new Strings avoids copying every matching line.
+
+The implementation is a loop: for each line in `contents.lines()`, if `line.contains(query)`, push it onto a result vector. Once the test passes, `run` calls `search` and prints each result. Because `search` takes text, not a file name, it is easy to test with string literals, a design that falls out naturally when tests come first.
+@how
+- Write the test first: query, contents, expected `Vec<&str>`; see it fail.
+- `fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str>`.
+- Loop over `contents.lines()`, keep lines that `contains(query)`.
+- Test pure functions on strings; keep file I/O in `run`.
+- Re-run the tests after every change.
+@example rust test: search, written test first
+pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    let mut results = Vec::new();
+    for line in contents.lines() {
+        if line.contains(query) {
+            results.push(line);
+        }
+    }
+    results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEXT: &str = "\
+Rust:
+safe, fast, productive.
+Pick three.
+Duct tape.";
+
+    #[test]
+    fn one_result() {
+        assert_eq!(vec!["safe, fast, productive."], search("duct", TEXT));
+    }
+
+    #[test]
+    fn several_results() {
+        assert_eq!(vec!["safe, fast, productive.", "Pick three."], search("e", TEXT).into_iter().filter(|l| !l.starts_with("Duct")).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn no_results() {
+        assert!(search("monomorphisation", TEXT).is_empty());
+    }
+
+    #[test]
+    fn search_is_case_sensitive() {
+        assert_eq!(search("rust", TEXT), Vec::<&str>::new());
+    }
+}
+@note
+The tests fixed the behaviour before the loop existed: "duct" matches inside "productive" but not "Duct" (search is case-sensitive), and a missing word gives an empty vector. The backslash after the opening quote keeps the text from starting with a newline. All four pass.
+@example rust fail: Without the lifetime the compiler cannot tell what the result borrows
+pub fn search(query: &str, contents: &str) -> Vec<&str> {
+    contents.lines().filter(|l| l.contains(query)).collect()
+}
+
+fn main() {}
+@note
+With two reference parameters, the elision rules cannot decide whether the returned slices borrow from `query` or from `contents`, so the compiler asks for a lifetime parameter and suggests one. Adding `<'a>` on `contents` and the return type states the truth: results come from the contents.
+@mistakes
+- **Writing the code before the test.** The test is what pins down edge cases like substrings and case.
+- **Returning `Vec<String>`.** It copies every line; slices of `contents` are free.
+- **Testing through files.** Test the pure function with string literals; test I/O separately.
+@keys
+- Write a failing test first, then the minimum code to pass.
+- The lifetime ties returned slices to `contents`.
+- Pure functions on strings are easy to test.
+- Tests document details such as substring and case behaviour.
+
+=== 12.4
+@idea
+The last feature is an option: **case-insensitive** search, controlled by an **environment variable**. Environment variables suit settings that should persist across many runs without retyping a flag: `IGNORE_CASE=1 cargo run -- to poem.txt`. **`env::var("IGNORE_CASE")`** returns a `Result`: `Ok(value)` if set, `Err` if not; `.is_ok()` turns that into "is it set at all?". The value is read once in `Config::build` and stored in an `ignore_case: bool` field, so `run` does not depend on the environment.
+
+`search_case_insensitive` lowercases the query and each line before comparing (`to_lowercase` returns a new String, which handles Unicode correctly, unlike ASCII-only tricks). It gets its own test first, like `search`.
+
+The program also separates its two output streams properly. Results go to **standard output** with `println!`, and error messages to **standard error** with **`eprintln!`**. That way `minigrep body poem.txt > results.txt` writes only results to the file while errors still appear on the screen, and a pipeline does not silently pass error text to the next program. This is a convention every command-line tool should follow.
+@how
+- `env::var("NAME")` → `Result<String, VarError>`; `.is_ok()` for a flag.
+- Read the environment once in `Config::build`; store the result in the config.
+- `search_case_insensitive`: lowercase query and line with `to_lowercase()`.
+- Results with `println!` (stdout), errors with `eprintln!` (stderr).
+- Test with redirection: `cargo run -- x poem.txt > out.txt` keeps errors visible.
+@example rust test: Both searches, tested, and a config that reads the environment
+pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    contents.lines().filter(|line| line.contains(query)).collect()
+}
+
+pub fn search_case_insensitive<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    let query = query.to_lowercase();
+    contents.lines().filter(|line| line.to_lowercase().contains(&query)).collect()
+}
+
+pub struct Config {
+    pub query: String,
+    pub ignore_case: bool,
+}
+
+impl Config {
+    pub fn build_with(query: &str, env_value: Option<&str>) -> Config {
+        Config { query: query.to_string(), ignore_case: env_value.is_some() }   // real code: env::var("IGNORE_CASE").is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const TEXT: &str = "Rust:\nsafe, fast, productive.\nTrust me.\nÉCOLE de rustiques";
+
+    #[test]
+    fn case_sensitive() {
+        assert_eq!(search("rust", TEXT), vec!["Trust me.", "ÉCOLE de rustiques"]);
+    }
+
+    #[test]
+    fn case_insensitive() {
+        assert_eq!(search_case_insensitive("rUsT", TEXT), vec!["Rust:", "Trust me.", "ÉCOLE de rustiques"]);
+    }
+
+    #[test]
+    fn unicode_lowercasing() {
+        assert_eq!(search_case_insensitive("école", TEXT), vec!["ÉCOLE de rustiques"]);
+    }
+
+    #[test]
+    fn config_reads_the_flag() {
+        assert!(Config::build_with("x", Some("1")).ignore_case);
+        assert!(!Config::build_with("x", None).ignore_case);
+    }
+}
+@note
+The case-insensitive search found "Rust:" too, and `to_lowercase` handled the accented capital É, which ASCII-only lowercasing would miss. Passing the environment value into the constructor makes the configuration testable without changing the real environment, which matters because tests run in parallel.
+@example rust: stdout for results, stderr for errors
+use std::env;
+
+fn main() {
+    let ignore_case = env::var("IGNORE_CASE").is_ok();
+    println!("IGNORE_CASE set? {ignore_case}");
+    match env::var("HOME_OF_THE_BRAVE") {
+        Ok(v) => println!("value: {v}"),
+        Err(e) => eprintln!("error: HOME_OF_THE_BRAVE: {e}"),
+    }
+    println!("result line 1");
+    eprintln!("warning: 1 file skipped");
+    println!("result line 2");
+}
+@note
+`env::var` returned an error for an unset variable, and `is_ok()` turned the IGNORE_CASE lookup into a boolean. Error and warning lines went to standard error; with `> results.txt` they would stay on the screen while only the two result lines and the first status line went to the file.
+@mistakes
+- **Reading environment variables deep inside the logic.** Read them once into the config; it keeps code testable.
+- **ASCII-only case folding.** Use `to_lowercase()` for real text.
+- **Printing errors with `println!`.** They pollute redirected output. Use `eprintln!`.
+@keys
+- `env::var(...).is_ok()` turns an environment variable into a flag.
+- Store settings in the config; keep logic independent of the environment.
+- `to_lowercase` gives Unicode-aware case-insensitive matching.
+- Results to stdout, errors to stderr.
+
+=== 13.1
+@idea
+A **closure** is an anonymous function you can store in a variable or pass to another function, and unlike a regular `fn`, it can **capture** values from the scope where it is defined: `let limit = 10; let small = |n: i32| n < limit;`. Closures are written with pipes around the parameters, and types are usually **inferred**, though you can annotate them. Once inferred for a closure, the types are fixed: calling it first with an `i32` and then with a `String` is an error.
+
+A closure captures each variable in the least demanding way its body allows: by **shared reference** if it only reads, by **mutable reference** if it changes the variable, and by **value** (moving it in) if it consumes it. The `move` keyword forces capture by value, which is required when the closure must outlive the current scope, such as a closure passed to a new thread.
+
+How a closure captures determines which **`Fn` traits** it implements, and functions that take closures state which they need. **`FnOnce`**: can be called at least once (every closure; one that moves a captured value out can only be called once). **`FnMut`**: can be called repeatedly and may mutate captured state. **`Fn`**: can be called repeatedly without mutating anything. `unwrap_or_else` takes an `FnOnce`, `sort_by_key` an `FnMut`, and a function you call from several threads would need `Fn`.
+@how
+- `let add = |a: i32, b: i32| a + b;` or with inferred types `|x| x + 1`.
+- Captures by reference, mutable reference or value, as the body needs.
+- `move |x| ...` forces capture by value (threads, returned closures).
+- Accept closures with `impl Fn(T) -> U`, `impl FnMut(...)`, `impl FnOnce(...)`.
+- `FnOnce` ⊇ `FnMut` ⊇ `Fn`: ask for the least restrictive trait you can.
+@example rust: The three ways of capturing
+fn apply_twice(f: impl Fn(i32) -> i32, x: i32) -> i32 {
+    f(f(x))
+}
+
+fn call_n_times(mut f: impl FnMut(), n: usize) {
+    for _ in 0..n {
+        f();
+    }
+}
+
+fn consume(f: impl FnOnce() -> String) -> String {
+    f()
+}
+
+fn make_adder(amount: i32) -> impl Fn(i32) -> i32 {
+    move |x| x + amount                          // `amount` must move in: the closure outlives this call
+}
+
+fn main() {
+    let bonus = 5;
+    let add_bonus = |x| x + bonus;               // captures `bonus` by shared reference
+    println!("apply_twice: {}", apply_twice(add_bonus, 10));
+
+    let mut clicks = 0;
+    call_n_times(|| clicks += 1, 3);             // captures `clicks` by mutable reference
+    println!("clicks: {clicks}");
+
+    let name = String::from("Ferris");
+    let greet = move || format!("hello, {name}");    // `name` moved into the closure
+    println!("{}", consume(greet));
+
+    let add10 = make_adder(10);
+    println!("make_adder(10)(32) = {}", add10(32));
+
+    let mut words = vec!["banana", "fig", "cherry"];
+    let mut comparisons = 0;
+    words.sort_by_key(|w| { comparisons += 1; w.len() });
+    println!("{words:?} after {comparisons} key calls");
+}
+@note
+Each closure captured as little as it needed: `add_bonus` only read `bonus`, the click counter mutated `clicks` (an FnMut), and `greet` took ownership of `name` with `move`. `make_adder` returns a closure that carries its own copy of `amount`. `sort_by_key` accepts an FnMut, so the closure could count how often it was called.
+@example rust fail: A closure that consumes its capture can only be called once
+fn main() {
+    let report = String::from("quarterly numbers");
+    let send = move || {
+        let sent = report;                   // moves the String out of the closure
+        println!("sent: {sent}");
+    };
+    send();
+    send();
+}
+@note
+The closure moves `report` out of itself when it runs, so it implements only `FnOnce`, and the compiler rejects the second call, explaining that the closure cannot be called twice because it moves a captured variable. Borrowing (`println!("{report}")`) instead of moving would make it callable many times.
+@mistakes
+- **Asking for `Fn` when `FnMut` or `FnOnce` would do.** Callers can then pass fewer closures. Ask for the least you need.
+- **Forgetting `move` for threads or returned closures.** The borrow would outlive the data.
+- **Expecting a closure's types to stay generic.** After the first call they are fixed.
+@keys
+- Closures are anonymous functions that capture their environment.
+- They capture by reference, mutable reference or value; `move` forces value.
+- `Fn`, `FnMut` and `FnOnce` describe how a closure may be called.
+- Functions accept closures with `impl Fn...` bounds.
+
+=== 13.2
+@idea
+An **iterator** produces a sequence of values one at a time. The `Iterator` trait requires one method, `next(&mut self) -> Option<Self::Item>`, returning `Some(item)` until the sequence is exhausted and then `None`. `for` loops call `next` for you. Collections offer three ways to iterate: `iter()` yields shared references, `iter_mut()` mutable references, and `into_iter()` owned values, consuming the collection.
+
+Iterator methods come in two kinds. **Iterator adaptors** (`map`, `filter`, `enumerate`, `zip`, `skip`, `take`, `rev`, `chain`, `flat_map`...) wrap an iterator in a new one and are **lazy**: nothing happens until something consumes them, and the compiler warns about an unused adaptor chain. **Consuming adaptors** (`sum`, `count`, `collect`, `max`, `min_by_key`, `fold`, `any`, `all`, `find`, `position`...) call `next` until done and produce a result. `collect` can build a `Vec`, `String`, `HashMap` and more; tell it which with a type annotation or the turbofish (`collect::<Vec<_>>()`).
+
+Chains of adaptors read like a description of the computation (`filter` the valid ones, `map` to prices, `sum`), and because of laziness and inlining they compile to code as fast as a hand-written loop. Your own types become iterators by implementing `next`, and then get every adaptor for free.
+@how
+- `iter()` → `&T`, `iter_mut()` → `&mut T`, `into_iter()` → `T`.
+- Adaptors are lazy: `map`, `filter`, `enumerate`, `zip`, `take`, `skip`, `rev`, `chain`, `flat_map`.
+- Consumers: `sum`, `count`, `collect`, `fold`, `any`, `all`, `find`, `max_by_key`, `position`.
+- `collect::<Vec<_>>()` or annotate the target type.
+- Implement `Iterator` with `type Item` and `fn next` to get all adaptors.
+@example rust: Iterator chains, lazily evaluated
+#[derive(Debug)]
+struct Order {
+    item: &'static str,
+    qty: u32,
+    cents: u32,
+    paid: bool,
+}
+
+fn main() {
+    let orders = vec![
+        Order { item: "tea", qty: 3, cents: 450, paid: true },
+        Order { item: "cake", qty: 1, cents: 650, paid: false },
+        Order { item: "scone", qty: 4, cents: 300, paid: true },
+        Order { item: "tea", qty: 2, cents: 450, paid: true },
+    ];
+
+    let revenue: u32 = orders.iter().filter(|o| o.paid).map(|o| o.qty * o.cents).sum();
+    println!("paid revenue: ${}.{:02}", revenue / 100, revenue % 100);
+
+    let names: Vec<String> = orders.iter().enumerate().map(|(i, o)| format!("{}:{}", i + 1, o.item)).collect();
+    println!("{names:?}");
+    println!("biggest order: {:?}", orders.iter().max_by_key(|o| o.qty * o.cents).map(|o| o.item));
+    println!("any unpaid? {} | all small? {}", orders.iter().any(|o| !o.paid), orders.iter().all(|o| o.qty < 10));
+
+    let calls = std::cell::Cell::new(0);             // a counter the closure can bump through &
+    let lazy = orders.iter().map(|o| { calls.set(calls.get() + 1); o.qty });
+    println!("map created, closure calls so far: {}", calls.get());
+    let first_two: Vec<u32> = lazy.take(2).collect();
+    println!("took {first_two:?}, closure calls now: {}", calls.get());
+}
+@note
+Each chain reads like its description: filter paid orders, map to amounts, sum. The last part shows laziness: creating the `map` ran nothing, and `take(2)` pulled exactly two items through it, so the closure ran only twice even though there are four orders.
+@example rust: Your own iterator gets every adaptor for free
+struct Fibonacci {
+    current: u64,
+    next: u64,
+}
+
+impl Iterator for Fibonacci {
+    type Item = u64;
+    fn next(&mut self) -> Option<u64> {
+        let value = self.current;
+        self.current = self.next;
+        self.next = self.next.checked_add(value)?;       // stop instead of overflowing
+        Some(value)
+    }
+}
+
+fn fibonacci() -> Fibonacci {
+    Fibonacci { current: 0, next: 1 }
+}
+
+fn main() {
+    println!("{:?}", fibonacci().take(12).collect::<Vec<_>>());
+    println!("first over 1000: {:?}", fibonacci().find(|&n| n > 1000));
+    println!("sum of even ones below 4 million: {}", fibonacci().take_while(|&n| n < 4_000_000).filter(|n| n % 2 == 0).sum::<u64>());
+    println!("how many fit in a u64: {}", fibonacci().count());
+}
+@note
+Implementing just `next` gave the type `take`, `find`, `take_while`, `filter`, `sum` and `count`. The sequence is infinite in principle, so adaptors like `take` and `take_while` bound it; `checked_add` with `?` makes the iterator end cleanly instead of overflowing, which is why `count` terminates.
+@mistakes
+- **Building an adaptor chain and never consuming it.** Nothing runs; the compiler warns "iterators are lazy".
+- **`collect()` without saying what to build.** Annotate the type or use the turbofish.
+- **Index loops over vectors.** Iterator chains are clearer, safer and just as fast.
+@keys
+- Iterators produce values through `next`; `for` loops use them.
+- `iter`, `iter_mut` and `into_iter` borrow, mutably borrow or consume.
+- Adaptors are lazy; consumers drive the iteration.
+- Implementing `next` unlocks every adaptor; chains are zero-cost.
+
+=== 13.3
+@idea
+With closures and iterators, minigrep gets cleaner. `Config::build` used to take `&[String]` and **clone** the query and file path, because it could not take ownership of strings inside a borrowed slice. Instead, it can take the **argument iterator itself**: `fn build(mut args: impl Iterator<Item = String>) -> Result<Config, &'static str>`. Calling `args.next()` hands over owned Strings directly, skipping the program name and returning a clear error when an argument is missing (`match args.next() { Some(arg) => arg, None => return Err(...) }`). No clones, and `main` passes `env::args()` straight in.
+
+`search` becomes a single expression: `contents.lines().filter(|line| line.contains(query)).collect()`. It says what it does, has no mutable state, and is easier to change (adding `.map(str::trim)` or making it lazy is one step).
+
+Is the iterator version slower? The Book benchmarks it, and the answer is no: iterators are a **zero-cost abstraction**. The compiler inlines the closures and adaptors and often produces exactly the machine code of the hand-written loop, sometimes better, because it can drop bounds checks and unroll loops. Write the clear version, and measure if performance matters.
+@how
+- `fn build(mut args: impl Iterator<Item = String>)`; call `args.next()` for each argument.
+- `args.next();` first to skip the program name.
+- Return `Err` when `next()` is `None`; no indexing, no cloning.
+- `search` as `lines().filter(...).collect()`.
+- Benchmark in release mode before assuming loops are faster.
+@example rust: Config from an iterator, search as a filter chain
+#[derive(Debug)]
+pub struct Config {
+    pub query: String,
+    pub file_path: String,
+    pub ignore_case: bool,
+}
+
+impl Config {
+    pub fn build(mut args: impl Iterator<Item = String>, ignore_case: bool) -> Result<Config, &'static str> {
+        args.next();                                         // skip the program name
+        let query = args.next().ok_or("didn't get a query string")?;
+        let file_path = args.next().ok_or("didn't get a file path")?;
+        Ok(Config { query, file_path, ignore_case })
+    }
+}
+
+pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    contents.lines().filter(|line| line.contains(query)).collect()
+}
+
+fn args(list: &[&str]) -> impl Iterator<Item = String> {
+    list.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()     // stands in for env::args()
+}
+
+fn main() {
+    println!("{:?}", Config::build(args(&["minigrep", "to", "poem.txt"]), false));
+    println!("{:?}", Config::build(args(&["minigrep", "to"]), false));
+    println!("{:?}", Config::build(args(&["minigrep"]), false));
+    let text = "I'm nobody! Who are you?\nAre you nobody, too?\nHow public, like a frog";
+    println!("{:?}", search("nobody", text));
+}
+@note
+`build` takes ownership of each argument from the iterator, so nothing is cloned, and `ok_or` with `?` turns a missing argument into a specific error. In the real program, `main` calls `Config::build(env::args(), env::var("IGNORE_CASE").is_ok())`. `search` is now one readable expression.
+@example rust: A loop and an iterator chain do the same work
+use std::time::Instant;
+
+fn count_loop(text: &str, query: &str) -> usize {
+    let mut n = 0;
+    for line in text.lines() {
+        if line.contains(query) {
+            n += 1;
+        }
+    }
+    n
+}
+
+fn count_iter(text: &str, query: &str) -> usize {
+    text.lines().filter(|l| l.contains(query)).count()
+}
+
+fn main() {
+    let text = "the quick brown fox\njumps over\nthe lazy dog\n".repeat(50_000);
+    let start = Instant::now();
+    let a = count_loop(&text, "the");
+    let t_loop = start.elapsed();
+    let start = Instant::now();
+    let b = count_iter(&text, "the");
+    let t_iter = start.elapsed();
+    println!("same answer: {} ({a} lines)", a == b);
+    println!("iterator within 2x of the loop: {}", t_iter.as_secs_f64() < 2.0 * t_loop.as_secs_f64() + 0.001);
+}
+@note
+Both versions find the same lines, and the iterator version runs about as fast as the loop. (This example is built without optimisations; in a release build the compiler typically produces near-identical machine code for both.) Timings vary, so only the comparisons are printed. For real measurements, use a benchmark harness like criterion in release mode.
+@mistakes
+- **Cloning out of a borrowed slice of arguments.** Take the iterator and own the values.
+- **Assuming loops beat iterators.** Measure in release mode; usually they are equal.
+- **Benchmarking debug builds.** Optimisations change everything; use `--release`.
+@keys
+- Taking `impl Iterator<Item = String>` lets `build` own arguments without cloning.
+- `next()` with `ok_or` and `?` gives clear errors for missing arguments.
+- Filter chains express search logic in one line.
+- Iterators are zero-cost: as fast as hand-written loops.
+
+=== 14.1
+@idea
+Cargo builds with **profiles**: predefined sets of compiler settings. `dev` (used by `cargo build` and `cargo run`) compiles fast with no optimisation (`opt-level = 0`) and full debug info, ideal while writing code. `release` (`cargo build --release`) optimises heavily (`opt-level = 3`), takes longer to compile and produces much faster programs, so it is what you ship and benchmark. Override settings in `Cargo.toml` under `[profile.dev]` or `[profile.release]`: for example `opt-level = 1` in dev for faster tests, or `lto = true` and `codegen-units = 1` in release for a little more speed.
+
+Rust has special comments for **documentation**. `///` documents the item that follows (function, struct, method) using **Markdown**, and `//!` documents the enclosing item, usually the crate or module at the top of `lib.rs`. `cargo doc --open` turns them into an HTML site like the standard library's, including your dependencies' docs.
+
+By convention, doc comments use **sections**: `# Examples` (the most important), `# Panics` (when the function panics), `# Errors` (what errors a `Result` can contain and why), and `# Safety` (for `unsafe` functions). Code blocks inside doc comments are **doc tests**: `cargo test` compiles and runs them, so examples in documentation are guaranteed to stay correct.
+@how
+- Profiles: `dev` (fast compile) and `release` (fast program); customise in `[profile.*]`.
+- `///` for the next item, `//!` for the enclosing crate or module; Markdown inside.
+- Sections: `# Examples`, `# Panics`, `# Errors`, `# Safety`.
+- Code blocks in docs are compiled and run by `cargo test` (doc tests).
+- `cargo doc --open` builds and opens the HTML docs.
+@example toml: Customising profiles
+[package]
+name = "minigrep"
+version = "0.1.0"
+edition = "2024"
+
+[profile.dev]
+opt-level = 1          # a little optimisation: faster tests, still quick to build
+
+[profile.release]
+opt-level = 3          # the default for release
+lto = true             # link-time optimisation across crates
+codegen-units = 1      # slower build, slightly faster binary
+panic = "abort"        # smaller binary; no unwinding on panic
+strip = true           # remove debug symbols from the shipped binary
+@note
+Only the settings you list change; everything else keeps the profile's defaults. The dev tweak speeds up test runs that do heavy computation, while the release settings trade build time for a smaller, faster binary. `panic = "abort"` means destructors do not run on panic, which is fine for many command-line tools.
+@example rust test: A documented function whose examples are tested
+//! Small helpers for splitting restaurant bills.
+
+/// Splits `total_cents` among `people` so the shares add up exactly.
+///
+/// Leftover cents go to the first people in the list.
+///
+/// # Examples
+///
+/// ```
+/// let shares = bills::split(1000, 3);
+/// assert_eq!(shares, vec![334, 333, 333]);
+/// assert_eq!(shares.iter().sum::<u32>(), 1000);
+/// ```
+///
+/// # Panics
+///
+/// Panics if `people` is zero.
+pub fn split(total_cents: u32, people: u32) -> Vec<u32> {
+    assert!(people > 0, "cannot split a bill among zero people");
+    let (share, extra) = (total_cents / people, total_cents % people);
+    (0..people).map(|i| share + u32::from(i < extra)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rendered_docs_have_an_example_section() {
+        let doc = include_str!("lib.rs");
+        assert!(doc.contains("# Examples") && doc.contains("# Panics"));
+    }
+
+    #[test]
+    #[should_panic(expected = "zero people")]
+    fn zero_people() {
+        super::split(10, 0);
+    }
+}
+@note
+The `//!` line documents the crate and the `///` block documents `split`, with Examples and Panics sections. In a real crate named `bills`, `cargo test` would also compile and run the example inside the doc comment as a doc test, so the documented output can never drift from the real behaviour. Here the unit tests run.
+@mistakes
+- **Benchmarking or shipping debug builds.** They can be many times slower. Use `--release`.
+- **Docs without examples.** Examples are what readers look for first, and doc tests keep them honest.
+- **Undocumented panics and errors.** Callers need the `# Panics` and `# Errors` sections to use the function safely.
+@keys
+- `dev` profile for fast builds, `release` for fast programs; tune in `[profile.*]`.
+- `///` and `//!` doc comments are Markdown, rendered by `cargo doc`.
+- Use Examples, Panics, Errors and Safety sections.
+- Code in doc comments runs as doc tests.
+
+=== 14.2
+@idea
+Publishing a library to **crates.io** shares it with every Rust user through `cargo add`. Before publishing, shape the **public API**. Your internal module structure may be deep (`art::kinds::PrimaryColor`, `art::utils::mix`), which is awkward for users. **`pub use`** re-exports the important items at the crate root, so users write `use art::{PrimaryColor, mix};`, and the docs list them on the front page, while you keep organising internals however you like.
+
+crates.io requires **metadata** in `Cargo.toml`: a unique `name`, a `version`, a `description`, a `license` (an SPDX identifier such as `"MIT OR Apache-2.0"`, the Rust ecosystem's common dual licence), and usually `repository`, `readme`, `keywords` and `categories`. `cargo publish --dry-run` checks everything without uploading, and `cargo package --list` shows exactly which files will be included.
+
+Publishing is **permanent**: a version can never be overwritten or deleted, so that crates depending on it never break. Publish fixes as a new version, following semantic versioning (a breaking change in a 1.x crate means 2.0.0). If a release is broken, **`cargo yank --vers 1.0.1`** stops new projects from selecting it, while existing projects with that version in their `Cargo.lock` keep working. Log in once with an API token from crates.io (`cargo login`).
+@how
+- Re-export with `pub use` at the crate root for a flat, convenient API.
+- Required metadata: `description`, `license` (SPDX), plus `repository`, `readme`, `keywords`, `categories`.
+- `cargo publish --dry-run` and `cargo package --list` before publishing.
+- Versions are permanent; publish fixes as new SemVer versions.
+- `cargo yank --vers X` hides a broken version from new resolutions; `--undo` reverses.
+@example rust: A deep module tree with a flat public API
+pub mod kinds {
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum PrimaryColor {
+        Red,
+        Yellow,
+        Blue,
+    }
+
+    #[derive(Debug, PartialEq)]
+    pub enum SecondaryColor {
+        Orange,
+        Green,
+        Purple,
+    }
+}
+
+pub mod utils {
+    use crate::kinds::{PrimaryColor, SecondaryColor};
+
+    pub fn mix(a: PrimaryColor, b: PrimaryColor) -> Option<SecondaryColor> {
+        use PrimaryColor::*;
+        match (a, b) {
+            (Red, Yellow) | (Yellow, Red) => Some(SecondaryColor::Orange),
+            (Yellow, Blue) | (Blue, Yellow) => Some(SecondaryColor::Green),
+            (Red, Blue) | (Blue, Red) => Some(SecondaryColor::Purple),
+            _ => None,
+        }
+    }
+}
+
+pub use self::kinds::{PrimaryColor, SecondaryColor};
+pub use self::utils::mix;
+
+fn main() {
+    // A user of the crate writes `use art::{PrimaryColor, mix};` thanks to the re-exports.
+    use PrimaryColor::*;
+    for (a, b) in [(Red, Yellow), (Blue, Yellow), (Blue, Red), (Red, Red)] {
+        println!("{a:?} + {b:?} = {:?}", mix(a, b));
+    }
+}
+@note
+Internally, the types live in `kinds` and the function in `utils`, but the `pub use` lines make them available directly at the crate root. Users get a short, flat import path, the documentation front page lists them, and the internal structure can change later without breaking anyone.
+@example toml: Metadata for crates.io
+[package]
+name = "billsplit"
+version = "0.2.1"
+edition = "2024"
+description = "Split restaurant bills to the cent, fairly."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/you/billsplit"
+readme = "README.md"
+keywords = ["money", "bill", "split", "restaurant"]
+categories = ["finance", "command-line-utilities"]
+rust-version = "1.85"
+exclude = ["tests/fixtures/big/*", ".github/*"]
+
+# then:
+#   cargo publish --dry-run      # build and check without uploading
+#   cargo package --list         # exactly which files ship
+#   cargo publish                # permanent!
+#   cargo yank --vers 0.2.0      # if 0.2.0 turns out to be broken
+@note
+These fields are what crates.io shows on the crate's page and uses for search; `description` and `license` are mandatory. `rust-version` declares the oldest compiler you support, and `exclude` keeps large test fixtures out of the uploaded package. The dry run catches missing metadata before anything becomes permanent.
+@mistakes
+- **Publishing your internal module structure as the API.** Re-export what users need at the root.
+- **Publishing without a dry run.** Mistakes are permanent; versions cannot be replaced.
+- **Breaking changes in a minor version.** SemVer tells Cargo it is safe to upgrade; users' builds break.
+@keys
+- `pub use` re-exports give a convenient, stable public API.
+- crates.io needs a description and licence; add repository, readme, keywords.
+- `--dry-run` and `package --list` before publishing.
+- Versions are permanent; yank broken ones and publish fixes.
+
+=== 14.3
+@idea
+As a project grows into several related crates (a library, a command-line tool, a web server sharing the same core), a **workspace** keeps them together. A workspace is a folder with a top-level `Cargo.toml` containing a `[workspace]` section listing its **members**; each member is an ordinary package in its own folder. All members share **one `Cargo.lock`** (so they agree on dependency versions) and **one `target/` directory** (so shared dependencies are compiled once).
+
+Members depend on each other **by path**: `adder` depends on `add_one = { path = "../add_one" }`. Commands run from the workspace root apply to everything (`cargo build`, `cargo test`), and `-p name` targets one member (`cargo run -p adder`, `cargo test -p add_one`). Common settings can be inherited: `[workspace.package]` for version and edition, `[workspace.dependencies]` for shared dependency versions that members reference with `serde.workspace = true`.
+
+Two more Cargo features round out the picture. **`cargo install`** builds a binary crate from crates.io (or a path or git repository) and puts it in `~/.cargo/bin`, the standard way to install Rust tools like `ripgrep` or `cargo-watch`. And Cargo is **extensible**: any program named `cargo-something` on your PATH can be run as `cargo something`, which is how `cargo watch`, `cargo audit` and `cargo nextest` work.
+@how
+- Root `Cargo.toml`: `[workspace] members = ["adder", "add_one"]`, `resolver = "3"`.
+- Path dependencies between members: `add_one = { path = "../add_one" }`.
+- One `Cargo.lock` and `target/` for all members.
+- `cargo build`, `cargo test` at the root; `-p name` for one member.
+- `cargo install name` puts binaries in `~/.cargo/bin`; `cargo-xyz` binaries become `cargo xyz`.
+@example bash: A workspace with an app and a library
+$ cat Cargo.toml
+[workspace]
+members = ["adder", "add_one"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+$ cat adder/Cargo.toml
+[package]
+name = "adder"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+add_one = { path = "../add_one" }
+$ cat add_one/src/lib.rs
+pub fn add_one(x: i32) -> i32 { x + 1 }
+$ cat adder/src/main.rs
+fn main() { println!("10 plus one is {}", add_one::add_one(10)); }
+$ cargo run -p adder --quiet
+10 plus one is 11
+$ ls
+Cargo.lock  Cargo.toml  add_one  adder  target
+@note
+The root manifest lists the members and shares the version and edition through `[workspace.package]`. `adder` depends on its sibling by path. There is a single `Cargo.lock` and a single `target/` at the root, and `-p adder` chose which member to run.
+@example rust: Code shared between members, as one program sees it
+mod add_one {
+    // add_one/src/lib.rs in the workspace
+    pub fn add_one(x: i32) -> i32 {
+        x + 1
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn adds() {
+            assert_eq!(super::add_one(2), 3);
+        }
+    }
+}
+
+mod add_two {
+    // a third member, add_two/src/lib.rs, that reuses add_one
+    pub fn add_two(x: i32) -> i32 {
+        crate::add_one::add_one(crate::add_one::add_one(x))
+    }
+}
+
+fn main() {
+    // adder/src/main.rs
+    println!("10 plus one is {}", add_one::add_one(10));
+    println!("10 plus two is {}", add_two::add_two(10));
+}
+@note
+Modules stand in for workspace members here so the example runs as one file, but the relationships are the same: one library builds on another and the binary uses both. In a real workspace, each would be its own package depending on the others by path, all compiled into the shared `target/` folder.
+@mistakes
+- **Separate repositories for tightly coupled crates.** Version drift and duplicate builds. Use a workspace.
+- **Different versions of the same dependency in each member.** Centralise them in `[workspace.dependencies]`.
+- **Committing `target/`.** It is shared build output; ignore it.
+@keys
+- A workspace groups packages with one lock file and one target folder.
+- Members depend on each other by path.
+- `-p name` targets a member; shared settings live in `[workspace.*]`.
+- `cargo install` installs binaries; `cargo-xyz` programs extend Cargo.

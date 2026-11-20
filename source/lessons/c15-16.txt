@@ -1,0 +1,699 @@
+=== 15.1
+@idea
+A **smart pointer** is a struct that acts like a pointer but carries extra capabilities and ownership rules. `String` and `Vec` are smart pointers; the chapter adds the general-purpose ones. The simplest is **`Box<T>`**: it stores a value on the **heap** and keeps only a pointer on the stack. `let b = Box::new(5);` works like any value: it is dropped (stack pointer and heap data) when it goes out of scope, and you use it like the value inside thanks to dereferencing.
+
+Box has three main uses. First, **recursive types**: a type that contains itself, like a cons list (`List::Cons(1, rest)`) or a tree node with children. Rust must know every type's size at compile time, and a type that contains itself directly would be infinitely large; a `Box<List>` field is just a pointer of known size, which breaks the recursion. Second, **large values** you want to move without copying many bytes: moving a Box moves only the pointer. Third, **trait objects**, `Box<dyn Trait>`, holding values of different types behind one interface (chapter 18).
+
+Box has no run-time overhead beyond the heap allocation itself, and none of the extra features of `Rc` or `RefCell`. Reach for it when you need indirection or heap allocation with a single owner.
+@how
+- `Box::new(value)` puts the value on the heap; `*b` dereferences.
+- Recursive types: `enum List { Cons(i32, Box<List>), Nil }`.
+- Trees: `Option<Box<Node>>` for optional children.
+- Moving a Box moves only the pointer.
+- Dropped automatically, heap data included, when it goes out of scope.
+@example rust: A cons list and a binary search tree with Box
+#[derive(Debug)]
+enum List {
+    Cons(i32, Box<List>),
+    Nil,
+}
+
+use List::{Cons, Nil};
+
+impl List {
+    fn sum(&self) -> i32 {
+        match self {
+            Cons(value, rest) => value + rest.sum(),
+            Nil => 0,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Node {
+    value: i32,
+    left: Option<Box<Node>>,
+    right: Option<Box<Node>>,
+}
+
+impl Node {
+    fn new(value: i32) -> Self {
+        Node { value, left: None, right: None }
+    }
+    fn insert(&mut self, value: i32) {
+        let side = if value < self.value { &mut self.left } else { &mut self.right };
+        match side {
+            Some(child) => child.insert(value),
+            None => *side = Some(Box::new(Node::new(value))),
+        }
+    }
+    fn in_order(&self, out: &mut Vec<i32>) {
+        if let Some(l) = &self.left { l.in_order(out); }
+        out.push(self.value);
+        if let Some(r) = &self.right { r.in_order(out); }
+    }
+}
+
+fn main() {
+    let list = Cons(1, Box::new(Cons(2, Box::new(Cons(3, Box::new(Nil))))));
+    println!("{list:?} sums to {}", list.sum());
+
+    let mut root = Node::new(50);
+    for v in [30, 70, 20, 40, 60, 80, 35] {
+        root.insert(v);
+    }
+    let mut sorted = Vec::new();
+    root.in_order(&mut sorted);
+    println!("in order: {sorted:?}");
+    println!("a Box is {} bytes, an Option<Box<Node>> too: {}", std::mem::size_of::<Box<Node>>(), std::mem::size_of::<Option<Box<Node>>>());
+}
+@note
+Each `Cons` holds its value and a Box pointing to the rest, so the type has a fixed size. The tree's children are `Option<Box<Node>>`: no child is `None`, and inserting walks down until it finds an empty spot. A Box is a single 8-byte pointer, and thanks to an optimisation `Option<Box<T>>` is the same size, using the null pointer for `None`.
+@example rust fail: A type that contains itself directly
+#[derive(Debug)]
+enum List {
+    Cons(i32, List),
+    Nil,
+}
+
+fn main() {}
+@note
+Without a Box, a `List` would contain a `List`, which contains a `List`, without end, so its size would be infinite. The compiler names the problem ("recursive type has infinite size") and suggests the fix: insert some indirection such as `Box`.
+@mistakes
+- **Boxing everything.** Box adds a heap allocation; use it for recursion, large values or trait objects.
+- **Recursive types without indirection.** Infinite size; use Box (or Vec, Rc).
+- **Thinking Box is like a garbage-collected reference.** It has exactly one owner and is freed when that owner goes away.
+@keys
+- `Box<T>` stores a value on the heap with a single owner.
+- Recursive types need a Box to have a known size.
+- Moving a Box moves only the pointer.
+- Use it for recursion, large values and trait objects.
+
+=== 15.2
+@idea
+Two traits make smart pointers feel like the values they hold. **`Deref`** lets a type behave like a reference: implementing `fn deref(&self) -> &Self::Target` makes `*my_box` work, and Rust inserts that call for you. More importantly, it enables **deref coercion**: when a function expects `&str` and you pass `&String` (or `&Box<String>`), Rust applies `deref` as many times as needed to make the types match. That is why `&String` works wherever `&str` is expected, and why you rarely write `&*` by hand. `DerefMut` does the same for mutable references.
+
+**`Drop`** customises what happens when a value goes out of scope: implement `fn drop(&mut self)` and Rust calls it automatically, which is how Box frees its heap memory, files close themselves and locks release. Values are dropped in **reverse order** of declaration, so things created later, which may depend on earlier ones, are cleaned up first.
+
+You cannot call `drop` as a method yourself (that would risk a double free when Rust calls it again at the end of scope). To clean up early, call the function **`std::mem::drop(value)`** (in the prelude as `drop`), which takes ownership and lets the value go out of scope immediately: useful for releasing a lock or closing a file before the end of a function.
+@how
+- `impl Deref for T { type Target = U; fn deref(&self) -> &U { ... } }`.
+- Deref coercion: `&String` → `&str`, `&Box<T>` → `&T`, automatically.
+- `impl Drop for T { fn drop(&mut self) { ... } }` for cleanup.
+- Drop order: reverse of declaration.
+- `drop(value)` releases early; `value.drop()` is not allowed.
+@example rust: MyBox with Deref, and a custom Drop
+use std::ops::Deref;
+
+struct MyBox<T>(T);
+
+impl<T> Deref for MyBox<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+fn hello(name: &str) -> String {
+    format!("Hello, {name}!")
+}
+
+struct Connection(&'static str);
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        println!("  closing connection {}", self.0);
+    }
+}
+
+fn main() {
+    let x = MyBox(5);
+    println!("*x + 1 = {}", *x + 1);
+
+    let name = MyBox(String::from("Rust"));
+    println!("{}", hello(&name));            // &MyBox<String> -> &String -> &str
+    println!("length via deref: {}", name.len());
+
+    let _a = Connection("A");
+    let b = Connection("B");
+    let _c = Connection("C");
+    println!("dropping B early");
+    drop(b);
+    println!("end of main");
+}
+@note
+`*x` works because MyBox implements Deref. Passing `&name` to a function expecting `&str` triggered two automatic derefs, and calling `name.len()` found String's method through Deref too. `drop(b)` closed B early; at the end of `main`, the remaining values were dropped in reverse order: C, then A.
+@example rust fail: Calling drop as a method
+struct Guard;
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        println!("released");
+    }
+}
+
+fn main() {
+    let g = Guard;
+    g.drop();
+}
+@note
+Calling the destructor directly is refused ("explicit destructor calls not allowed"), because Rust would call it again when `g` goes out of scope, freeing the same resource twice. The compiler suggests `drop(g)`, which takes ownership so the automatic call never happens.
+@mistakes
+- **Writing `&*value` everywhere.** Deref coercion usually does it for you.
+- **Implementing Deref to simulate inheritance.** It is meant for smart pointers; it surprises readers elsewhere.
+- **Calling `.drop()`.** Use `drop(value)` for early cleanup.
+@keys
+- `Deref` makes a smart pointer usable like a reference.
+- Deref coercion converts `&Box<String>` → `&String` → `&str` automatically.
+- `Drop` runs cleanup code at the end of scope, in reverse order.
+- `drop(value)` releases a value early.
+
+=== 15.3
+@idea
+Sometimes one value genuinely has **several owners**: a node in a graph pointed to by many edges, or a shared configuration used by many parts of a program, where nobody can say which part will finish last. **`Rc<T>`** (reference counted) enables this for single-threaded code. `Rc::new(value)` puts the value on the heap with a counter; **`Rc::clone(&rc)`** creates another owner by incrementing the counter, without copying the data. When an owner is dropped the count goes down, and when it reaches zero the value itself is dropped.
+
+`Rc::strong_count(&rc)` shows how many owners exist, which is handy for learning and debugging. The convention is to write `Rc::clone(&a)` rather than `a.clone()`, to make it obvious at a glance that this is a cheap pointer copy, not a deep clone.
+
+Rc gives **shared, read-only** access: you cannot get a `&mut T` from an `Rc<T>`, because several owners modifying the same data would break the borrowing rules. Combine it with `RefCell` (next lesson) when shared data must change. Rc is **not thread-safe** (its counter is not atomic), and the compiler stops you from sending it to another thread; the thread-safe equivalent is `Arc` (chapter 16).
+@how
+- `let a = Rc::new(value);` `let b = Rc::clone(&a);` (cheap: increments a counter).
+- `Rc::strong_count(&a)` shows the number of owners.
+- The value is dropped when the last Rc is dropped.
+- Shared access is read-only; add RefCell for mutation.
+- Single-threaded only; use `Arc` across threads.
+@example rust: Two lists sharing a tail
+use std::rc::Rc;
+
+#[derive(Debug)]
+enum List {
+    Cons(i32, Rc<List>),
+    Nil,
+}
+
+use List::{Cons, Nil};
+
+fn values(list: &List) -> Vec<i32> {
+    let mut out = Vec::new();
+    let mut cur = list;
+    while let Cons(v, next) = cur {
+        out.push(*v);
+        cur = next;
+    }
+    out
+}
+
+fn main() {
+    let shared = Rc::new(Cons(5, Rc::new(Cons(10, Rc::new(Nil)))));
+    println!("count after creating shared = {}", Rc::strong_count(&shared));
+    let b = Cons(3, Rc::clone(&shared));
+    println!("count after b = {}", Rc::strong_count(&shared));
+    {
+        let c = Cons(4, Rc::clone(&shared));
+        println!("count after c = {}", Rc::strong_count(&shared));
+        println!("b = {:?}, c = {:?}", values(&b), values(&c));
+    }
+    println!("count after c goes out of scope = {}", Rc::strong_count(&shared));
+    println!("same allocation? {}", matches!(&b, Cons(_, rest) if Rc::ptr_eq(rest, &shared)));
+}
+@note
+`b` and `c` both own the shared tail, so its count went from 1 to 3; when `c` went out of scope it dropped back to 2. Cloning the Rc never copied the list: `Rc::ptr_eq` confirms `b` points at the very same allocation. The tail will be freed only when the last owner is gone.
+@example rust fail: Rc gives no mutable access
+use std::rc::Rc;
+
+fn main() {
+    let scores = Rc::new(vec![10, 20]);
+    let other = Rc::clone(&scores);
+    scores.push(30);
+    println!("{other:?}");
+}
+@note
+`push` needs `&mut Vec`, but an `Rc` only hands out shared references, because another owner (`other`) might be reading at the same time. The compiler refuses to borrow the data mutably. Shared data that must change needs `Rc<RefCell<Vec<i32>>>`, the next lesson's pattern.
+@mistakes
+- **Using Rc when a single owner would do.** Plain ownership or borrowing is simpler and free.
+- **`a.clone()` that looks like a deep copy.** Write `Rc::clone(&a)` to signal a cheap pointer copy.
+- **Sending Rc to threads.** It is not thread-safe; use Arc.
+@keys
+- `Rc<T>` allows several owners of one heap value, single-threaded.
+- `Rc::clone` increments a counter; the value drops when the count reaches zero.
+- Access through Rc is read-only.
+- Use Arc for the same idea across threads.
+
+=== 15.4
+@idea
+The borrowing rules are normally checked at compile time. **`RefCell<T>`** moves the check to **run time**: it allows **interior mutability**, changing data through a shared reference, while still enforcing "many readers or one writer". `cell.borrow()` returns a `Ref<T>` (a shared borrow) and `cell.borrow_mut()` a `RefMut<T>` (a mutable borrow); RefCell counts the active borrows, and if you break the rules, for example by calling `borrow_mut` while another borrow is alive, the program **panics** instead of refusing to compile.
+
+Why give up compile-time checking? Some correct designs are impossible to express statically. A classic case is a **mock object** in tests: a trait method takes `&self`, but the mock needs to record each call, which means mutating itself. With a `RefCell<Vec<String>>` field, the mock can push messages through `&self`. For simple Copy values, `Cell<T>` offers `get`/`set` with no borrowing at all.
+
+Combining **`Rc<RefCell<T>>`** gives **shared, mutable** data with several owners: each owner can borrow mutably when needed, one at a time. It is powerful but moves errors to run time, so keep borrows short (borrow, use, drop in one expression), and prefer plain ownership when it works. Like Rc, RefCell is single-threaded; the thread-safe counterparts are `Mutex` and `RwLock`.
+@how
+- `RefCell::new(v)`; `.borrow()` → `Ref<T>`, `.borrow_mut()` → `RefMut<T>`.
+- Breaking the rules panics at run time ("already borrowed").
+- `try_borrow_mut()` returns a Result instead of panicking.
+- `Cell<T>` for Copy values: `get`, `set`, no borrows.
+- `Rc<RefCell<T>>` = several owners that can mutate; keep borrows short.
+@example rust: A mock messenger and shared mutable data
+use std::cell::RefCell;
+use std::rc::Rc;
+
+trait Messenger {
+    fn send(&self, msg: &str);
+}
+
+struct LimitTracker<'a, T: Messenger> {
+    messenger: &'a T,
+    max: usize,
+}
+
+impl<'a, T: Messenger> LimitTracker<'a, T> {
+    fn set_value(&self, value: usize) {
+        let percent = value * 100 / self.max;
+        if percent >= 100 {
+            self.messenger.send("Error: you are over your quota!");
+        } else if percent >= 75 {
+            self.messenger.send("Warning: over 75% of your quota used");
+        }
+    }
+}
+
+struct MockMessenger {
+    sent: RefCell<Vec<String>>,                // mutated through &self
+}
+
+impl Messenger for MockMessenger {
+    fn send(&self, msg: &str) {
+        self.sent.borrow_mut().push(msg.to_string());
+    }
+}
+
+fn main() {
+    let mock = MockMessenger { sent: RefCell::new(vec![]) };
+    let tracker = LimitTracker { messenger: &mock, max: 100 };
+    for v in [10, 80, 120] {
+        tracker.set_value(v);
+    }
+    println!("recorded: {:?}", mock.sent.borrow());
+
+    let shared = Rc::new(RefCell::new(vec![1, 2]));
+    let a = Rc::clone(&shared);
+    let b = Rc::clone(&shared);
+    a.borrow_mut().push(3);
+    b.borrow_mut().push(4);
+    println!("everyone sees {:?} ({} owners)", shared.borrow(), Rc::strong_count(&shared));
+}
+@note
+`send` takes `&self` because the trait says so, yet the mock records every message by mutating its `RefCell` field. With `Rc<RefCell<Vec<i32>>>`, two owners each pushed to the same vector, one short mutable borrow at a time, and all owners see both changes.
+@example rust: Breaking the rules is caught at run time
+use std::cell::RefCell;
+
+fn main() {
+    let log = RefCell::new(vec!["start"]);
+    println!("try_borrow_mut while reading: {:?}", {
+        let _reader = log.borrow();
+        log.try_borrow_mut().map(|_| ()).map_err(|e| e.to_string())
+    });
+    let reader = log.borrow();
+    println!("first entry: {}", reader[0]);
+    let mut writer = log.borrow_mut();          // a mutable borrow while `reader` is alive
+    writer.push("never");
+}
+@note
+`try_borrow_mut` reported the conflict as an error value. The plain `borrow_mut` then panicked with "already borrowed": a mutable borrow while a shared one was still alive. The compiler would have rejected the same mistake with ordinary references; RefCell trades that compile-time error for a run-time panic.
+@mistakes
+- **Holding a `borrow()` across code that calls `borrow_mut()`.** Panics at run time. Keep borrows short.
+- **Reaching for RefCell first.** Restructure ownership if you can; RefCell is for cases the compiler cannot verify.
+- **Using RefCell across threads.** It is not thread-safe; use Mutex or RwLock.
+@keys
+- `RefCell<T>` checks borrowing rules at run time, enabling interior mutability.
+- `borrow`/`borrow_mut` panic on conflicts; `try_` versions return Results.
+- Mocks that record calls through `&self` are a classic use.
+- `Rc<RefCell<T>>` gives shared, mutable, single-threaded data.
+
+=== 15.5
+@idea
+Rust's guarantees prevent memory errors, but not **memory leaks**. With `Rc` and `RefCell`, two values can point at each other: A holds an Rc to B and B holds an Rc to A. Each keeps the other's strong count above zero, so when the program drops its own references, neither count reaches zero and neither value is ever freed: a **reference cycle**.
+
+The fix is **`Weak<T>`**, a non-owning reference. `Rc::downgrade(&rc)` creates a Weak pointer, which increments a separate `weak_count` but not the strong count, so it does not keep the value alive. To use it, call **`upgrade()`**, which returns `Option<Rc<T>>`: `Some` if the value still exists, `None` if it has been dropped. Code must handle that possibility, which is exactly right for a reference that does not own its target.
+
+The rule of thumb for trees and graphs: **owning** relationships use `Rc` (a parent owns its children), and **back-references** use `Weak` (a child refers to its parent without owning it). Dropping the parent then frees it, and its children's `Weak` parent links simply return `None` from `upgrade`.
+@how
+- Cycles of `Rc` leak: counts never reach zero.
+- `Rc::downgrade(&rc)` → `Weak<T>`; doesn't affect the strong count.
+- `weak.upgrade()` → `Option<Rc<T>>`; `None` once the value is gone.
+- Parents own children with `Rc`; children point to parents with `Weak`.
+- `Rc::strong_count` and `Rc::weak_count` help check ownership.
+@example rust: A tree with Weak parent links
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+
+#[derive(Debug)]
+struct Node {
+    name: String,
+    parent: RefCell<Weak<Node>>,
+    children: RefCell<Vec<Rc<Node>>>,
+}
+
+fn node(name: &str) -> Rc<Node> {
+    Rc::new(Node { name: name.to_string(), parent: RefCell::new(Weak::new()), children: RefCell::new(vec![]) })
+}
+
+fn main() {
+    let leaf = node("leaf");
+    println!("leaf's parent before: {:?}", leaf.parent.borrow().upgrade().map(|p| p.name.clone()));
+    {
+        let branch = node("branch");
+        *leaf.parent.borrow_mut() = Rc::downgrade(&branch);
+        branch.children.borrow_mut().push(Rc::clone(&leaf));
+
+        println!("leaf's parent: {:?}", leaf.parent.borrow().upgrade().map(|p| p.name.clone()));
+        println!("branch strong = {}, weak = {}", Rc::strong_count(&branch), Rc::weak_count(&branch));
+        println!("leaf strong = {}, weak = {}", Rc::strong_count(&leaf), Rc::weak_count(&leaf));
+    }
+    println!("after branch is dropped, leaf's parent: {:?}", leaf.parent.borrow().upgrade().map(|p| p.name.clone()));
+    println!("leaf strong = {}", Rc::strong_count(&leaf));
+}
+@note
+The branch owns the leaf through an Rc (leaf's strong count is 2: `leaf` and the branch's children list), while the leaf points back with a Weak, which only raised branch's weak count. When the branch went out of scope its strong count hit zero and it was freed; the leaf's `upgrade()` now returns None instead of keeping the branch alive.
+@example rust: Two Rc values in a cycle never get freed
+use std::cell::RefCell;
+use std::rc::Rc;
+
+struct Person {
+    name: &'static str,
+    friend: RefCell<Option<Rc<Person>>>,
+}
+
+impl Drop for Person {
+    fn drop(&mut self) {
+        println!("  freeing {}", self.name);
+    }
+}
+
+fn main() {
+    {
+        let ada = Rc::new(Person { name: "Ada", friend: RefCell::new(None) });
+        println!("no cycle: Ada alone");
+        let _ = ada;
+    }
+    {
+        let ben = Rc::new(Person { name: "Ben", friend: RefCell::new(None) });
+        let cy = Rc::new(Person { name: "Cy", friend: RefCell::new(None) });
+        *ben.friend.borrow_mut() = Some(Rc::clone(&cy));
+        *cy.friend.borrow_mut() = Some(Rc::clone(&ben));
+        println!("cycle: Ben strong = {}, Cy strong = {}", Rc::strong_count(&ben), Rc::strong_count(&cy));
+    }
+    println!("end of main: Ben and Cy were never freed (a leak)");
+}
+@note
+Ada was freed when her scope ended. Ben and Cy each held an Rc to the other, so when the scope ended their counts only dropped from 2 to 1, and their `Drop` messages never appeared: the memory leaked. Making one of the links a `Weak` breaks the cycle.
+@mistakes
+- **Rc in both directions of a relationship.** Cycles leak. Use Weak for back-references.
+- **Unwrapping `upgrade()` without thought.** The target may be gone; handle `None`.
+- **Assuming Rust prevents all leaks.** It prevents memory unsafety, not cycles.
+@keys
+- Rc cycles keep counts above zero: a memory leak.
+- `Weak<T>` refers without owning; `upgrade()` returns an Option.
+- Owners use Rc; back-references use Weak.
+- Check ownership with `strong_count` and `weak_count`.
+
+=== 16.1
+@idea
+A **thread** runs code concurrently with the rest of the program. `thread::spawn(|| { ... })` starts one with a closure and returns a **`JoinHandle`**; calling **`handle.join()`** waits for the thread to finish and returns its result (or an error if it panicked). When `main` returns, the process ends and any threads still running are stopped, so join the threads whose work you need. The order in which threads run is up to the operating system and differs between runs.
+
+A spawned thread may outlive the function that created it, so its closure cannot borrow local variables. Rust requires a **`move` closure** that takes ownership of what it uses: `thread::spawn(move || { println!("{v:?}"); })`. The compiler explains this if you forget, because a borrow could otherwise dangle.
+
+When threads only need to borrow data for a bounded time, **`thread::scope`** is simpler: threads spawned inside a scope are guaranteed to finish before the scope ends, so they **can** borrow local variables, even mutably for distinct parts. Rust's ownership and borrowing rules apply across threads, which is why the compiler catches data races before the program runs: the "fearless concurrency" of the chapter's title.
+@how
+- `let h = thread::spawn(move || work());` then `h.join().unwrap()` for the result.
+- Unjoined threads stop when main returns.
+- `move` closures transfer ownership into the thread.
+- `thread::scope(|s| { s.spawn(|| ...); })` lets threads borrow locals.
+- Thread order is not deterministic; don't rely on it.
+@example rust: spawn, join, move and scope
+use std::thread;
+use std::time::Duration;
+
+fn main() {
+    let handles: Vec<_> = (1..=3)
+        .map(|id| {
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(30 * (4 - id)));
+                id * id                                   // the thread's result
+            })
+        })
+        .collect();
+    let results: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    println!("results in join order: {results:?}");
+
+    let words = vec!["alpha", "beta", "gamma", "delta"];
+    let owned = words.clone();
+    let counter = thread::spawn(move || owned.iter().map(|w| w.len()).sum::<usize>());
+    println!("letters: {}", counter.join().unwrap());
+
+    let mut totals = [0u64; 2];
+    let numbers: Vec<u64> = (1..=1000).collect();
+    let (left, right) = numbers.split_at(500);
+    let (t0, t1) = totals.split_at_mut(1);
+    thread::scope(|s| {
+        s.spawn(|| t0[0] = left.iter().sum());           // borrows locals: allowed in a scope
+        s.spawn(|| t1[0] = right.iter().sum());
+    });
+    println!("sums {totals:?}, total {}", totals[0] + totals[1]);
+    println!("words still usable here: {words:?}");
+}
+@note
+Each thread returned a value that `join` delivered; joining in spawn order gives a predictable result order even though the threads finished in reverse. The second thread needed `move` to own its copy of the words. Inside `thread::scope`, two threads borrowed halves of the data and wrote into separate halves of `totals`, with no `move` and no copies.
+@example rust fail: A thread cannot borrow a local without move
+use std::thread;
+
+fn main() {
+    let scores = vec![1, 2, 3];
+    let handle = thread::spawn(|| {
+        println!("{scores:?}");
+    });
+    handle.join().unwrap();
+}
+@note
+The new thread might outlive `main`'s `scores`, so borrowing it is refused; the compiler explains that the closure may outlive the current function and suggests `move`. With `move ||`, the vector's ownership transfers into the thread, and `main` can no longer use it, which is exactly what makes it safe.
+@mistakes
+- **Forgetting to join.** Threads are stopped when main returns, possibly mid-work.
+- **Relying on thread execution order.** It varies between runs.
+- **Fighting `move` when you only need short borrows.** Use `thread::scope`.
+@keys
+- `thread::spawn` starts a thread; `join` waits and returns its result.
+- Spawned closures must `move` what they use.
+- `thread::scope` allows borrowing locals safely.
+- Ownership rules apply across threads, preventing data races at compile time.
+
+=== 16.2
+@idea
+One way for threads to cooperate is to **send messages** instead of sharing memory. A **channel** has a transmitter and a receiver: `let (tx, rx) = mpsc::channel();`. Any thread holding `tx` can `send(value)`, and the thread holding `rx` receives values in the order they were sent. `mpsc` means multiple producer, single consumer: **clone the transmitter** (`tx.clone()`) to give one to each producer thread.
+
+Sending **moves** the value into the channel: after `tx.send(report)`, the sending thread can no longer use `report`. That is ownership doing its job: two threads can never both access the same value, so no lock is needed.
+
+On the receiving side, **`recv()`** blocks until a value arrives, returning `Ok(value)`, or `Err` once every transmitter has been dropped and the channel is empty; `try_recv()` returns immediately; and the receiver can be used as an **iterator** (`for msg in rx`), which ends automatically when all senders are gone. That makes dropping the senders the natural "no more work" signal; forgetting to drop the original `tx` in the main thread is a classic reason for a program that hangs forever. `mpsc::sync_channel(n)` creates a bounded channel whose `send` blocks when it is full.
+@how
+- `let (tx, rx) = mpsc::channel();` then `tx.clone()` for each producer.
+- `tx.send(v)` moves `v` into the channel; returns Err if the receiver is gone.
+- `rx.recv()` blocks; `try_recv()` doesn't; `recv_timeout(d)` waits a while.
+- `for msg in rx` ends when all transmitters are dropped.
+- Drop the original `tx` once producers have their clones, or the loop never ends.
+@example rust: Several producers, one consumer
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+#[derive(Debug)]
+struct Reading {
+    sensor: &'static str,
+    value: f64,
+}
+
+fn main() {
+    let (tx, rx) = mpsc::channel();
+    for (sensor, values, delay) in [("kitchen", vec![21.5, 21.7, 22.0], 10), ("garage", vec![4.0, 3.5], 15)] {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            for value in values {
+                let reading = Reading { sensor, value };
+                tx.send(reading).unwrap();                    // the reading moves into the channel
+                thread::sleep(Duration::from_millis(delay));
+            }
+        });
+    }
+    drop(tx);                                                // otherwise `for` would wait forever
+
+    let mut all: Vec<Reading> = rx.iter().collect();         // ends when both producers finish
+    all.sort_by(|a, b| a.sensor.cmp(b.sensor).then(a.value.total_cmp(&b.value)));
+    for r in &all {
+        println!("{:8} {:5.1}°C", r.sensor, r.value);
+    }
+    println!("{} readings received", all.len());
+}
+@note
+Each producer got its own clone of the transmitter and moved its readings into the channel. Dropping the original `tx` meant that once both producers finished, every transmitter was gone and the receiver's iterator ended. Arrival order depends on timing, so the readings are sorted before printing.
+@example rust fail: A sent value belongs to the channel
+use std::sync::mpsc;
+use std::thread;
+
+fn main() {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let message = String::from("report ready");
+        tx.send(message).unwrap();
+        println!("sent: {message}");
+    });
+    println!("{}", rx.recv().unwrap());
+}
+@note
+`send` took ownership of `message`, so using it afterwards in the sending thread is a compile error: the receiving thread may already be changing or dropping it. If the sender needs to keep the text, it can send a clone, or print before sending.
+@mistakes
+- **Keeping the original transmitter alive.** The receiver's loop never ends. Drop it.
+- **Using a value after sending it.** It moved; send a clone or finish with it first.
+- **Unbounded channels with fast producers and slow consumers.** Memory grows; use `sync_channel(n)` for back-pressure.
+@keys
+- Channels move values between threads; no shared memory, no locks.
+- Clone the transmitter for multiple producers.
+- `recv` blocks; iterating the receiver ends when all senders are dropped.
+- Sending moves ownership, so values can't be used by two threads at once.
+
+=== 16.3
+@idea
+The other way to cooperate is **shared state** protected by a lock. A **`Mutex<T>`** (mutual exclusion) wraps data so that only one thread at a time can access it. `mutex.lock()` waits until the lock is free and returns a **`MutexGuard`**, a smart pointer to the data; when the guard is dropped (at the end of its scope), the lock is released automatically. You cannot forget to unlock, and you cannot reach the data without locking, because the data is inside the Mutex.
+
+To share one Mutex between threads, it needs several owners. `Rc` is not thread-safe, so Rust provides **`Arc<T>`** (atomically reference counted): the same idea with an atomic counter, safe to clone across threads. `Arc<Mutex<T>>` is the standard pattern for shared mutable state.
+
+`lock()` returns a `Result`: if a thread panicked while holding the lock, the Mutex is **poisoned**, and other threads get an error, since the data may be half-updated; most code calls `.unwrap()` or `.expect()`. Keep critical sections **short** (lock, update, release) to avoid slowing other threads, and beware **deadlocks**: two threads each holding one lock and waiting for the other's. Always taking locks in the same order prevents them. For simple counters, atomic types (`AtomicUsize`) avoid locks entirely.
+@how
+- `let m = Arc::new(Mutex::new(value));` clone the Arc for each thread.
+- `let mut guard = m.lock().unwrap(); *guard += 1;` unlocks when the guard drops.
+- Arc is the thread-safe Rc; Rc cannot cross threads.
+- Keep critical sections short; drop guards early with a block or `drop(guard)`.
+- Avoid deadlocks: consistent lock order; consider atomics or channels.
+@example rust: Ten threads, one counter, and a shared log
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn main() {
+    let counter = Arc::new(Mutex::new(0));
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = vec![];
+    for id in 0..10 {
+        let counter = Arc::clone(&counter);
+        let log = Arc::clone(&log);
+        handles.push(thread::spawn(move || {
+            for _ in 0..1000 {
+                *counter.lock().unwrap() += 1;                 // lock, add, unlock at the semicolon
+            }
+            log.lock().unwrap().push(id);
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    let mut ids = log.lock().unwrap().clone();
+    ids.sort();
+    println!("counter = {} (expected 10000)", *counter.lock().unwrap());
+    println!("threads that finished: {ids:?}");
+    println!("Arc owners left: {}", Arc::strong_count(&counter));
+}
+@note
+Every increment happened under the lock, so all 10,000 were counted, which a plain shared integer could not guarantee. Each guard was a temporary dropped at the end of its statement, keeping critical sections tiny. After all threads were joined, only `main`'s Arc remained.
+@example rust: A poisoned lock after a panic
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn main() {
+    let balance = Arc::new(Mutex::new(100));
+    let b = Arc::clone(&balance);
+    let result = thread::spawn(move || {
+        let mut guard = b.lock().unwrap();
+        *guard -= 30;
+        panic!("crashed halfway through a transfer");
+    })
+    .join();
+    println!("worker thread failed: {}", result.is_err());
+    match balance.lock() {
+        Ok(v) => println!("balance {}", *v),
+        Err(poisoned) => println!("lock is poisoned; the data may be inconsistent: {}", *poisoned.into_inner()),
+    }
+}
+@note
+The worker panicked while holding the lock, after changing the balance but before finishing its work. The Mutex became poisoned, so the next `lock()` returned an error, warning that the data may be in a half-updated state (here 70). `into_inner` still gives access when you decide the data is usable.
+@mistakes
+- **Using Rc with threads.** The compiler refuses; use Arc.
+- **Holding a guard while doing slow work.** Other threads wait. Copy what you need and release.
+- **Taking two locks in different orders in different threads.** Deadlock. Fix one order.
+@keys
+- `Mutex<T>` guards data; `lock()` returns a guard that unlocks on drop.
+- `Arc<Mutex<T>>` shares mutable state across threads.
+- Poisoned locks signal a panic mid-update.
+- Short critical sections and consistent lock order avoid contention and deadlocks.
+
+=== 16.4
+@idea
+How does the compiler know that `Arc` is safe to share between threads but `Rc` is not? Two **marker traits** with no methods carry that information. A type is **`Send`** if ownership of a value can be **transferred** to another thread. A type is **`Sync`** if it can be **referenced** from several threads at once; precisely, `T` is Sync when `&T` is Send.
+
+Almost every type is both, and the compiler implements them **automatically**: a struct made only of Send fields is Send, and likewise for Sync. The exceptions are deliberate. **`Rc<T>`** is neither, because two threads cloning it at the same moment could corrupt its non-atomic counter. **`RefCell<T>`** is Send but not Sync, because its borrow tracking is not thread-safe. Raw pointers are neither. Their thread-safe counterparts, `Arc`, `Mutex`, `RwLock` and the atomics, are Send and Sync.
+
+`thread::spawn` requires its closure, and everything the closure captures, to be **Send**. So trying to move an Rc into a thread is not a run-time bug waiting to happen; it is a compile error that names the problem. You rarely implement these traits yourself: doing so requires `unsafe`, and it is only needed when building new concurrency primitives.
+@how
+- `Send`: safe to move to another thread. `Sync`: safe to share `&T` between threads.
+- Auto-implemented for types made of Send/Sync parts.
+- Not Send/Sync: `Rc`, raw pointers; `RefCell`/`Cell` are not Sync.
+- Thread-safe alternatives: `Arc`, `Mutex`, `RwLock`, atomics.
+- `thread::spawn` requires `F: Send + 'static`; errors name the non-Send type.
+@example rust fail: The compiler refusing Rc across threads
+use std::rc::Rc;
+use std::thread;
+
+fn main() {
+    let shared = Rc::new(vec![1, 2, 3]);
+    let clone = Rc::clone(&shared);
+    let handle = thread::spawn(move || {
+        println!("{clone:?}");
+    });
+    handle.join().unwrap();
+}
+@note
+The error says that `Rc<Vec<i32>>` cannot be sent between threads safely, because it does not implement `Send`, and points at the closure capturing it. The same program with `Arc` instead of `Rc` compiles and runs: the type system encodes which types are thread-safe, so the data race never gets a chance to happen.
+@example rust: Checking Send and Sync with generic functions
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+
+fn is_send<T: Send>() {}
+fn is_sync<T: Sync>() {}
+
+struct Settings {
+    name: String,
+    limits: Vec<u32>,
+}
+
+fn main() {
+    is_send::<Settings>();                    // auto-implemented: all fields are Send
+    is_sync::<Settings>();
+    is_send::<Arc<Mutex<Vec<u8>>>>();
+    is_sync::<Arc<Mutex<Vec<u8>>>>();
+    is_send::<RefCell<i32>>();                // Send, but not Sync
+    // is_sync::<RefCell<i32>>();             // would not compile
+    // is_send::<Rc<i32>>();                  // would not compile
+    let _ = (Rc::new(1), RefCell::new(1));
+    println!("Settings, Arc<Mutex<_>> and RefCell (Send only) all passed the checks");
+
+    let shared = Arc::new(Mutex::new(Settings { name: "prod".into(), limits: vec![10, 20] }));
+    let s = Arc::clone(&shared);
+    std::thread::spawn(move || s.lock().unwrap().limits.push(30)).join().unwrap();
+    let guard = shared.lock().unwrap();
+    println!("{} limits: {:?}", guard.name, guard.limits);
+}
+@note
+Generic functions with `Send` or `Sync` bounds act as compile-time checks: the program compiles only if each type satisfies them. `Settings` got both traits automatically because its fields have them; RefCell is Send but not Sync, and Rc is neither, which is why those lines are commented out. Wrapped in `Arc<Mutex<_>>`, Settings is shared and modified across threads.
+@mistakes
+- **Trying to `impl Send` to silence an error.** It requires unsafe and is almost always wrong. Change the type (Rc → Arc, RefCell → Mutex).
+- **Thinking Send/Sync are checked at run time.** They are purely compile-time.
+- **Forgetting that captured values must be Send.** The closure is only as Send as what it captures.
+@keys
+- `Send`: transferable to another thread; `Sync`: shareable by reference.
+- Implemented automatically from a type's fields.
+- Rc and RefCell are not thread-safe; Arc and Mutex are.
+- `thread::spawn` requires Send, turning data races into compile errors.

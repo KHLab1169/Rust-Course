@@ -125,7 +125,8 @@ def compiler_errors(text, limit=11):
 def test_summary(text):
     lines = [l for l in text.splitlines() if l.startswith(("test ", "running ")) or "test result:" in l or l.startswith("---- ")
              or l.strip().startswith(("thread '", "assertion", "  left:", " right:", "left:", "right:"))]
-    return re.sub(r"; finished in [\d.]+s", "", "\n".join(lines)).strip()
+    out = re.sub(r"; finished in [\d.]+s", "", "\n".join(lines)).strip()
+    return re.sub(r"thread '([^']*)' \(\d+\) panicked", r"thread '\1' panicked", out)
 
 
 def tidy_run(o, e):
@@ -179,7 +180,8 @@ def run_example(lid, k, ex):
         open(os.path.join(d, fname), "w").write(code)
         base = ["rustc", "--edition", "2024", "-A", "dead_code", "-A", "unused", fname]
         if mode == "fail":
-            rc, o, e = sh(base + (["-o", "prog"] if has_main else ["--crate-type", "lib"]), d)
+            extra = ["--test", "-o", "tests"] if "#[test]" in code else (["-o", "prog"] if has_main else ["--crate-type", "lib"])
+            rc, o, e = sh(base + extra, d)
             if rc == 0:
                 return lid, k, None, "expected a compile error"
             out = compiler_errors(e)
@@ -225,7 +227,7 @@ def main():
         if err:
             problems.append(f"PROBLEM {lid} example {k + 2}: {err[-1500:]}")
             continue
-        ex["output"] = out
+        ex["output"] = re.sub(r"thread '([^']*)' \(\d+\) panicked", r"thread '\1' panicked", out or "")
         if ex["lang"] == "rust" and ex["mode"] == "fail":
             ex["label"] = "Compiler output"
         elif ex["lang"] == "rust" and ex["mode"] == "test":
