@@ -1,0 +1,628 @@
+=== 1.1
+@idea
+Rust is installed and managed with **rustup**, the official toolchain installer. One command installs three things: `rustc`, the compiler that turns `.rs` source files into native programs; `cargo`, the build tool and package manager you will use every day; and the standard library with its documentation. rustup also keeps several **toolchains** side by side (stable, beta, nightly, or a pinned version for one project) and updates them with `rustup update`.
+
+Rust releases a new stable version every six weeks. Updates are backwards compatible: code that compiled last year still compiles. Larger language changes are grouped into **editions** (2015, 2018, 2021, 2024) that each crate opts into in its `Cargo.toml`, so the language can evolve without breaking old code. New projects use the latest edition.
+
+Two more pieces complete the setup. **rust-analyzer**, the language server, gives your editor completion, inline types and instant errors; install it as your editor's Rust extension. And `rustup doc` opens the standard library documentation and the Rust Book **offline**, which is handy when you are on a train or the website is slow.
+@how
+- Install: the command from rustup.rs (macOS/Linux) or rustup-init.exe (Windows).
+- Check: `rustc --version`, `cargo --version`, `rustup show`.
+- Update: `rustup update`; pin a project with a `rust-toolchain.toml` file.
+- Add tools: `rustup component add clippy rustfmt`.
+- Offline docs: `rustup doc` (or `rustup doc --book`, `rustup doc --std`).
+- Editor: install the rust-analyzer extension.
+@example bash: Checking an installation
+$ rustc --version && cargo --version && rustup --version
+rustc 1.97.0 (2d8144b78 2026-07-07)
+cargo 1.97.0 (c980f4866 2026-06-30)
+rustup 1.28.2 (e4f3ad6f8 2025-04-28)
+$ rustup show active-toolchain
+stable-x86_64-unknown-linux-gnu (default)
+$ rustup update
+info: syncing channel updates for 'stable-x86_64-unknown-linux-gnu'
+  stable-x86_64-unknown-linux-gnu unchanged - rustc 1.97.0 (2d8144b78 2026-07-07)
+@note
+Each tool reports its version and release date; rustc and cargo are released together. The active toolchain is "stable" for this machine's platform, and `rustup update` keeps it current. These lines were recorded on a real machine; your versions will be the same or newer.
+@example rust: Asking the compiler about itself
+fn main() {
+    let edition = if cfg!(debug_assertions) { "debug build" } else { "release build" };
+    println!("This program was compiled as a {edition}.");
+    println!("Target OS: {}, architecture: {}", std::env::consts::OS, std::env::consts::ARCH);
+    println!("A usize here is {} bytes", std::mem::size_of::<usize>());
+}
+@note
+`cfg!` and `std::env::consts` reveal how and for which platform the program was built. A `usize`, the type used for sizes and indexes, is 8 bytes on 64-bit systems. Building the same file with `--release` (or `-O`) would print "release build".
+@mistakes
+- **Installing Rust from an old system package.** It is often months out of date. Use rustup.
+- **Forgetting rust-analyzer.** Coding Rust without inline errors and types is much harder than it needs to be.
+- **Mixing toolchains by accident.** If a project needs a specific version, pin it with `rust-toolchain.toml`.
+@keys
+- rustup installs and updates rustc, cargo and the standard library.
+- Stable releases every six weeks; editions bundle larger changes.
+- rust-analyzer gives your editor completion and instant errors.
+- `rustup doc` opens the docs and the Book offline.
+
+=== 1.2
+@idea
+Every Rust program starts at a function called `main`. `fn main() { ... }` declares it: `fn` introduces a function, the parentheses hold parameters (none here), and the body sits in curly braces. Inside, `println!("Hello, world!");` prints a line. The `!` means `println!` is a **macro**, not a function: macros generate code at compile time, which lets `println!` check its format string and arguments before the program ever runs. Statements end with a semicolon.
+
+Rust is a **compiled** language. `rustc main.rs` reads the source, checks it thoroughly (types, ownership, borrowing) and produces a native executable, `main` (or `main.exe` on Windows), that runs without Rust installed. Compiling and running are separate steps: you can give the executable to someone else and they run it directly. The compiler's checks are strict, and its error messages are famously helpful: they point at the exact spot, explain the problem and often suggest the fix.
+
+Formatting with `println!` uses placeholders: `{}` for a value's user-facing form, `{:?}` for its debug form, and you can put variable names directly inside the braces: `println!("{name} is {age}")`. Code style is standardised by `rustfmt`: four spaces of indentation and braces on the same line.
+@how
+- `fn main() { ... }` is the entry point.
+- `println!` prints with a newline; `print!` without; `eprintln!` to standard error.
+- Placeholders: `{}`, `{:?}`, `{name}`, `{:.2}` for two decimals, `{:>8}` to right-align.
+- Compile with `rustc main.rs`; run `./main` (Windows: `.\main.exe`).
+- Format with `rustfmt main.rs` (or `cargo fmt` in projects).
+@example rust: Formatting with println!
+fn main() {
+    let name = "Ferris";
+    let age = 9;
+    let height = 0.2875;
+    println!("Hello, {name}!");
+    println!("{} is {} years old", name, age);
+    println!("height: {height:.2} m, padded: [{age:>4}] [{age:<4}] [{age:04}]");
+    println!("debug form of a string: {name:?}");
+    eprintln!("this line goes to standard error");
+}
+@note
+Names can go straight inside the braces, or values can follow the format string. Format specs control decimals, alignment and zero-padding, and `{:?}` shows the debug form, with quotes for strings. The last line went to standard error, which is where error messages belong.
+@example rust fail: The compiler checks format strings before running
+fn main() {
+    let city = "Montréal";
+    println!("{} has {} people", city);
+}
+@note
+The format string asks for two values but only one was given, and the program does not compile at all: `println!` is a macro, so this is checked at compile time and the error points at the exact placeholders. In many languages this mistake would only appear, or silently print garbage, at run time.
+@mistakes
+- **Forgetting the `!`.** `println("hi")` looks for a function that does not exist.
+- **Expecting to run the `.rs` file directly.** Compile it first, then run the executable.
+- **Ignoring the compiler's suggestions.** Its "help:" lines usually contain the fix.
+@keys
+- `fn main` is where a program starts; `println!` is a macro that prints.
+- Format placeholders: `{}`, `{:?}`, `{name}`, with width and precision specs.
+- `rustc` compiles to a native executable that runs on its own.
+- Mistakes in format strings are caught at compile time.
+
+=== 1.3
+@idea
+Real projects use **Cargo**, Rust's build system and package manager. `cargo new hello_cargo` creates a folder with a `Cargo.toml` manifest (the package's name, version, edition and dependencies), a `src/main.rs` with a hello-world program, and a fresh git repository with a `.gitignore`. From then on, Cargo builds the right files with the right flags, and downloads and compiles any **crates** (libraries) you depend on.
+
+Four commands cover daily work. `cargo build` compiles into `target/debug/`. `cargo run` builds if needed and runs the program. `cargo check` only checks that the code compiles, without producing an executable, which is much faster and ideal while writing code. `cargo build --release` compiles with optimisations into `target/release/`; it takes longer to build but the program runs much faster, so it is what you measure and ship.
+
+Cargo also creates `Cargo.lock`, which records the exact versions of every dependency, so builds are reproducible. The `target/` folder holds build output and is ignored by git. Other everyday commands: `cargo fmt` formats the code, `cargo clippy` runs the linter, `cargo test` runs tests and `cargo doc --open` builds documentation for your project and its dependencies.
+@how
+- `cargo new name` (binary) or `cargo new --lib name` (library).
+- `cargo check` while coding; `cargo run` to try it; `cargo build --release` to ship or benchmark.
+- Pass arguments to your program after `--`: `cargo run -- input.txt`.
+- `Cargo.toml` is yours to edit; `Cargo.lock` is managed by Cargo (commit it for programs).
+- `cargo fmt`, `cargo clippy`, `cargo test`, `cargo doc --open`.
+@example bash: A Cargo project from start to finish
+$ cargo new hello_cargo
+    Creating binary (application) `hello_cargo` package
+$ cd hello_cargo && find . -not -path './.git*' -type f | sort
+./Cargo.toml
+./src/main.rs
+$ cat Cargo.toml
+[package]
+name = "hello_cargo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+$ cargo run
+   Compiling hello_cargo v0.1.0 (~/hello_cargo)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.76s
+     Running `target/debug/hello_cargo`
+Hello, world!
+$ cargo check
+    Checking hello_cargo v0.1.0 (~/hello_cargo)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+$ cargo build --release && ls target/release/hello_cargo
+   Compiling hello_cargo v0.1.0 (~/hello_cargo)
+    Finished `release` profile [optimized] target(s) in 0.15s
+target/release/hello_cargo
+@note
+`cargo new` produced a manifest and a ready-to-run program. `cargo run` compiled and ran it in one step, `cargo check` verified the code without building an executable (notice how much faster), and the release build landed in its own folder. Recorded on a real machine.
+@example rust: Reading arguments passed with cargo run --
+use std::env;
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    println!("program: {}", args[0].rsplit('/').next().unwrap_or(&args[0]));
+    println!("{} extra argument(s): {:?}", args.len() - 1, &args[1..]);
+    match args.get(1) {
+        Some(name) => println!("Hello, {name}!"),
+        None => println!("usage: cargo run -- NAME"),
+    }
+}
+@note
+Run without arguments, as here, the program sees only its own name and prints a usage line. With `cargo run -- Ada`, everything after `--` is passed to the program instead of to Cargo, so it would greet Ada. `args.get(1)` returns an Option instead of panicking when the argument is missing.
+@mistakes
+- **Using `cargo build` while writing code.** `cargo check` is much faster for "does it compile?".
+- **Benchmarking a debug build.** Debug builds can be ten times slower. Measure with `--release`.
+- **Committing `target/`.** It is build output; Cargo's `.gitignore` already excludes it.
+@keys
+- `cargo new` sets up a package: Cargo.toml, src/main.rs and git.
+- `check` to verify, `run` to try, `build --release` to ship.
+- Cargo.lock pins exact dependency versions.
+- `cargo fmt`, `clippy`, `test` and `doc` are part of the daily toolkit.
+
+=== 2.1
+@idea
+The guessing game starts by reading what the player types. Input comes from **standard input**, reached through `std::io::stdin()`. Its `read_line` method appends the typed line, including the newline, to a `String` you provide. That string must be **mutable** (`let mut guess = String::new();`), because variables in Rust are immutable by default and `read_line` needs to change it.
+
+The string is passed as `&mut guess`: a **mutable reference**. `read_line` borrows the string to write into it, without taking ownership, so you can still use `guess` afterwards. The `&mut` makes it explicit at the call site that the function will modify your variable, a theme you will see throughout Rust.
+
+Reading can fail (the input might not be valid UTF-8, or the stream might be closed), so `read_line` returns a **`Result`**: either `Ok` with the number of bytes read, or `Err` with an error. Rust will not let you silently ignore it; the compiler warns about an unused `Result`. For now, `.expect("Failed to read line")` says "crash with this message if it failed"; later lessons handle errors gracefully. `use std::io;` at the top brings the module into scope so you can write `io::stdin()`.
+@how
+- `use std::io;` then `let mut guess = String::new();`.
+- `io::stdin().read_line(&mut guess).expect("Failed to read line");`
+- `read_line` appends, including the newline; `guess.trim()` removes it.
+- Returns `Result<usize>`: the byte count on success.
+- `let` is immutable; add `mut` only when the value must change.
+@example rust: Reading a line and seeing what you got
+use std::io;
+
+fn main() {
+    println!("Guess the number! Please input your guess.");
+    let mut guess = String::new();
+    let bytes = io::stdin().read_line(&mut guess).expect("Failed to read line");
+    println!("You guessed: {guess}");
+    println!("read {bytes} bytes; debug form {guess:?}; trimmed {:?}", guess.trim());
+}
+@stdin
+  42
+@note
+The input was "  42" plus a newline, and `read_line` kept all of it: the debug form shows the spaces and the `\n`, which is why the first `println!` printed an extra blank line. `trim()` gives the clean text. The byte count includes the newline.
+@example rust fail: Forgetting mut
+use std::io;
+
+fn main() {
+    let guess = String::new();
+    io::stdin().read_line(&mut guess).expect("Failed to read line");
+}
+@note
+Without `mut`, the compiler refuses to hand out a mutable reference to `guess`, and its help line suggests exactly the fix: make the binding mutable. Immutability by default means every variable that changes is clearly marked.
+@mistakes
+- **Forgetting that the newline is included.** Comparing `guess == "42"` fails. Trim first.
+- **Declaring the String without `mut`.** `read_line` needs to modify it.
+- **Ignoring the `Result`.** At least call `expect` with a clear message; later, handle the error.
+@keys
+- `io::stdin().read_line(&mut s)` appends a line, newline included.
+- Variables are immutable unless declared `mut`.
+- `&mut` lends a value to be modified without giving it away.
+- Fallible operations return `Result`; `expect` crashes with a message on error.
+
+=== 2.2
+@idea
+The standard library has no random-number generator, so the game uses a **crate**: a package of Rust code published on crates.io. Adding one is a single line in the `[dependencies]` section of `Cargo.toml` (`rand = "0.9"`), or `cargo add rand`. The next build downloads it and everything it depends on, compiles them, and links them in.
+
+The version requirement `"0.9"` is a **semantic versioning** range: any version compatible with 0.9 (0.9.0 up to, but not including, 0.10.0). On the first build, Cargo picks the newest matching versions and writes them to **`Cargo.lock`**. Later builds, on any machine, use exactly those versions until you run `cargo update`, which is what makes builds reproducible: a new release of a crate never changes your program by surprise.
+
+To use the crate, bring what you need into scope and call it: `rand::random_range(1..=100)` returns a random integer from 1 to 100 inclusive (`..=` is an inclusive range; `1..100` would stop at 99). Each crate's documentation is on docs.rs, and `cargo doc --open` builds the docs for exactly the versions in your lock file.
+@how
+- `cargo add rand` or add `rand = "0.9"` under `[dependencies]`.
+- Build once: Cargo downloads, compiles and records versions in `Cargo.lock`.
+- `cargo update` moves to the newest compatible versions on purpose.
+- `1..=100` includes 100; `1..100` excludes it.
+- Read a crate's API on docs.rs or with `cargo doc --open`.
+@example rust: A secret number from the rand crate
+fn main() {
+    let secret = rand::random_range(1..=100);
+    println!("secret is between 1 and 100: {}", (1..=100).contains(&secret));
+
+    let rolls: Vec<u8> = (0..1000).map(|_| rand::random_range(1..=6)).collect();
+    let (lowest, highest) = (rolls.iter().min().unwrap(), rolls.iter().max().unwrap());
+    println!("1000 dice rolls: lowest {lowest}, highest {highest}");
+    let flips: Vec<bool> = (0..100).map(|_| rand::random()).collect();
+    println!("100 coin flips include both sides: {}", flips.contains(&true) && flips.contains(&false));
+}
+@deps rand@0.9
+@note
+The numbers differ on every run, so the example prints facts that are always true: the secret is in range, and a thousand dice rolls cover 1 through 6 because the range is inclusive. `rand::random()` produces any type that supports it, here booleans for coin flips. The crate was declared in Cargo.toml as `rand = "0.9"`.
+@example toml: Cargo.toml and what Cargo.lock records
+# Cargo.toml: what you asked for (a compatible range)
+[package]
+name = "guessing_game"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand = "0.9"          # means >= 0.9.0 and < 0.10.0
+
+# Cargo.lock: what you got (written by Cargo, exact versions)
+# [[package]]
+# name = "rand"
+# version = "0.9.2"
+# dependencies = ["rand_chacha", "rand_core"]
+#
+# [[package]]
+# name = "rand_core"
+# version = "0.9.3"
+@note
+`Cargo.toml` states the range you accept; `Cargo.lock` records the exact versions chosen, including crates you never named (rand's own dependencies). Commit the lock file for applications so every build uses the same code.
+@mistakes
+- **Using `1..100` when you mean up to 100.** That range stops at 99. Use `1..=100`.
+- **Editing Cargo.lock by hand.** Let Cargo manage it; use `cargo update`.
+- **Copying API examples from an old blog post.** Crate APIs change between versions. Check docs.rs for your version.
+@keys
+- Crates from crates.io add functionality; declare them in Cargo.toml.
+- Version requirements are SemVer ranges; Cargo.lock pins exact versions.
+- `..=` is inclusive, `..` exclusive.
+- docs.rs and `cargo doc --open` document the versions you use.
+
+=== 2.3
+@idea
+To compare the guess with the secret, the text must become a number. `guess.trim().parse::<u32>()` (or `let guess: u32 = guess.trim().parse()...`) converts it, and returns a `Result`, because "abc" is not a number. The type annotation tells `parse` what to produce; Rust infers types almost everywhere, but here there is nothing else to infer from.
+
+`guess.cmp(&secret)` compares two values and returns an `Ordering`, an enum with three variants: `Less`, `Greater` and `Equal`. A **`match`** expression handles each one in its own **arm**, and the compiler checks that every variant is covered, so you cannot forget a case.
+
+The game repeats with **`loop`**, an infinite loop that you leave with **`break`** when the guess is right. Bad input should not crash the game: instead of `expect`, match on the `Result` from `parse`. `Ok(num) => num` uses the number; `Err(_) => continue` skips to the next round (the underscore is a catch-all that ignores the error's details). This shift, from crashing on errors to handling them, is the heart of idiomatic Rust.
+@how
+- `let guess: u32 = match guess.trim().parse() { Ok(n) => n, Err(_) => continue };`
+- `use std::cmp::Ordering;` then `match guess.cmp(&secret) { Ordering::Less => ..., ... }`.
+- `loop { ... }` repeats; `break` leaves; `continue` starts the next pass.
+- `match` must cover every case; `_` matches anything.
+- Shadowing: reuse the name `guess` for the number.
+@example rust: The finished game, with scripted guesses
+use std::cmp::Ordering;
+use std::io::{self, BufRead};
+
+fn main() {
+    let secret: u32 = 42;                       // the real game uses rand::random_range(1..=100)
+    let stdin = io::stdin();
+    let mut tries = 0;
+    for line in stdin.lock().lines() {
+        let line = line.expect("Failed to read line");
+        let guess: u32 = match line.trim().parse() {
+            Ok(num) => num,
+            Err(_) => {
+                println!("{:?} is not a number, try again", line.trim());
+                continue;
+            }
+        };
+        tries += 1;
+        match guess.cmp(&secret) {
+            Ordering::Less => println!("{guess}: too small!"),
+            Ordering::Greater => println!("{guess}: too big!"),
+            Ordering::Equal => {
+                println!("{guess}: you win after {tries} tries!");
+                break;
+            }
+        }
+    }
+}
+@stdin
+50
+twenty
+25
+40
+42
+99
+@note
+Each line of input is parsed; "twenty" fails, gets a friendly message and `continue` moves on without counting a try. `cmp` returns an Ordering and `match` handles all three outcomes; the winning arm `break`s out, so the final 99 is never read. A fixed secret makes the run repeatable here.
+@example rust fail: match must cover every case
+use std::cmp::Ordering;
+
+fn main() {
+    let guess = 50;
+    let secret = 42;
+    match guess.cmp(&secret) {
+        Ordering::Less => println!("too small"),
+        Ordering::Greater => println!("too big"),
+    }
+}
+@note
+The compiler refuses the program because `Ordering::Equal` is not handled, and it names the missing pattern. This exhaustiveness check is why a `match` in Rust can be trusted: adding a new variant to an enum later makes the compiler point at every match that must deal with it.
+@mistakes
+- **Parsing without trimming.** The newline makes `"42\n".parse()` fail. Trim first.
+- **Using `expect` on user input.** One typo crashes the game. Match on the Result.
+- **Forgetting `break`.** The game never ends after a correct guess.
+@keys
+- `parse` converts text to numbers and returns a Result; annotate the target type.
+- `cmp` gives an `Ordering`; `match` handles each variant, checked for completeness.
+- `loop`, `break` and `continue` control repetition.
+- Handle bad input with `match` instead of crashing.
+
+=== 3.1
+@idea
+In Rust, variables are **immutable by default**: `let x = 5;` binds a value that cannot change. Trying to assign `x = 6;` is a compile error. This is deliberate: when values cannot change unexpectedly, code is easier to reason about, especially with threads. When a value must change, say so with `mut`: `let mut count = 0;`. Reading `mut` in code tells you exactly which values move.
+
+**Constants** (`const MAX_POINTS: u32 = 100_000;`) are always immutable, must have a type annotation, can be declared in any scope including globally, and must be set to a value computable at compile time. They are named in UPPER_SNAKE_CASE. Underscores in numbers are only for readability.
+
+**Shadowing** declares a new variable with the same name as an old one: `let spaces = "   "; let spaces = spaces.len();`. The second `let` creates a new binding (even of a different type) and the old one is hidden. That is different from `mut`: shadowing makes a new variable each time and the result is still immutable, which is handy for transforming a value step by step (trim, then parse) without inventing names like `spaces_str` and `spaces_num`. Shadowing inside an inner block ends when the block ends.
+@how
+- `let x = 5;` immutable; `let mut x = 5;` mutable.
+- `const NAME: Type = value;` for compile-time constants, any scope.
+- `static` for a single global location (rarely needed; mutable statics need `unsafe`).
+- Shadow with another `let` to transform a value or change its type.
+- Shadowing in a block lasts until the block's closing brace.
+@example rust: mut, const and shadowing side by side
+const SECONDS_PER_HOUR: u32 = 60 * 60;
+
+fn main() {
+    let mut total = 0;
+    for hours in [1, 2, 3] {
+        total += hours * SECONDS_PER_HOUR;
+    }
+    println!("total seconds: {total}");
+
+    let input = "  42  ";
+    let input = input.trim();                   // shadow: same name, trimmed &str
+    let input: i32 = input.parse().unwrap();    // shadow again: now an i32
+    println!("input doubled: {}", input * 2);
+
+    let x = 5;
+    {
+        let x = x * 10;
+        println!("inner x: {x}");
+    }
+    println!("outer x: {x}");
+}
+@note
+`total` changes, so it is `mut`; the constant is computed at compile time. Shadowing turned `input` from padded text into trimmed text into a number without new names. The inner `x` existed only inside its block, so the outer `x` is still 5 afterwards.
+@example rust fail: Assigning twice to an immutable variable
+fn main() {
+    let speed = 50;
+    println!("speed: {speed}");
+    speed = 80;
+    println!("speed: {speed}");
+}
+@note
+The compiler rejects the second assignment and points at both the first binding and the attempted change, suggesting `let mut speed`. Mistakes where a value changes unexpectedly simply cannot happen to immutable variables.
+@mistakes
+- **Adding `mut` everywhere by habit.** Then nothing tells readers what changes. Use it only when needed (the compiler warns about unnecessary `mut`).
+- **Confusing shadowing with mutation.** Shadowing creates a new variable; the old value is not changed.
+- **Constants without a type.** `const` always needs an explicit type.
+@keys
+- Variables are immutable by default; `mut` marks the ones that change.
+- `const` values are computed at compile time, typed and named in capitals.
+- Shadowing reuses a name for a new value, possibly of a new type.
+- Shadowing in a block ends with the block.
+
+=== 3.2
+@idea
+Rust's **scalar types** are single values: integers, floating-point numbers, booleans and characters. Integers come in signed (`i8`, `i16`, `i32`, `i64`, `i128`, `isize`) and unsigned (`u8` … `u128`, `usize`) sizes; the number is the width in bits, and `isize`/`usize` match the machine's pointer size (used for indexes and lengths). Without other information, integers default to `i32` and floats to `f64`.
+
+Every integer type has a fixed range, so arithmetic can **overflow**: `255u8 + 1` does not fit. In debug builds Rust panics on overflow; in release builds it wraps around silently. When overflow is possible and you care, say what you want explicitly: `checked_add` returns `None` on overflow, `saturating_add` clamps to the maximum, `wrapping_add` wraps, and `overflowing_add` returns the result and a flag.
+
+Floats (`f32`, `f64`) follow IEEE 754, with the usual surprises (`0.1 + 0.2` is not exactly `0.3`). Integer division truncates towards zero (`-7 / 2 == -3`) and `%` gives the remainder. Rust **never converts numbers implicitly**: adding an `i32` to an `f64` is a compile error, and you convert with `as` (which can truncate) or the safer `From`/`TryFrom`. A `bool` is `true` or `false`. A `char` is a single Unicode scalar value, 4 bytes, written in single quotes: `'a'`, `'é'`, `'🦀'`.
+@how
+- Integers default to `i32`, floats to `f64`; suffixes like `10u8` or `2.5f32` pick a type.
+- Overflow: debug panics, release wraps; use `checked_`, `saturating_`, `wrapping_` methods to choose.
+- Integer `/` truncates towards zero; `%` is the remainder.
+- No implicit conversion: `x as f64`, `u8::try_from(n)`, `i64::from(x)`.
+- `char` is a Unicode scalar value (4 bytes); `'a'` is a char, `"a"` a string.
+@example rust: Ranges, overflow handling and conversions
+fn main() {
+    println!("u8: {}..={}, i32: {}..={}", u8::MIN, u8::MAX, i32::MIN, i32::MAX);
+
+    let level: u8 = 250;
+    println!("checked:    {:?} and {:?}", level.checked_add(5), level.checked_add(10));
+    println!("saturating: {}", level.saturating_add(10));
+    println!("wrapping:   {}", level.wrapping_add(10));
+    println!("overflowing:{:?}", level.overflowing_add(10));
+
+    println!("-7 / 2 = {}, -7 % 2 = {}, 7.0 / 2.0 = {}", -7 / 2, -7 % 2, 7.0 / 2.0);
+    println!("0.1 + 0.2 = {}", 0.1 + 0.2);
+
+    let big: i32 = 300;
+    println!("300 as u8 = {} (truncated), try_from: {:?}", big as u8, u8::try_from(big));
+    let crab = '🦀';
+    println!("{crab} is a char of {} bytes in memory, {} bytes in UTF-8", std::mem::size_of::<char>(), crab.len_utf8());
+}
+@note
+The checked, saturating, wrapping and overflowing methods make overflow behaviour explicit instead of depending on the build mode. `as` silently truncated 300 to 44, while `try_from` reported the problem as an error. A char always takes 4 bytes in memory, but the crab needs 4 bytes in UTF-8 text while an ASCII letter needs 1.
+@example rust fail: No implicit conversions between number types
+fn main() {
+    let items: i32 = 3;
+    let price: f64 = 4.25;
+    let total = items * price;
+    println!("{total}");
+}
+@note
+Multiplying an `i32` by an `f64` does not compile: Rust never guesses how to convert, because every implicit conversion is a chance to lose precision silently. The fix is explicit, such as `items as f64 * price` or `f64::from(items) * price`.
+@mistakes
+- **Assuming overflow panics in release builds.** It wraps silently. Use checked or saturating arithmetic when it matters.
+- **Converting with `as` without thinking.** It truncates and wraps. Prefer `try_from` when values may not fit.
+- **Comparing floats with `==`.** Compare within a tolerance.
+@keys
+- Fixed-width integers (`i8`…`u128`, `isize`/`usize`) and floats (`f32`, `f64`).
+- Overflow: panic in debug, wrap in release; choose behaviour with checked/saturating/wrapping methods.
+- No implicit numeric conversion; use `as`, `From` or `TryFrom`.
+- `char` is a 4-byte Unicode scalar value.
+
+=== 3.3
+@idea
+**Compound types** group several values. A **tuple** holds a fixed number of values of possibly different types: `let point: (i32, f64, char) = (3, 1.5, 'x');`. Read the parts by **destructuring** (`let (x, y, z) = point;`) or by position with `.0`, `.1`, `.2`. The empty tuple `()` is called **unit**: it is the value of expressions that return nothing, such as a function with no return value. Functions often return tuples to give back several results at once.
+
+An **array** holds a fixed number of values of the **same** type, stored next to each other: `let days = ["Mon", "Tue", "Wed"];` has type `[&str; 3]`; the length is part of the type. `[0; 5]` creates five zeros. Arrays live on the stack and are ideal when the size is known and fixed (the months of the year, a 3×3 grid). When the size changes at run time, use a `Vec` (chapter 8).
+
+Indexing an array is **bounds-checked**: `days[10]` does not read random memory, as it might in C; it panics with a clear message. When an index may be out of range, `days.get(10)` returns an `Option` (`None` instead of a panic). Iterate with `for day in days` or `for (i, day) in days.iter().enumerate()`.
+@how
+- Tuples: `(a, b, c)`; `let (x, y, _) = t;`; `t.0`; `()` is unit.
+- Arrays: `[1, 2, 3]` of type `[i32; 3]`; `[value; n]` repeats.
+- `arr.len()`, `arr[i]` (panics if out of range), `arr.get(i)` (returns Option).
+- Iterate with `for x in arr` or `.iter().enumerate()`.
+- Use `Vec` when the length is not fixed.
+@example rust: Tuples, arrays and safe indexing
+fn min_max(values: [i32; 5]) -> (i32, i32) {
+    let mut lo = values[0];
+    let mut hi = values[0];
+    for v in values {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    (lo, hi)
+}
+
+fn main() {
+    let reading = ("Montréal", -7.5, 'C');
+    let (city, temp, unit) = reading;
+    println!("{city}: {temp}°{unit} (also {} via .1)", reading.1);
+
+    let temps = [-7, -3, 2, -1, 4];
+    let (lo, hi) = min_max(temps);
+    println!("lowest {lo}, highest {hi}, {} readings", temps.len());
+
+    let grid = [[0u8; 3]; 2];
+    println!("grid: {grid:?}");
+    println!("get(1) = {:?}, get(9) = {:?}", temps.get(1), temps.get(9));
+    for (day, t) in temps.iter().enumerate() {
+        if *t > 0 {
+            println!("day {day} was above zero");
+        }
+    }
+}
+@note
+The tuple mixes a string, a float and a char, read both by destructuring and with `.1`. The function returns two values as a tuple. `[[0u8; 3]; 2]` builds a 2×3 grid, and `get` returns `Some` or `None` instead of panicking for index 9.
+@example rust: Out-of-bounds indexing panics instead of reading garbage
+fn main() {
+    let months = ["Jan", "Feb", "Mar"];
+    let index = "7".parse::<usize>().unwrap();    // pretend this came from the user
+    println!("asking for month #{index}");
+    let month = months[index];
+    println!("never printed: {month}");
+}
+@note
+The program panicked at the indexing line with a message naming the index and the length, and stopped before reading memory it does not own. In C the same mistake could silently read whatever happens to follow the array; Rust's bounds check turns it into a clear, immediate failure.
+@mistakes
+- **Using an array when the size changes.** Arrays have a fixed length. Use `Vec`.
+- **Indexing with user-provided numbers.** Use `.get()` and handle `None`.
+- **Long tuples.** `(String, i32, f64, bool, u8)` is unreadable. Use a struct with named fields.
+@keys
+- Tuples group fixed values of different types; `()` is unit.
+- Arrays hold a fixed number of same-typed values; the length is part of the type.
+- Indexing is bounds-checked: a panic instead of undefined behaviour.
+- `.get()` returns an Option for safe access.
+
+=== 3.4
+@idea
+Functions are declared with `fn`, take **typed parameters** and declare a return type after an arrow: `fn area(width: f64, height: f64) -> f64`. Parameter types are always required (Rust does not infer them across function boundaries), which makes every function signature a precise contract. Names use snake_case.
+
+Rust distinguishes **statements** from **expressions**. A statement performs an action and returns nothing: `let x = 5;` is a statement. An expression evaluates to a value: `5 + 1`, a function call, a block `{ ... }`, an `if`, a `match`. The key rule: a block's value is its **last expression**, written **without a semicolon**. Adding a semicolon turns it into a statement whose value is `()`.
+
+So a function returns the value of its final expression: `fn square(x: i32) -> i32 { x * x }`. The `return` keyword exists for leaving early (`if n < 0 { return 0; }`), but the idiomatic style ends with a bare expression. This expression-oriented design is why `let y = if x > 0 { 1 } else { -1 };` and `let total = { let a = 2; a * 3 };` work: blocks and `if` produce values.
+@how
+- `fn name(p: Type, q: Type) -> Ret { ... }`; parameters always typed.
+- The last expression without `;` is the return value.
+- `return value;` for early exits.
+- Blocks are expressions: `let v = { ...; expr };`.
+- No return type means the function returns `()`.
+@example rust: Expressions everywhere
+fn celsius_to_f(c: f64) -> f64 {
+    c * 9.0 / 5.0 + 32.0
+}
+
+fn grade(score: u32) -> char {
+    if score > 100 {
+        return '?';                     // early exit for invalid input
+    }
+    match score {
+        90..=100 => 'A',
+        75..=89 => 'B',
+        50..=74 => 'C',
+        _ => 'F',
+    }
+}
+
+fn main() {
+    let boiling = celsius_to_f(100.0);
+    let area = {
+        let width = 3;
+        let height = 4;
+        width * height                   // no semicolon: this is the block's value
+    };
+    let label = if area > 10 { "big" } else { "small" };
+    println!("{boiling}°F, area {area} ({label})");
+    println!("{:?}", [95, 80, 51, 12, 140].map(grade));
+}
+@note
+`celsius_to_f` returns its final expression. `grade` leaves early with `return` for invalid scores, otherwise its value is the `match`. The block assigned to `area` evaluates to its last line, and `if` produces a value directly. `.map(grade)` applies the function to every array element.
+@example rust fail: One semicolon too many
+fn square(x: i32) -> i32 {
+    x * x;
+}
+
+fn main() {
+    println!("{}", square(4));
+}
+@note
+With the semicolon, `x * x;` is a statement and the function body evaluates to `()`, which does not match the promised `i32`. The compiler explains the mismatch and points at the semicolon, suggesting you remove it: one of the most common first-week errors.
+@mistakes
+- **A semicolon after the final expression.** The function then returns `()`.
+- **Leaving out parameter types.** They are always required.
+- **Using `return` at the end of every function.** It works, but idiomatic Rust ends with a bare expression.
+@keys
+- Functions have typed parameters and an explicit return type.
+- Statements do things; expressions produce values.
+- A block's value is its last expression without a semicolon.
+- `return` is for early exits; blocks, `if` and `match` are expressions.
+
+=== 3.5
+@idea
+Rust's control flow is built from expressions. **`if`/`else`** takes a condition that must be a `bool` (no truthiness: `if count` is an error; write `if count != 0`). Because `if` is an expression, both branches must produce the same type when its value is used: `let parity = if n % 2 == 0 { "even" } else { "odd" };`.
+
+There are three loops. **`loop`** repeats forever until `break`, and `break value` makes the loop itself evaluate to that value, which is handy for retrying until something succeeds. **`while`** repeats while a condition holds. **`for`** iterates over anything iterable: arrays, ranges (`for i in 1..=10`), and later vectors, maps and iterator chains; it is the safest and most common loop, because it cannot go out of bounds. `.rev()` iterates backwards.
+
+Nested loops can be **labelled**: `'outer: for ...` lets an inner `break 'outer;` or `continue 'outer;` jump out of or continue the outer loop directly, instead of juggling flag variables. Prefer `for` over `while` with an index counter: `while i < arr.len()` with manual indexing is slower (bounds checks on each access) and easier to get wrong.
+@how
+- `if cond { } else if other { } else { }`; conditions must be `bool`.
+- `let x = if c { a } else { b };` both branches the same type.
+- `loop { ... break value; }`; `while cond { }`; `for x in iterable { }`.
+- Ranges: `0..n` exclusive, `1..=n` inclusive, `.rev()` backwards, `.step_by(2)`.
+- Labels: `'outer: for ... { for ... { break 'outer; } }`.
+@example rust: loop with a value, labels, ranges
+fn main() {
+    let mut attempts = 0;
+    let first_square_over_500 = loop {
+        attempts += 1;
+        if attempts * attempts > 500 {
+            break attempts * attempts;
+        }
+    };
+    println!("first square over 500: {first_square_over_500} (after {attempts} tries)");
+
+    let grid = [[1, 3, 5], [7, 8, 9], [10, 12, 14]];
+    'search: for (r, row) in grid.iter().enumerate() {
+        for (c, &value) in row.iter().enumerate() {
+            if value % 2 == 0 {
+                println!("first even number {value} at row {r}, column {c}");
+                break 'search;
+            }
+        }
+    }
+
+    let countdown: Vec<u32> = (1..=10).rev().step_by(3).collect();
+    println!("countdown: {countdown:?}");
+    let mut n = 27;
+    let mut steps = 0;
+    while n != 1 {
+        n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };
+        steps += 1;
+    }
+    println!("27 reaches 1 in {steps} steps");
+}
+@note
+`break` with a value made the `loop` an expression that produced the answer. The labelled `break 'search` left both loops at once when the first even number was found. Ranges compose with `.rev()` and `.step_by()`, and `while` suits the Collatz sequence, where the number of steps is not known in advance.
+@example rust fail: Conditions must be bool
+fn main() {
+    let unread = 3;
+    if unread {
+        println!("you have mail");
+    }
+}
+@note
+Rust has no "truthiness": an integer is not a condition, and the compiler says it expected `bool` and found an integer. Writing `if unread > 0` states the intent exactly, and removes a whole class of bugs from languages where 0, empty strings and null are silently false.
+@mistakes
+- **Using a number or Option as a condition.** Compare explicitly (`> 0`, `.is_some()`).
+- **`while i < len` with manual indexing.** Use `for` over the collection.
+- **Flag variables to escape nested loops.** Use a loop label.
+@keys
+- `if` is an expression; conditions must be `bool`.
+- `loop` can return a value with `break value`.
+- `for` over ranges and collections is the safest loop; `while` for unknown counts.
+- Labels let `break` and `continue` target an outer loop.

@@ -1,0 +1,1297 @@
+{
+"1.1": {
+"idea": [
+"Rust is installed and managed with **rustup**, the official toolchain installer. One command installs three things: `rustc`, the compiler that turns `.rs` source files into native programs; `cargo`, the build tool and package manager you will use every day; and the standard library with its documentation. rustup also keeps several **toolchains** side by side (stable, beta, nightly, or a pinned version for one project) and updates them with `rustup update`.",
+"Rust releases a new stable version every six weeks. Updates are backwards compatible: code that compiled last year still compiles. Larger language changes are grouped into **editions** (2015, 2018, 2021, 2024) that each crate opts into in its `Cargo.toml`, so the language can evolve without breaking old code. New projects use the latest edition.",
+"Two more pieces complete the setup. **rust-analyzer**, the language server, gives your editor completion, inline types and instant errors; install it as your editor's Rust extension. And `rustup doc` opens the standard library documentation and the Rust Book **offline**, which is handy when you are on a train or the website is slow."
+],
+"how": [
+"Install: the command from rustup.rs (macOS/Linux) or rustup-init.exe (Windows).",
+"Check: `rustc --version`, `cargo --version`, `rustup show`.",
+"Update: `rustup update`; pin a project with a `rust-toolchain.toml` file.",
+"Add tools: `rustup component add clippy rustfmt`.",
+"Offline docs: `rustup doc` (or `rustup doc --book`, `rustup doc --std`).",
+"Editor: install the rust-analyzer extension."
+],
+"examples": [
+{
+"lang": "bash",
+"title": "Checking an installation",
+"code": "$ rustc --version && cargo --version && rustup --version\nrustc 1.97.0 (2d8144b78 2026-07-07)\ncargo 1.97.0 (c980f4866 2026-06-30)\nrustup 1.28.2 (e4f3ad6f8 2025-04-28)\n$ rustup show active-toolchain\nstable-x86_64-unknown-linux-gnu (default)\n$ rustup update\ninfo: syncing channel updates for 'stable-x86_64-unknown-linux-gnu'\n  stable-x86_64-unknown-linux-gnu unchanged - rustc 1.97.0 (2d8144b78 2026-07-07)",
+"note": "Each tool reports its version and release date; rustc and cargo are released together. The active toolchain is \"stable\" for this machine's platform, and `rustup update` keeps it current. These lines were recorded on a real machine; your versions will be the same or newer.",
+"output": ""
+},
+{
+"lang": "rust",
+"title": "Asking the compiler about itself",
+"code": "fn main() {\n    let edition = if cfg!(debug_assertions) { \"debug build\" } else { \"release build\" };\n    println!(\"This program was compiled as a {edition}.\");\n    println!(\"Target OS: {}, architecture: {}\", std::env::consts::OS, std::env::consts::ARCH);\n    println!(\"A usize here is {} bytes\", std::mem::size_of::<usize>());\n}",
+"note": "`cfg!` and `std::env::consts` reveal how and for which platform the program was built. A `usize`, the type used for sizes and indexes, is 8 bytes on 64-bit systems. Building the same file with `--release` (or `-O`) would print \"release build\".",
+"output": "This program was compiled as a debug build.\nTarget OS: linux, architecture: x86_64\nA usize here is 8 bytes"
+}
+],
+"mistakes": [
+"**Installing Rust from an old system package.** It is often months out of date. Use rustup.",
+"**Forgetting rust-analyzer.** Coding Rust without inline errors and types is much harder than it needs to be.",
+"**Mixing toolchains by accident.** If a project needs a specific version, pin it with `rust-toolchain.toml`."
+],
+"keys": [
+"rustup installs and updates rustc, cargo and the standard library.",
+"Stable releases every six weeks; editions bundle larger changes.",
+"rust-analyzer gives your editor completion and instant errors.",
+"`rustup doc` opens the docs and the Book offline."
+]
+},
+"1.2": {
+"idea": [
+"Every Rust program starts at a function called `main`. `fn main() { ... }` declares it: `fn` introduces a function, the parentheses hold parameters (none here), and the body sits in curly braces. Inside, `println!(\"Hello, world!\");` prints a line. The `!` means `println!` is a **macro**, not a function: macros generate code at compile time, which lets `println!` check its format string and arguments before the program ever runs. Statements end with a semicolon.",
+"Rust is a **compiled** language. `rustc main.rs` reads the source, checks it thoroughly (types, ownership, borrowing) and produces a native executable, `main` (or `main.exe` on Windows), that runs without Rust installed. Compiling and running are separate steps: you can give the executable to someone else and they run it directly. The compiler's checks are strict, and its error messages are famously helpful: they point at the exact spot, explain the problem and often suggest the fix.",
+"Formatting with `println!` uses placeholders: `{}` for a value's user-facing form, `{:?}` for its debug form, and you can put variable names directly inside the braces: `println!(\"{name} is {age}\")`. Code style is standardised by `rustfmt`: four spaces of indentation and braces on the same line."
+],
+"how": [
+"`fn main() { ... }` is the entry point.",
+"`println!` prints with a newline; `print!` without; `eprintln!` to standard error.",
+"Placeholders: `{}`, `{:?}`, `{name}`, `{:.2}` for two decimals, `{:>8}` to right-align.",
+"Compile with `rustc main.rs`; run `./main` (Windows: `.\\main.exe`).",
+"Format with `rustfmt main.rs` (or `cargo fmt` in projects)."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Formatting with println!",
+"code": "fn main() {\n    let name = \"Ferris\";\n    let age = 9;\n    let height = 0.2875;\n    println!(\"Hello, {name}!\");\n    println!(\"{} is {} years old\", name, age);\n    println!(\"height: {height:.2} m, padded: [{age:>4}] [{age:<4}] [{age:04}]\");\n    println!(\"debug form of a string: {name:?}\");\n    eprintln!(\"this line goes to standard error\");\n}",
+"note": "Names can go straight inside the braces, or values can follow the format string. Format specs control decimals, alignment and zero-padding, and `{:?}` shows the debug form, with quotes for strings. The last line went to standard error, which is where error messages belong.",
+"output": "Hello, Ferris!\nFerris is 9 years old\nheight: 0.29 m, padded: [   9] [9   ] [0009]\ndebug form of a string: \"Ferris\"\nthis line goes to standard error"
+},
+{
+"lang": "rust",
+"title": "The compiler checks format strings before running",
+"code": "fn main() {\n    let city = \"Montréal\";\n    println!(\"{} has {} people\", city);\n}",
+"note": "The format string asks for two values but only one was given, and the program does not compile at all: `println!` is a macro, so this is checked at compile time and the error points at the exact placeholders. In many languages this mistake would only appear, or silently print garbage, at run time.",
+"output": "error: 2 positional arguments in format string, but there is 1 argument\n --> main.rs:3:15\n  |\n3 |     println!(\"{} has {} people\", city);\n  |               ^^     ^^          ----",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Forgetting the `!`.** `println(\"hi\")` looks for a function that does not exist.",
+"**Expecting to run the `.rs` file directly.** Compile it first, then run the executable.",
+"**Ignoring the compiler's suggestions.** Its \"help:\" lines usually contain the fix."
+],
+"keys": [
+"`fn main` is where a program starts; `println!` is a macro that prints.",
+"Format placeholders: `{}`, `{:?}`, `{name}`, with width and precision specs.",
+"`rustc` compiles to a native executable that runs on its own.",
+"Mistakes in format strings are caught at compile time."
+]
+},
+"1.3": {
+"idea": [
+"Real projects use **Cargo**, Rust's build system and package manager. `cargo new hello_cargo` creates a folder with a `Cargo.toml` manifest (the package's name, version, edition and dependencies), a `src/main.rs` with a hello-world program, and a fresh git repository with a `.gitignore`. From then on, Cargo builds the right files with the right flags, and downloads and compiles any **crates** (libraries) you depend on.",
+"Four commands cover daily work. `cargo build` compiles into `target/debug/`. `cargo run` builds if needed and runs the program. `cargo check` only checks that the code compiles, without producing an executable, which is much faster and ideal while writing code. `cargo build --release` compiles with optimisations into `target/release/`; it takes longer to build but the program runs much faster, so it is what you measure and ship.",
+"Cargo also creates `Cargo.lock`, which records the exact versions of every dependency, so builds are reproducible. The `target/` folder holds build output and is ignored by git. Other everyday commands: `cargo fmt` formats the code, `cargo clippy` runs the linter, `cargo test` runs tests and `cargo doc --open` builds documentation for your project and its dependencies."
+],
+"how": [
+"`cargo new name` (binary) or `cargo new --lib name` (library).",
+"`cargo check` while coding; `cargo run` to try it; `cargo build --release` to ship or benchmark.",
+"Pass arguments to your program after `--`: `cargo run -- input.txt`.",
+"`Cargo.toml` is yours to edit; `Cargo.lock` is managed by Cargo (commit it for programs).",
+"`cargo fmt`, `cargo clippy`, `cargo test`, `cargo doc --open`."
+],
+"examples": [
+{
+"lang": "bash",
+"title": "A Cargo project from start to finish",
+"code": "$ cargo new hello_cargo\n    Creating binary (application) `hello_cargo` package\n$ cd hello_cargo && find . -not -path './.git*' -type f | sort\n./Cargo.toml\n./src/main.rs\n$ cat Cargo.toml\n[package]\nname = \"hello_cargo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\n$ cargo run\n   Compiling hello_cargo v0.1.0 (~/hello_cargo)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.76s\n     Running `target/debug/hello_cargo`\nHello, world!\n$ cargo check\n    Checking hello_cargo v0.1.0 (~/hello_cargo)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s\n$ cargo build --release && ls target/release/hello_cargo\n   Compiling hello_cargo v0.1.0 (~/hello_cargo)\n    Finished `release` profile [optimized] target(s) in 0.15s\ntarget/release/hello_cargo",
+"note": "`cargo new` produced a manifest and a ready-to-run program. `cargo run` compiled and ran it in one step, `cargo check` verified the code without building an executable (notice how much faster), and the release build landed in its own folder. Recorded on a real machine.",
+"output": ""
+},
+{
+"lang": "rust",
+"title": "Reading arguments passed with cargo run --",
+"code": "use std::env;\n\nfn main() {\n    let args: Vec<String> = env::args().collect();\n    println!(\"program: {}\", args[0].rsplit('/').next().unwrap_or(&args[0]));\n    println!(\"{} extra argument(s): {:?}\", args.len() - 1, &args[1..]);\n    match args.get(1) {\n        Some(name) => println!(\"Hello, {name}!\"),\n        None => println!(\"usage: cargo run -- NAME\"),\n    }\n}",
+"note": "Run without arguments, as here, the program sees only its own name and prints a usage line. With `cargo run -- Ada`, everything after `--` is passed to the program instead of to Cargo, so it would greet Ada. `args.get(1)` returns an Option instead of panicking when the argument is missing.",
+"output": "program: prog\n0 extra argument(s): []\nusage: cargo run -- NAME"
+}
+],
+"mistakes": [
+"**Using `cargo build` while writing code.** `cargo check` is much faster for \"does it compile?\".",
+"**Benchmarking a debug build.** Debug builds can be ten times slower. Measure with `--release`.",
+"**Committing `target/`.** It is build output; Cargo's `.gitignore` already excludes it."
+],
+"keys": [
+"`cargo new` sets up a package: Cargo.toml, src/main.rs and git.",
+"`check` to verify, `run` to try, `build --release` to ship.",
+"Cargo.lock pins exact dependency versions.",
+"`cargo fmt`, `clippy`, `test` and `doc` are part of the daily toolkit."
+]
+},
+"2.1": {
+"idea": [
+"The guessing game starts by reading what the player types. Input comes from **standard input**, reached through `std::io::stdin()`. Its `read_line` method appends the typed line, including the newline, to a `String` you provide. That string must be **mutable** (`let mut guess = String::new();`), because variables in Rust are immutable by default and `read_line` needs to change it.",
+"The string is passed as `&mut guess`: a **mutable reference**. `read_line` borrows the string to write into it, without taking ownership, so you can still use `guess` afterwards. The `&mut` makes it explicit at the call site that the function will modify your variable, a theme you will see throughout Rust.",
+"Reading can fail (the input might not be valid UTF-8, or the stream might be closed), so `read_line` returns a **`Result`**: either `Ok` with the number of bytes read, or `Err` with an error. Rust will not let you silently ignore it; the compiler warns about an unused `Result`. For now, `.expect(\"Failed to read line\")` says \"crash with this message if it failed\"; later lessons handle errors gracefully. `use std::io;` at the top brings the module into scope so you can write `io::stdin()`."
+],
+"how": [
+"`use std::io;` then `let mut guess = String::new();`.",
+"`io::stdin().read_line(&mut guess).expect(\"Failed to read line\");`",
+"`read_line` appends, including the newline; `guess.trim()` removes it.",
+"Returns `Result<usize>`: the byte count on success.",
+"`let` is immutable; add `mut` only when the value must change."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Reading a line and seeing what you got",
+"code": "use std::io;\n\nfn main() {\n    println!(\"Guess the number! Please input your guess.\");\n    let mut guess = String::new();\n    let bytes = io::stdin().read_line(&mut guess).expect(\"Failed to read line\");\n    println!(\"You guessed: {guess}\");\n    println!(\"read {bytes} bytes; debug form {guess:?}; trimmed {:?}\", guess.trim());\n}",
+"note": "The input was \"  42\" plus a newline, and `read_line` kept all of it: the debug form shows the spaces and the `\\n`, which is why the first `println!` printed an extra blank line. `trim()` gives the clean text. The byte count includes the newline.",
+"output": "Guess the number! Please input your guess.\nYou guessed:   42\n\nread 5 bytes; debug form \"  42\\n\"; trimmed \"42\""
+},
+{
+"lang": "rust",
+"title": "Forgetting mut",
+"code": "use std::io;\n\nfn main() {\n    let guess = String::new();\n    io::stdin().read_line(&mut guess).expect(\"Failed to read line\");\n}",
+"note": "Without `mut`, the compiler refuses to hand out a mutable reference to `guess`, and its help line suggests exactly the fix: make the binding mutable. Immutability by default means every variable that changes is clearly marked.",
+"output": "error[E0596]: cannot borrow `guess` as mutable, as it is not declared as mutable\n --> main.rs:5:27\n  |\n5 |     io::stdin().read_line(&mut guess).expect(\"Failed to read line\");\n  |                           ^^^^^^^^^^ cannot borrow as mutable\n  |\nhelp: consider changing this to be mutable\n  |\n4 |     let mut guess = String::new();\n  |         +++",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Forgetting that the newline is included.** Comparing `guess == \"42\"` fails. Trim first.",
+"**Declaring the String without `mut`.** `read_line` needs to modify it.",
+"**Ignoring the `Result`.** At least call `expect` with a clear message; later, handle the error."
+],
+"keys": [
+"`io::stdin().read_line(&mut s)` appends a line, newline included.",
+"Variables are immutable unless declared `mut`.",
+"`&mut` lends a value to be modified without giving it away.",
+"Fallible operations return `Result`; `expect` crashes with a message on error."
+]
+},
+"2.2": {
+"idea": [
+"The standard library has no random-number generator, so the game uses a **crate**: a package of Rust code published on crates.io. Adding one is a single line in the `[dependencies]` section of `Cargo.toml` (`rand = \"0.9\"`), or `cargo add rand`. The next build downloads it and everything it depends on, compiles them, and links them in.",
+"The version requirement `\"0.9\"` is a **semantic versioning** range: any version compatible with 0.9 (0.9.0 up to, but not including, 0.10.0). On the first build, Cargo picks the newest matching versions and writes them to **`Cargo.lock`**. Later builds, on any machine, use exactly those versions until you run `cargo update`, which is what makes builds reproducible: a new release of a crate never changes your program by surprise.",
+"To use the crate, bring what you need into scope and call it: `rand::random_range(1..=100)` returns a random integer from 1 to 100 inclusive (`..=` is an inclusive range; `1..100` would stop at 99). Each crate's documentation is on docs.rs, and `cargo doc --open` builds the docs for exactly the versions in your lock file."
+],
+"how": [
+"`cargo add rand` or add `rand = \"0.9\"` under `[dependencies]`.",
+"Build once: Cargo downloads, compiles and records versions in `Cargo.lock`.",
+"`cargo update` moves to the newest compatible versions on purpose.",
+"`1..=100` includes 100; `1..100` excludes it.",
+"Read a crate's API on docs.rs or with `cargo doc --open`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A secret number from the rand crate",
+"code": "fn main() {\n    let secret = rand::random_range(1..=100);\n    println!(\"secret is between 1 and 100: {}\", (1..=100).contains(&secret));\n\n    let rolls: Vec<u8> = (0..1000).map(|_| rand::random_range(1..=6)).collect();\n    let (lowest, highest) = (rolls.iter().min().unwrap(), rolls.iter().max().unwrap());\n    println!(\"1000 dice rolls: lowest {lowest}, highest {highest}\");\n    let flips: Vec<bool> = (0..100).map(|_| rand::random()).collect();\n    println!(\"100 coin flips include both sides: {}\", flips.contains(&true) && flips.contains(&false));\n}",
+"note": "The numbers differ on every run, so the example prints facts that are always true: the secret is in range, and a thousand dice rolls cover 1 through 6 because the range is inclusive. `rand::random()` produces any type that supports it, here booleans for coin flips. The crate was declared in Cargo.toml as `rand = \"0.9\"`.",
+"output": "secret is between 1 and 100: true\n1000 dice rolls: lowest 1, highest 6\n100 coin flips include both sides: true"
+},
+{
+"lang": "toml",
+"title": "Cargo.toml and what Cargo.lock records",
+"code": "# Cargo.toml: what you asked for (a compatible range)\n[package]\nname = \"guessing_game\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nrand = \"0.9\"          # means >= 0.9.0 and < 0.10.0\n\n# Cargo.lock: what you got (written by Cargo, exact versions)\n# [[package]]\n# name = \"rand\"\n# version = \"0.9.2\"\n# dependencies = [\"rand_chacha\", \"rand_core\"]\n#\n# [[package]]\n# name = \"rand_core\"\n# version = \"0.9.3\"",
+"note": "`Cargo.toml` states the range you accept; `Cargo.lock` records the exact versions chosen, including crates you never named (rand's own dependencies). Commit the lock file for applications so every build uses the same code.",
+"output": ""
+}
+],
+"mistakes": [
+"**Using `1..100` when you mean up to 100.** That range stops at 99. Use `1..=100`.",
+"**Editing Cargo.lock by hand.** Let Cargo manage it; use `cargo update`.",
+"**Copying API examples from an old blog post.** Crate APIs change between versions. Check docs.rs for your version."
+],
+"keys": [
+"Crates from crates.io add functionality; declare them in Cargo.toml.",
+"Version requirements are SemVer ranges; Cargo.lock pins exact versions.",
+"`..=` is inclusive, `..` exclusive.",
+"docs.rs and `cargo doc --open` document the versions you use."
+]
+},
+"2.3": {
+"idea": [
+"To compare the guess with the secret, the text must become a number. `guess.trim().parse::<u32>()` (or `let guess: u32 = guess.trim().parse()...`) converts it, and returns a `Result`, because \"abc\" is not a number. The type annotation tells `parse` what to produce; Rust infers types almost everywhere, but here there is nothing else to infer from.",
+"`guess.cmp(&secret)` compares two values and returns an `Ordering`, an enum with three variants: `Less`, `Greater` and `Equal`. A **`match`** expression handles each one in its own **arm**, and the compiler checks that every variant is covered, so you cannot forget a case.",
+"The game repeats with **`loop`**, an infinite loop that you leave with **`break`** when the guess is right. Bad input should not crash the game: instead of `expect`, match on the `Result` from `parse`. `Ok(num) => num` uses the number; `Err(_) => continue` skips to the next round (the underscore is a catch-all that ignores the error's details). This shift, from crashing on errors to handling them, is the heart of idiomatic Rust."
+],
+"how": [
+"`let guess: u32 = match guess.trim().parse() { Ok(n) => n, Err(_) => continue };`",
+"`use std::cmp::Ordering;` then `match guess.cmp(&secret) { Ordering::Less => ..., ... }`.",
+"`loop { ... }` repeats; `break` leaves; `continue` starts the next pass.",
+"`match` must cover every case; `_` matches anything.",
+"Shadowing: reuse the name `guess` for the number."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The finished game, with scripted guesses",
+"code": "use std::cmp::Ordering;\nuse std::io::{self, BufRead};\n\nfn main() {\n    let secret: u32 = 42;                       // the real game uses rand::random_range(1..=100)\n    let stdin = io::stdin();\n    let mut tries = 0;\n    for line in stdin.lock().lines() {\n        let line = line.expect(\"Failed to read line\");\n        let guess: u32 = match line.trim().parse() {\n            Ok(num) => num,\n            Err(_) => {\n                println!(\"{:?} is not a number, try again\", line.trim());\n                continue;\n            }\n        };\n        tries += 1;\n        match guess.cmp(&secret) {\n            Ordering::Less => println!(\"{guess}: too small!\"),\n            Ordering::Greater => println!(\"{guess}: too big!\"),\n            Ordering::Equal => {\n                println!(\"{guess}: you win after {tries} tries!\");\n                break;\n            }\n        }\n    }\n}",
+"note": "Each line of input is parsed; \"twenty\" fails, gets a friendly message and `continue` moves on without counting a try. `cmp` returns an Ordering and `match` handles all three outcomes; the winning arm `break`s out, so the final 99 is never read. A fixed secret makes the run repeatable here.",
+"output": "50: too big!\n\"twenty\" is not a number, try again\n25: too small!\n40: too small!\n42: you win after 4 tries!"
+},
+{
+"lang": "rust",
+"title": "match must cover every case",
+"code": "use std::cmp::Ordering;\n\nfn main() {\n    let guess = 50;\n    let secret = 42;\n    match guess.cmp(&secret) {\n        Ordering::Less => println!(\"too small\"),\n        Ordering::Greater => println!(\"too big\"),\n    }\n}",
+"note": "The compiler refuses the program because `Ordering::Equal` is not handled, and it names the missing pattern. This exhaustiveness check is why a `match` in Rust can be trusted: adding a new variant to an enum later makes the compiler point at every match that must deal with it.",
+"output": "error[E0004]: non-exhaustive patterns: `std::cmp::Ordering::Equal` not covered\n --> main.rs:6:11\n  |\n6 |     match guess.cmp(&secret) {\n  |           ^^^^^^^^^^^^^^^^^^ pattern `std::cmp::Ordering::Equal` not covered\n  |\n  = note: not covered\n  = note: the matched value is of type `std::cmp::Ordering`\nhelp: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Parsing without trimming.** The newline makes `\"42\\n\".parse()` fail. Trim first.",
+"**Using `expect` on user input.** One typo crashes the game. Match on the Result.",
+"**Forgetting `break`.** The game never ends after a correct guess."
+],
+"keys": [
+"`parse` converts text to numbers and returns a Result; annotate the target type.",
+"`cmp` gives an `Ordering`; `match` handles each variant, checked for completeness.",
+"`loop`, `break` and `continue` control repetition.",
+"Handle bad input with `match` instead of crashing."
+]
+},
+"3.1": {
+"idea": [
+"In Rust, variables are **immutable by default**: `let x = 5;` binds a value that cannot change. Trying to assign `x = 6;` is a compile error. This is deliberate: when values cannot change unexpectedly, code is easier to reason about, especially with threads. When a value must change, say so with `mut`: `let mut count = 0;`. Reading `mut` in code tells you exactly which values move.",
+"**Constants** (`const MAX_POINTS: u32 = 100_000;`) are always immutable, must have a type annotation, can be declared in any scope including globally, and must be set to a value computable at compile time. They are named in UPPER_SNAKE_CASE. Underscores in numbers are only for readability.",
+"**Shadowing** declares a new variable with the same name as an old one: `let spaces = \"   \"; let spaces = spaces.len();`. The second `let` creates a new binding (even of a different type) and the old one is hidden. That is different from `mut`: shadowing makes a new variable each time and the result is still immutable, which is handy for transforming a value step by step (trim, then parse) without inventing names like `spaces_str` and `spaces_num`. Shadowing inside an inner block ends when the block ends."
+],
+"how": [
+"`let x = 5;` immutable; `let mut x = 5;` mutable.",
+"`const NAME: Type = value;` for compile-time constants, any scope.",
+"`static` for a single global location (rarely needed; mutable statics need `unsafe`).",
+"Shadow with another `let` to transform a value or change its type.",
+"Shadowing in a block lasts until the block's closing brace."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "mut, const and shadowing side by side",
+"code": "const SECONDS_PER_HOUR: u32 = 60 * 60;\n\nfn main() {\n    let mut total = 0;\n    for hours in [1, 2, 3] {\n        total += hours * SECONDS_PER_HOUR;\n    }\n    println!(\"total seconds: {total}\");\n\n    let input = \"  42  \";\n    let input = input.trim();                   // shadow: same name, trimmed &str\n    let input: i32 = input.parse().unwrap();    // shadow again: now an i32\n    println!(\"input doubled: {}\", input * 2);\n\n    let x = 5;\n    {\n        let x = x * 10;\n        println!(\"inner x: {x}\");\n    }\n    println!(\"outer x: {x}\");\n}",
+"note": "`total` changes, so it is `mut`; the constant is computed at compile time. Shadowing turned `input` from padded text into trimmed text into a number without new names. The inner `x` existed only inside its block, so the outer `x` is still 5 afterwards.",
+"output": "total seconds: 21600\ninput doubled: 84\ninner x: 50\nouter x: 5"
+},
+{
+"lang": "rust",
+"title": "Assigning twice to an immutable variable",
+"code": "fn main() {\n    let speed = 50;\n    println!(\"speed: {speed}\");\n    speed = 80;\n    println!(\"speed: {speed}\");\n}",
+"note": "The compiler rejects the second assignment and points at both the first binding and the attempted change, suggesting `let mut speed`. Mistakes where a value changes unexpectedly simply cannot happen to immutable variables.",
+"output": "error[E0384]: cannot assign twice to immutable variable `speed`\n --> main.rs:4:5\n  |\n2 |     let speed = 50;\n  |         ----- first assignment to `speed`\n3 |     println!(\"speed: {speed}\");\n4 |     speed = 80;\n  |     ^^^^^^^^^^ cannot assign twice to immutable variable\n  |\nhelp: consider making this binding mutable\n  |\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Adding `mut` everywhere by habit.** Then nothing tells readers what changes. Use it only when needed (the compiler warns about unnecessary `mut`).",
+"**Confusing shadowing with mutation.** Shadowing creates a new variable; the old value is not changed.",
+"**Constants without a type.** `const` always needs an explicit type."
+],
+"keys": [
+"Variables are immutable by default; `mut` marks the ones that change.",
+"`const` values are computed at compile time, typed and named in capitals.",
+"Shadowing reuses a name for a new value, possibly of a new type.",
+"Shadowing in a block ends with the block."
+]
+},
+"3.2": {
+"idea": [
+"Rust's **scalar types** are single values: integers, floating-point numbers, booleans and characters. Integers come in signed (`i8`, `i16`, `i32`, `i64`, `i128`, `isize`) and unsigned (`u8` … `u128`, `usize`) sizes; the number is the width in bits, and `isize`/`usize` match the machine's pointer size (used for indexes and lengths). Without other information, integers default to `i32` and floats to `f64`.",
+"Every integer type has a fixed range, so arithmetic can **overflow**: `255u8 + 1` does not fit. In debug builds Rust panics on overflow; in release builds it wraps around silently. When overflow is possible and you care, say what you want explicitly: `checked_add` returns `None` on overflow, `saturating_add` clamps to the maximum, `wrapping_add` wraps, and `overflowing_add` returns the result and a flag.",
+"Floats (`f32`, `f64`) follow IEEE 754, with the usual surprises (`0.1 + 0.2` is not exactly `0.3`). Integer division truncates towards zero (`-7 / 2 == -3`) and `%` gives the remainder. Rust **never converts numbers implicitly**: adding an `i32` to an `f64` is a compile error, and you convert with `as` (which can truncate) or the safer `From`/`TryFrom`. A `bool` is `true` or `false`. A `char` is a single Unicode scalar value, 4 bytes, written in single quotes: `'a'`, `'é'`, `'🦀'`."
+],
+"how": [
+"Integers default to `i32`, floats to `f64`; suffixes like `10u8` or `2.5f32` pick a type.",
+"Overflow: debug panics, release wraps; use `checked_`, `saturating_`, `wrapping_` methods to choose.",
+"Integer `/` truncates towards zero; `%` is the remainder.",
+"No implicit conversion: `x as f64`, `u8::try_from(n)`, `i64::from(x)`.",
+"`char` is a Unicode scalar value (4 bytes); `'a'` is a char, `\"a\"` a string."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Ranges, overflow handling and conversions",
+"code": "fn main() {\n    println!(\"u8: {}..={}, i32: {}..={}\", u8::MIN, u8::MAX, i32::MIN, i32::MAX);\n\n    let level: u8 = 250;\n    println!(\"checked:    {:?} and {:?}\", level.checked_add(5), level.checked_add(10));\n    println!(\"saturating: {}\", level.saturating_add(10));\n    println!(\"wrapping:   {}\", level.wrapping_add(10));\n    println!(\"overflowing:{:?}\", level.overflowing_add(10));\n\n    println!(\"-7 / 2 = {}, -7 % 2 = {}, 7.0 / 2.0 = {}\", -7 / 2, -7 % 2, 7.0 / 2.0);\n    println!(\"0.1 + 0.2 = {}\", 0.1 + 0.2);\n\n    let big: i32 = 300;\n    println!(\"300 as u8 = {} (truncated), try_from: {:?}\", big as u8, u8::try_from(big));\n    let crab = '🦀';\n    println!(\"{crab} is a char of {} bytes in memory, {} bytes in UTF-8\", std::mem::size_of::<char>(), crab.len_utf8());\n}",
+"note": "The checked, saturating, wrapping and overflowing methods make overflow behaviour explicit instead of depending on the build mode. `as` silently truncated 300 to 44, while `try_from` reported the problem as an error. A char always takes 4 bytes in memory, but the crab needs 4 bytes in UTF-8 text while an ASCII letter needs 1.",
+"output": "u8: 0..=255, i32: -2147483648..=2147483647\nchecked:    Some(255) and None\nsaturating: 255\nwrapping:   4\noverflowing:(4, true)\n-7 / 2 = -3, -7 % 2 = -1, 7.0 / 2.0 = 3.5\n0.1 + 0.2 = 0.30000000000000004\n300 as u8 = 44 (truncated), try_from: Err(TryFromIntError(PosOverflow))\n🦀 is a char of 4 bytes in memory, 4 bytes in UTF-8"
+},
+{
+"lang": "rust",
+"title": "No implicit conversions between number types",
+"code": "fn main() {\n    let items: i32 = 3;\n    let price: f64 = 4.25;\n    let total = items * price;\n    println!(\"{total}\");\n}",
+"note": "Multiplying an `i32` by an `f64` does not compile: Rust never guesses how to convert, because every implicit conversion is a chance to lose precision silently. The fix is explicit, such as `items as f64 * price` or `f64::from(items) * price`.",
+"output": "error[E0277]: cannot multiply `i32` by `f64`\n --> main.rs:4:23\n  |\n4 |     let total = items * price;\n  |                       ^ no implementation for `i32 * f64`\n  |\n  = help: the trait `Mul<f64>` is not implemented for `i32`\nhelp: the following other types implement trait `Mul<Rhs>`\n  = note: `i32` implements `Mul`\n  |\n  = note: in this macro invocation\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Assuming overflow panics in release builds.** It wraps silently. Use checked or saturating arithmetic when it matters.",
+"**Converting with `as` without thinking.** It truncates and wraps. Prefer `try_from` when values may not fit.",
+"**Comparing floats with `==`.** Compare within a tolerance."
+],
+"keys": [
+"Fixed-width integers (`i8`…`u128`, `isize`/`usize`) and floats (`f32`, `f64`).",
+"Overflow: panic in debug, wrap in release; choose behaviour with checked/saturating/wrapping methods.",
+"No implicit numeric conversion; use `as`, `From` or `TryFrom`.",
+"`char` is a 4-byte Unicode scalar value."
+]
+},
+"3.3": {
+"idea": [
+"**Compound types** group several values. A **tuple** holds a fixed number of values of possibly different types: `let point: (i32, f64, char) = (3, 1.5, 'x');`. Read the parts by **destructuring** (`let (x, y, z) = point;`) or by position with `.0`, `.1`, `.2`. The empty tuple `()` is called **unit**: it is the value of expressions that return nothing, such as a function with no return value. Functions often return tuples to give back several results at once.",
+"An **array** holds a fixed number of values of the **same** type, stored next to each other: `let days = [\"Mon\", \"Tue\", \"Wed\"];` has type `[&str; 3]`; the length is part of the type. `[0; 5]` creates five zeros. Arrays live on the stack and are ideal when the size is known and fixed (the months of the year, a 3×3 grid). When the size changes at run time, use a `Vec` (chapter 8).",
+"Indexing an array is **bounds-checked**: `days[10]` does not read random memory, as it might in C; it panics with a clear message. When an index may be out of range, `days.get(10)` returns an `Option` (`None` instead of a panic). Iterate with `for day in days` or `for (i, day) in days.iter().enumerate()`."
+],
+"how": [
+"Tuples: `(a, b, c)`; `let (x, y, _) = t;`; `t.0`; `()` is unit.",
+"Arrays: `[1, 2, 3]` of type `[i32; 3]`; `[value; n]` repeats.",
+"`arr.len()`, `arr[i]` (panics if out of range), `arr.get(i)` (returns Option).",
+"Iterate with `for x in arr` or `.iter().enumerate()`.",
+"Use `Vec` when the length is not fixed."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Tuples, arrays and safe indexing",
+"code": "fn min_max(values: [i32; 5]) -> (i32, i32) {\n    let mut lo = values[0];\n    let mut hi = values[0];\n    for v in values {\n        lo = lo.min(v);\n        hi = hi.max(v);\n    }\n    (lo, hi)\n}\n\nfn main() {\n    let reading = (\"Montréal\", -7.5, 'C');\n    let (city, temp, unit) = reading;\n    println!(\"{city}: {temp}°{unit} (also {} via .1)\", reading.1);\n\n    let temps = [-7, -3, 2, -1, 4];\n    let (lo, hi) = min_max(temps);\n    println!(\"lowest {lo}, highest {hi}, {} readings\", temps.len());\n\n    let grid = [[0u8; 3]; 2];\n    println!(\"grid: {grid:?}\");\n    println!(\"get(1) = {:?}, get(9) = {:?}\", temps.get(1), temps.get(9));\n    for (day, t) in temps.iter().enumerate() {\n        if *t > 0 {\n            println!(\"day {day} was above zero\");\n        }\n    }\n}",
+"note": "The tuple mixes a string, a float and a char, read both by destructuring and with `.1`. The function returns two values as a tuple. `[[0u8; 3]; 2]` builds a 2×3 grid, and `get` returns `Some` or `None` instead of panicking for index 9.",
+"output": "Montréal: -7.5°C (also -7.5 via .1)\nlowest -7, highest 4, 5 readings\ngrid: [[0, 0, 0], [0, 0, 0]]\nget(1) = Some(-3), get(9) = None\nday 2 was above zero\nday 4 was above zero"
+},
+{
+"lang": "rust",
+"title": "Out-of-bounds indexing panics instead of reading garbage",
+"code": "fn main() {\n    let months = [\"Jan\", \"Feb\", \"Mar\"];\n    let index = \"7\".parse::<usize>().unwrap();    // pretend this came from the user\n    println!(\"asking for month #{index}\");\n    let month = months[index];\n    println!(\"never printed: {month}\");\n}",
+"note": "The program panicked at the indexing line with a message naming the index and the length, and stopped before reading memory it does not own. In C the same mistake could silently read whatever happens to follow the array; Rust's bounds check turns it into a clear, immediate failure.",
+"output": "asking for month #7\n\nthread 'main' panicked at main.rs:5:17:\nindex out of bounds: the len is 3 but the index is 7\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+}
+],
+"mistakes": [
+"**Using an array when the size changes.** Arrays have a fixed length. Use `Vec`.",
+"**Indexing with user-provided numbers.** Use `.get()` and handle `None`.",
+"**Long tuples.** `(String, i32, f64, bool, u8)` is unreadable. Use a struct with named fields."
+],
+"keys": [
+"Tuples group fixed values of different types; `()` is unit.",
+"Arrays hold a fixed number of same-typed values; the length is part of the type.",
+"Indexing is bounds-checked: a panic instead of undefined behaviour.",
+"`.get()` returns an Option for safe access."
+]
+},
+"3.4": {
+"idea": [
+"Functions are declared with `fn`, take **typed parameters** and declare a return type after an arrow: `fn area(width: f64, height: f64) -> f64`. Parameter types are always required (Rust does not infer them across function boundaries), which makes every function signature a precise contract. Names use snake_case.",
+"Rust distinguishes **statements** from **expressions**. A statement performs an action and returns nothing: `let x = 5;` is a statement. An expression evaluates to a value: `5 + 1`, a function call, a block `{ ... }`, an `if`, a `match`. The key rule: a block's value is its **last expression**, written **without a semicolon**. Adding a semicolon turns it into a statement whose value is `()`.",
+"So a function returns the value of its final expression: `fn square(x: i32) -> i32 { x * x }`. The `return` keyword exists for leaving early (`if n < 0 { return 0; }`), but the idiomatic style ends with a bare expression. This expression-oriented design is why `let y = if x > 0 { 1 } else { -1 };` and `let total = { let a = 2; a * 3 };` work: blocks and `if` produce values."
+],
+"how": [
+"`fn name(p: Type, q: Type) -> Ret { ... }`; parameters always typed.",
+"The last expression without `;` is the return value.",
+"`return value;` for early exits.",
+"Blocks are expressions: `let v = { ...; expr };`.",
+"No return type means the function returns `()`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Expressions everywhere",
+"code": "fn celsius_to_f(c: f64) -> f64 {\n    c * 9.0 / 5.0 + 32.0\n}\n\nfn grade(score: u32) -> char {\n    if score > 100 {\n        return '?';                     // early exit for invalid input\n    }\n    match score {\n        90..=100 => 'A',\n        75..=89 => 'B',\n        50..=74 => 'C',\n        _ => 'F',\n    }\n}\n\nfn main() {\n    let boiling = celsius_to_f(100.0);\n    let area = {\n        let width = 3;\n        let height = 4;\n        width * height                   // no semicolon: this is the block's value\n    };\n    let label = if area > 10 { \"big\" } else { \"small\" };\n    println!(\"{boiling}°F, area {area} ({label})\");\n    println!(\"{:?}\", [95, 80, 51, 12, 140].map(grade));\n}",
+"note": "`celsius_to_f` returns its final expression. `grade` leaves early with `return` for invalid scores, otherwise its value is the `match`. The block assigned to `area` evaluates to its last line, and `if` produces a value directly. `.map(grade)` applies the function to every array element.",
+"output": "212°F, area 12 (big)\n['A', 'B', 'C', 'F', '?']"
+},
+{
+"lang": "rust",
+"title": "One semicolon too many",
+"code": "fn square(x: i32) -> i32 {\n    x * x;\n}\n\nfn main() {\n    println!(\"{}\", square(4));\n}",
+"note": "With the semicolon, `x * x;` is a statement and the function body evaluates to `()`, which does not match the promised `i32`. The compiler explains the mismatch and points at the semicolon, suggesting you remove it: one of the most common first-week errors.",
+"output": "error[E0308]: mismatched types\n --> main.rs:1:22\n  |\n1 | fn square(x: i32) -> i32 {\n  |    ------            ^^^ expected `i32`, found `()`\n  |    |\n  |    implicitly returns `()` as its body has no tail or `return` expression\n2 |     x * x;\n  |          - help: remove this semicolon to return this value",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**A semicolon after the final expression.** The function then returns `()`.",
+"**Leaving out parameter types.** They are always required.",
+"**Using `return` at the end of every function.** It works, but idiomatic Rust ends with a bare expression."
+],
+"keys": [
+"Functions have typed parameters and an explicit return type.",
+"Statements do things; expressions produce values.",
+"A block's value is its last expression without a semicolon.",
+"`return` is for early exits; blocks, `if` and `match` are expressions."
+]
+},
+"3.5": {
+"idea": [
+"Rust's control flow is built from expressions. **`if`/`else`** takes a condition that must be a `bool` (no truthiness: `if count` is an error; write `if count != 0`). Because `if` is an expression, both branches must produce the same type when its value is used: `let parity = if n % 2 == 0 { \"even\" } else { \"odd\" };`.",
+"There are three loops. **`loop`** repeats forever until `break`, and `break value` makes the loop itself evaluate to that value, which is handy for retrying until something succeeds. **`while`** repeats while a condition holds. **`for`** iterates over anything iterable: arrays, ranges (`for i in 1..=10`), and later vectors, maps and iterator chains; it is the safest and most common loop, because it cannot go out of bounds. `.rev()` iterates backwards.",
+"Nested loops can be **labelled**: `'outer: for ...` lets an inner `break 'outer;` or `continue 'outer;` jump out of or continue the outer loop directly, instead of juggling flag variables. Prefer `for` over `while` with an index counter: `while i < arr.len()` with manual indexing is slower (bounds checks on each access) and easier to get wrong."
+],
+"how": [
+"`if cond { } else if other { } else { }`; conditions must be `bool`.",
+"`let x = if c { a } else { b };` both branches the same type.",
+"`loop { ... break value; }`; `while cond { }`; `for x in iterable { }`.",
+"Ranges: `0..n` exclusive, `1..=n` inclusive, `.rev()` backwards, `.step_by(2)`.",
+"Labels: `'outer: for ... { for ... { break 'outer; } }`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "loop with a value, labels, ranges",
+"code": "fn main() {\n    let mut attempts = 0;\n    let first_square_over_500 = loop {\n        attempts += 1;\n        if attempts * attempts > 500 {\n            break attempts * attempts;\n        }\n    };\n    println!(\"first square over 500: {first_square_over_500} (after {attempts} tries)\");\n\n    let grid = [[1, 3, 5], [7, 8, 9], [10, 12, 14]];\n    'search: for (r, row) in grid.iter().enumerate() {\n        for (c, &value) in row.iter().enumerate() {\n            if value % 2 == 0 {\n                println!(\"first even number {value} at row {r}, column {c}\");\n                break 'search;\n            }\n        }\n    }\n\n    let countdown: Vec<u32> = (1..=10).rev().step_by(3).collect();\n    println!(\"countdown: {countdown:?}\");\n    let mut n = 27;\n    let mut steps = 0;\n    while n != 1 {\n        n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };\n        steps += 1;\n    }\n    println!(\"27 reaches 1 in {steps} steps\");\n}",
+"note": "`break` with a value made the `loop` an expression that produced the answer. The labelled `break 'search` left both loops at once when the first even number was found. Ranges compose with `.rev()` and `.step_by()`, and `while` suits the Collatz sequence, where the number of steps is not known in advance.",
+"output": "first square over 500: 529 (after 23 tries)\nfirst even number 8 at row 1, column 1\ncountdown: [10, 7, 4, 1]\n27 reaches 1 in 111 steps"
+},
+{
+"lang": "rust",
+"title": "Conditions must be bool",
+"code": "fn main() {\n    let unread = 3;\n    if unread {\n        println!(\"you have mail\");\n    }\n}",
+"note": "Rust has no \"truthiness\": an integer is not a condition, and the compiler says it expected `bool` and found an integer. Writing `if unread > 0` states the intent exactly, and removes a whole class of bugs from languages where 0, empty strings and null are silently false.",
+"output": "error[E0308]: mismatched types\n --> main.rs:3:8\n  |\n3 |     if unread {\n  |        ^^^^^^ expected `bool`, found integer",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Using a number or Option as a condition.** Compare explicitly (`> 0`, `.is_some()`).",
+"**`while i < len` with manual indexing.** Use `for` over the collection.",
+"**Flag variables to escape nested loops.** Use a loop label."
+],
+"keys": [
+"`if` is an expression; conditions must be `bool`.",
+"`loop` can return a value with `break value`.",
+"`for` over ranges and collections is the safest loop; `while` for unknown counts.",
+"Labels let `break` and `continue` target an outer loop."
+]
+},
+"4.1": {
+"idea": [
+"**Ownership** is how Rust manages memory without a garbage collector and without manual `free`. Three rules: every value has exactly one **owner** (a variable); there is only one owner at a time; when the owner goes out of scope, the value is **dropped** and its memory freed. The compiler checks these rules at compile time, so they cost nothing at run time.",
+"The rules matter most for data on the **heap**. A `String` is three words on the stack (a pointer, a length and a capacity) pointing at text stored on the heap. If `let s2 = s1;` copied only those three words, both variables would point at the same heap memory and both would try to free it. Rust's answer is the **move**: after `let s2 = s1;`, `s1` is no longer valid, ownership has moved to `s2`, and using `s1` is a compile error. Nothing is copied on the heap; only the three stack words move.",
+"When you really want two independent copies, ask for one with **`.clone()`**, which duplicates the heap data (and is visibly a potentially costly operation). Simple values that live entirely on the stack, like integers, floats, booleans, chars and tuples of them, implement the **`Copy`** trait: assignment copies them and both variables stay usable, because copying a few bytes is cheap and there is nothing to free twice."
+],
+"how": [
+"One owner per value; the value is dropped when its owner's scope ends.",
+"`let b = a;` moves heap-owning types (`String`, `Vec`, `Box`): `a` becomes unusable.",
+"`.clone()` makes a deep copy explicitly.",
+"`Copy` types (integers, floats, bool, char, tuples/arrays of Copy) are copied, not moved.",
+"String literals (`&str`) are references to fixed text, not owned heap strings."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Moves, clones, copies and drops",
+"code": "struct Noisy(&'static str);\n\nimpl Drop for Noisy {\n    fn drop(&mut self) {\n        println!(\"  dropping {}\", self.0);\n    }\n}\n\nfn main() {\n    let s1 = String::from(\"hello\");\n    let s2 = s1;                                  // move: s1 is no longer valid\n    let s3 = s2.clone();                          // deep copy of the heap text\n    println!(\"s2 = {s2}, s3 = {s3}, same heap data? {}\", s2.as_ptr() == s3.as_ptr());\n\n    let x = 5;\n    let y = x;                                    // i32 is Copy: both stay usable\n    println!(\"x = {x}, y = {y}\");\n\n    {\n        let _a = Noisy(\"inner value\");\n        println!(\"inside the block\");\n    }\n    println!(\"after the block\");\n    let _b = Noisy(\"main's value\");\n    println!(\"end of main\");\n}",
+"note": "After the move, only `s2` owns the text; the clone has its own heap buffer, which is why the pointers differ. Integers are simply copied. The `Drop` messages show exactly when values are freed: the inner value at the closing brace of its block, and main's value after \"end of main\".",
+"output": "s2 = hello, s3 = hello, same heap data? false\nx = 5, y = 5\ninside the block\n  dropping inner value\nafter the block\nend of main\n  dropping main's value"
+},
+{
+"lang": "rust",
+"title": "Using a value after it moved",
+"code": "fn main() {\n    let greeting = String::from(\"bonjour\");\n    let moved = greeting;\n    println!(\"{greeting}, {moved}\");\n}",
+"note": "The compiler rejects the use of `greeting` after the move and explains why: `String` does not implement `Copy`, so assignment moved it. It even points at the line where the move happened and suggests `.clone()` if a copy is really needed. This is the compile-time check that makes double frees impossible.",
+"output": "error[E0382]: borrow of moved value: `greeting`\n --> main.rs:4:16\n  |\n2 |     let greeting = String::from(\"bonjour\");\n  |         -------- move occurs because `greeting` has type `String`, which does not implement the `Copy` trait\n3 |     let moved = greeting;\n  |                 -------- value moved here\n4 |     println!(\"{greeting}, {moved}\");\n  |                ^^^^^^^^ value borrowed here after move\n  |\nhelp: consider cloning the value if the performance cost is acceptable\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Cloning everything to silence the compiler.** It works but hides design problems and costs time. Borrow instead (lesson 4.3).",
+"**Thinking a move copies data.** Only the small stack part moves; the heap data stays where it is.",
+"**Expecting `String` to behave like an integer.** Heap-owning types move; `Copy` types copy."
+],
+"keys": [
+"Every value has one owner and is dropped when the owner goes out of scope.",
+"Assigning a heap-owning value moves it; the old variable becomes invalid.",
+"`.clone()` copies deeply and explicitly.",
+"`Copy` types (simple stack values) are copied instead of moved."
+]
+},
+"4.2": {
+"idea": [
+"Function calls follow the same ownership rules as assignment. Passing a `String` to a function **moves** it into the parameter: the function now owns it, and when the function ends the value is dropped, so the caller can no longer use it. Passing an integer **copies** it, and the caller keeps using its own.",
+"Return values move ownership back out. A function that creates a `String` and returns it hands ownership to the caller; a function can also take ownership, use the value and give it back. That works, but threading every value in and out of functions (`let (s, len) = calculate_length(s);`) quickly becomes clumsy.",
+"The usual solution is **borrowing**, the next lesson: pass a reference so the function can use the value without owning it. Taking ownership is still the right choice when the function genuinely needs to keep the value (storing it in a struct, sending it to another thread) or consume it (turning it into something else). A good guideline when designing functions: borrow (`&T`) to read, borrow mutably (`&mut T`) to modify in place, take by value (`T`) only to keep or consume."
+],
+"how": [
+"Passing a non-Copy value moves it into the function.",
+"Returning a value moves ownership to the caller.",
+"`Copy` arguments are copied; the caller keeps its value.",
+"Take ownership only to keep or consume; otherwise borrow.",
+"The compiler tells you where a value moved if you use it afterwards."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Values moving into and out of functions",
+"code": "fn take_and_shout(text: String) -> String {\n    text.to_uppercase()                   // consumes `text`, returns a new String\n}\n\nfn make_greeting(name: &str) -> String {\n    format!(\"Hello, {name}!\")             // ownership of the new String goes to the caller\n}\n\nfn double(n: i32) -> i32 {\n    n * 2\n}\n\nfn store(log: &mut Vec<String>, entry: String) {\n    log.push(entry);                      // the Vec now owns the entry\n}\n\nfn main() {\n    let original = String::from(\"quiet please\");\n    let loud = take_and_shout(original);\n    println!(\"{loud}\");\n\n    let greeting = make_greeting(\"Ada\");\n    println!(\"{greeting} ({} bytes)\", greeting.len());\n\n    let n = 21;\n    println!(\"{} and n is still {n}\", double(n));\n\n    let mut log = Vec::new();\n    store(&mut log, greeting);\n    store(&mut log, String::from(\"second entry\"));\n    println!(\"log: {log:?}\");\n}",
+"note": "`take_and_shout` consumed its argument, so `original` cannot be used afterwards. `make_greeting` created a String and gave it to the caller. The integer was copied. `store` took ownership of each entry to keep it in the vector, a legitimate reason to take a value by ownership.",
+"output": "QUIET PLEASE\nHello, Ada! (11 bytes)\n42 and n is still 21\nlog: [\"Hello, Ada!\", \"second entry\"]"
+},
+{
+"lang": "rust",
+"title": "The caller lost the value",
+"code": "fn word_count(text: String) -> usize {\n    text.split_whitespace().count()\n}\n\nfn main() {\n    let essay = String::from(\"Rust moves values into functions\");\n    let words = word_count(essay);\n    println!(\"{words} words in: {essay}\");\n}",
+"note": "`word_count` only needed to read the text, yet its `String` parameter took ownership, so `essay` was moved and is unusable afterwards. The compiler even suggests changing the parameter to borrow. The fix is `fn word_count(text: &str)` and calling `word_count(&essay)`, exactly the next lesson.",
+"output": "error[E0382]: borrow of moved value: `essay`\n --> main.rs:8:34\n  |\n6 |     let essay = String::from(\"Rust moves values into functions\");\n  |         ----- move occurs because `essay` has type `String`, which does not implement the `Copy` trait\n7 |     let words = word_count(essay);\n  |                            ----- value moved here\n8 |     println!(\"{words} words in: {essay}\");\n  |                                  ^^^^^ value borrowed here after move\n  |\n --> main.rs:1:21\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Taking `String` parameters for read-only functions.** Callers lose their values. Take `&str`.",
+"**Returning tuples just to give values back.** Borrow instead.",
+"**Forgetting that `store(v)` gives `v` away.** If you need it later, pass a reference or a clone."
+],
+"keys": [
+"Passing a value to a function moves or copies it, like assignment.",
+"Returning a value moves ownership to the caller.",
+"Take ownership only when the function keeps or consumes the value.",
+"Prefer borrowing for functions that just read or modify."
+]
+},
+"4.3": {
+"idea": [
+"A **reference** lets you use a value without owning it. `&s` creates a shared reference (a **borrow**); a function parameter `text: &String` (or better `&str`) receives it, and the caller keeps ownership: nothing is moved and nothing is dropped when the function returns. To modify a borrowed value, use a **mutable reference**, `&mut s`, which requires the variable itself to be `mut`.",
+"The **borrowing rules**, checked at compile time, are what make Rust memory-safe and free of data races: at any moment you can have **either** any number of shared references (`&T`) **or** exactly one mutable reference (`&mut T`), never both; and references must always be **valid**, never outliving the value they point to. \"Many readers or one writer\" means no part of the program can change data while another part is reading it.",
+"The rules apply to where references are actually used, not to where they are written (this is called non-lexical lifetimes): a shared reference's borrow ends after its last use, so you can create a mutable reference afterwards in the same scope. And because a reference can never outlive its value, **dangling references** are impossible: returning a reference to a local variable is a compile error."
+],
+"how": [
+"`&value` borrows immutably; `&mut value` borrows mutably (the variable must be `mut`).",
+"Many `&T` at once, or one `&mut T`, never both at the same time.",
+"A borrow lasts until the reference's last use.",
+"Use `*r` to read or write through a reference when needed (`*count += 1`).",
+"Functions that only read take `&T`; functions that modify take `&mut T`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Shared and mutable borrows in practice",
+"code": "fn longest_word(text: &str) -> usize {\n    text.split_whitespace().map(|w| w.len()).max().unwrap_or(0)\n}\n\nfn add_exclamation(text: &mut String) {\n    text.push('!');\n}\n\nfn bump(counter: &mut u32) {\n    *counter += 1;\n}\n\nfn main() {\n    let mut message = String::from(\"borrowing is cheap\");\n    let r1 = &message;\n    let r2 = &message;\n    println!(\"{r1} / {r2} / longest word: {}\", longest_word(&message));\n    // r1 and r2 are not used after this line, so a mutable borrow is now allowed\n\n    add_exclamation(&mut message);\n    add_exclamation(&mut message);\n    println!(\"{message}\");\n\n    let mut visits = 0;\n    for _ in 0..3 {\n        bump(&mut visits);\n    }\n    println!(\"visits: {visits}\");\n}",
+"note": "Two shared references read the string at the same time. Once their last use had passed, the mutable borrows for `add_exclamation` were allowed, and the caller still owns `message` throughout. `*counter += 1` writes through the mutable reference to change the caller's variable.",
+"output": "borrowing is cheap / borrowing is cheap / longest word: 9\nborrowing is cheap!!\nvisits: 3"
+},
+{
+"lang": "rust",
+"title": "Reading and writing at the same time",
+"code": "fn main() {\n    let mut scores = vec![10, 20, 30];\n    let first = &scores[0];\n    scores.push(40);\n    println!(\"first score: {first}\");\n}",
+"note": "`first` borrows into the vector, then `push` needs a mutable borrow while `first` is still used afterwards. The compiler refuses, and for a real reason: pushing may reallocate the vector's buffer, which would leave `first` pointing at freed memory. Moving the `println!` above the `push` makes it compile.",
+"output": "error[E0502]: cannot borrow `scores` as mutable because it is also borrowed as immutable\n --> main.rs:4:5\n  |\n3 |     let first = &scores[0];\n  |                  ------ immutable borrow occurs here\n4 |     scores.push(40);\n  |     ^^^^^^^^^^^^^^^ mutable borrow occurs here\n5 |     println!(\"first score: {first}\");\n  |                             ----- immutable borrow later used here",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Holding a reference while modifying the collection.** Finish using the reference first, or copy the value out.",
+"**Trying to return a reference to a local variable.** The value dies at the end of the function. Return the owned value.",
+"**Adding `&mut` everywhere.** Use shared references unless you need to modify."
+],
+"keys": [
+"References borrow without taking ownership.",
+"Either many shared references or one mutable reference at a time.",
+"Borrows end at their last use.",
+"References can never dangle; the compiler guarantees it."
+]
+},
+"4.4": {
+"idea": [
+"A **slice** is a reference to a contiguous part of a collection: a view, not a copy. A **string slice**, `&str`, points into some UTF-8 text: `&s[0..5]` refers to the first five bytes of `s`. It is a pointer plus a length, so creating one is free, and because it is a reference, the borrowing rules keep it valid: you cannot clear a `String` while a slice into it is still in use.",
+"String **literals** are slices too: `\"hello\"` has type `&'static str`, a slice pointing into text baked into the program binary. That is why idiomatic functions take `&str` rather than `&String`: a `&str` parameter accepts literals, whole Strings (via `&s`, thanks to automatic deref coercion) and parts of Strings, while `&String` accepts only the second.",
+"Range syntax mirrors the rest of the language: `&s[..3]`, `&s[2..]`, `&s[..]`. Slice ranges are in **bytes**, and must fall on character boundaries: slicing `\"café\"` at byte 4 splits the `é` (two bytes) and panics. For text, prefer methods that work in characters or words (`split_whitespace`, `chars`, `find`). Other collections have slices too: `&v[1..3]` on a `Vec<i32>` or an array is a `&[i32]`, and functions that take `&[T]` accept arrays, vectors and parts of them alike."
+],
+"how": [
+"`&s[a..b]` slices bytes a to b-1; `&s[..b]`, `&s[a..]`, `&s[..]`.",
+"Take `&str` parameters, not `&String`; take `&[T]`, not `&Vec<T>`.",
+"Literals are `&'static str`.",
+"Byte ranges must be on char boundaries; prefer `split_whitespace`, `find`, `chars` for text.",
+"A slice keeps its source borrowed until its last use."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "first_word and friends with slices",
+"code": "fn first_word(s: &str) -> &str {\n    s.split_whitespace().next().unwrap_or(\"\")\n}\n\nfn sum(values: &[i32]) -> i32 {\n    values.iter().sum()\n}\n\nfn main() {\n    let owned = String::from(\"hello wonderful world\");\n    println!(\"{:?} {:?} {:?}\", first_word(&owned), first_word(\"literal works too\"), first_word(&owned[6..]));\n    println!(\"{:?} {:?} {:?}\", &owned[..5], &owned[16..], &owned[6..15]);\n\n    let array = [1, 2, 3, 4, 5];\n    let vector = vec![10, 20, 30];\n    println!(\"{} {} {}\", sum(&array), sum(&vector), sum(&array[1..3]));\n\n    let word = \"café\";\n    println!(\"{} bytes, {} chars, last char {:?}\", word.len(), word.chars().count(), word.chars().last());\n    println!(\"is byte 4 a char boundary? {}\", word.is_char_boundary(4));\n}",
+"note": "Because `first_word` takes `&str`, it accepted a whole String, a literal and a part of a String. `sum(&[i32])` likewise works on arrays, vectors and sub-slices. \"café\" has 5 bytes but 4 characters; byte 4 falls inside the two-byte é, so slicing there would panic.",
+"output": "\"hello\" \"literal\" \"wonderful\"\n\"hello\" \"world\" \"wonderful\"\n15 60 5\n5 bytes, 4 chars, last char Some('é')\nis byte 4 a char boundary? false"
+},
+{
+"lang": "rust",
+"title": "A slice keeps its source borrowed",
+"code": "fn first_word(s: &str) -> &str {\n    s.split_whitespace().next().unwrap_or(\"\")\n}\n\nfn main() {\n    let mut text = String::from(\"hello world\");\n    let word = first_word(&text);\n    text.clear();\n    println!(\"the first word was {word}\");\n}",
+"note": "`word` is a slice pointing into `text`. Clearing the string while `word` is still used would leave it pointing at nothing, so the compiler rejects the program. In languages that return an index instead of a slice, this bug compiles and silently produces wrong results.",
+"output": "error[E0502]: cannot borrow `text` as mutable because it is also borrowed as immutable\n --> main.rs:8:5\n  |\n7 |     let word = first_word(&text);\n  |                           ----- immutable borrow occurs here\n8 |     text.clear();\n  |     ^^^^^^^^^^^^ mutable borrow occurs here\n9 |     println!(\"the first word was {word}\");\n  |                                   ---- immutable borrow later used here",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**`&String` and `&Vec<T>` parameters.** They reject literals, arrays and sub-slices. Use `&str` and `&[T]`.",
+"**Slicing text at arbitrary byte positions.** Non-ASCII characters make it panic. Use char-aware methods.",
+"**Returning indexes into a string instead of slices.** The indexes go stale silently; slices are checked."
+],
+"keys": [
+"Slices are views (pointer + length) into part of a collection.",
+"String literals are `&'static str`; `&str` parameters accept every kind of string.",
+"String slice ranges are in bytes and must respect char boundaries.",
+"Borrowing rules keep slices valid as long as they are used."
+]
+},
+"5.1": {
+"idea": [
+"A **struct** groups related values under one name, with a **named field** for each: `struct User { name: String, email: String, active: bool, logins: u64 }`. Create an instance by giving every field a value, in any order, and read or (if the binding is `mut`) change fields with dot notation. Mutability applies to the whole instance; Rust has no per-field `mut`.",
+"Two shortcuts reduce repetition. **Field init shorthand**: when a variable has the same name as a field, write `User { name, email, active: true, logins: 0 }`. **Struct update syntax**: `User { email: new_email, ..other }` takes the remaining fields from another instance; note that this moves any non-Copy fields (like `String`s) out of `other`.",
+"Two other shapes exist. **Tuple structs** have a name but unnamed fields (`struct Rgb(u8, u8, u8);`), useful to give a distinct type to a plain tuple: an `Rgb` and a `Point3(u8, u8, u8)` cannot be mixed up even though their contents match. **Unit-like structs** have no fields at all (`struct AlwaysEqual;`) and are used to implement traits on a type that holds no data. Structs usually **own** their data (`String` rather than `&str`), so an instance is valid for as long as it exists; holding references requires lifetimes (chapter 10)."
+],
+"how": [
+"`struct Name { field: Type, ... }`; create with `Name { field: value, ... }`.",
+"Field init shorthand: `Name { field }` when a variable has the same name.",
+"Update syntax: `Name { changed: v, ..old }` (moves non-Copy fields from `old`).",
+"Tuple structs: `struct Meters(f64);` read with `.0`.",
+"Unit-like structs: `struct Marker;`.",
+"Own the data (`String`, `Vec`) unless you need references and lifetimes."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Structs in every shape",
+"code": "#[derive(Debug)]\nstruct User {\n    name: String,\n    email: String,\n    active: bool,\n    logins: u64,\n}\n\nfn new_user(name: String, email: String) -> User {\n    User { name, email, active: true, logins: 0 }    // field init shorthand\n}\n\n#[derive(Debug)]\nstruct Rgb(u8, u8, u8);\n#[derive(Debug)]\nstruct Meters(f64);\n#[derive(Debug)]\nstruct Unit;\n\nfn main() {\n    let mut ada = new_user(String::from(\"Ada\"), String::from(\"ada@example.com\"));\n    ada.logins += 3;\n\n    let ben = User { name: String::from(\"Ben\"), email: String::from(\"ben@example.com\"), ..ada };\n    println!(\"{ben:?}\");\n    println!(\"ada still has her name: {} (logins copied: {})\", ada.name, ada.logins);\n\n    let teal = Rgb(0, 128, 128);\n    let height = Meters(1.82);\n    println!(\"{teal:?} green={} | {height:?} = {} cm | {:?}\", teal.1, height.0 * 100.0, Unit);\n}",
+"note": "`new_user` used field init shorthand. Ben's instance took `active` and `logins` from Ada through update syntax; those are Copy, so Ada keeps them, and her name and email were not used by the update, so they stay hers too. Tuple structs give names to tuples, and `#[derive(Debug)]` makes every shape printable with `{:?}`.",
+"output": "User { name: \"Ben\", email: \"ben@example.com\", active: true, logins: 3 }\nada still has her name: Ada (logins copied: 3)\nRgb(0, 128, 128) green=128 | Meters(1.82) = 182 cm | Unit"
+},
+{
+"lang": "rust",
+"title": "Update syntax moves Strings",
+"code": "#[derive(Debug)]\nstruct Config {\n    host: String,\n    port: u16,\n}\n\nfn main() {\n    let base = Config { host: String::from(\"localhost\"), port: 8080 };\n    let other = Config { port: 9090, ..base };\n    println!(\"{other:?} and {base:?}\");\n}",
+"note": "`..base` moved `host`, a String, out of `base`, so `base` can no longer be used as a whole. The compiler explains that a partial move occurred. Cloning the field (`host: base.host.clone()`) or using `..base.clone()` keeps `base` intact.",
+"output": "error[E0382]: borrow of partially moved value: `base`\n  --> main.rs:10:30\n   |\n 9 |     let other = Config { port: 9090, ..base };\n   |                 ----------------------------- value partially moved here\n10 |     println!(\"{other:?} and {base:?}\");\n   |                              ^^^^ value borrowed here after partial move\n   |\n   = note: partial move occurs because `base.host` has type `String`, which does not implement the `Copy` trait",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Forgetting that update syntax moves non-Copy fields.** The source becomes partially unusable.",
+"**Using `&str` fields to avoid allocating.** You then need lifetimes. Own the data with `String` at first.",
+"**Plain tuples for meaningful data.** `(f64, f64)` could be anything; a named struct or tuple struct documents itself."
+],
+"keys": [
+"Structs group named fields; the whole instance is mutable or not.",
+"Field init shorthand and update syntax cut repetition (update moves non-Copy fields).",
+"Tuple structs give distinct types to tuples; unit structs have no fields.",
+"Structs normally own their data."
+]
+},
+"5.2": {
+"idea": [
+"The Book's rectangle program shows why structs matter by refactoring the same calculation three times. Version one passes `width` and `height` as two loose parameters: nothing says they belong together. Version two uses a tuple `(u32, u32)`: grouped, but `dims.0` and `dims.1` hide which is which, so swapping them is an easy, silent bug. Version three defines `struct Rectangle { width: u32, height: u32 }` and passes `&Rectangle`: grouped and labelled, and the function signature now reads like the problem.",
+"Printing a struct needs a format. `{}` uses the `Display` trait, which you write by hand when there is a sensible user-facing form. For developers, add `#[derive(Debug)]` and print with `{:?}`, or `{:#?}` for a pretty, multi-line layout.",
+"The **`dbg!`** macro is the debugging companion: `dbg!(expression)` prints the file, line, the expression's source text and its value to standard error, then **returns** the value, so it can wrap part of a larger expression without changing the program (`let area = dbg!(width * 2) * height;`). Pass a reference (`dbg!(&rect)`) when you do not want it to take ownership. Remove `dbg!` calls before committing; that is what `println!` and logging are for."
+],
+"how": [
+"Group related values in a struct; pass `&Struct` to functions that read them.",
+"`#[derive(Debug)]` then `{:?}` or `{:#?}`.",
+"Implement `Display` for user-facing output (lesson 10.2 covers traits).",
+"`dbg!(expr)` prints file:line, the expression and its value to stderr, and returns the value.",
+"`dbg!(&value)` to avoid moving it."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Three versions of the same program",
+"code": "#[derive(Debug)]\nstruct Rectangle {\n    width: u32,\n    height: u32,\n}\n\nfn area_loose(width: u32, height: u32) -> u32 {\n    width * height\n}\n\nfn area_tuple(dims: (u32, u32)) -> u32 {\n    dims.0 * dims.1                           // which one is the width?\n}\n\nfn area(rect: &Rectangle) -> u32 {\n    rect.width * rect.height                  // reads like the problem\n}\n\nfn main() {\n    let (w, h) = (30, 50);\n    let rect = Rectangle { width: 30, height: 50 };\n    println!(\"{} {} {}\", area_loose(w, h), area_tuple((w, h)), area(&rect));\n    println!(\"{rect:?}\");\n    println!(\"{rect:#?}\");\n}",
+"note": "All three versions compute 1500, but only the struct version says what the numbers mean, and `area(&rect)` borrows rather than taking the rectangle. `{:?}` prints the debug form on one line; `{:#?}` spreads it over several lines with indentation, easier to read for nested data.",
+"output": "1500 1500 1500\nRectangle { width: 30, height: 50 }\nRectangle {\n    width: 30,\n    height: 50,\n}"
+},
+{
+"lang": "rust",
+"title": "dbg! returns its value",
+"code": "#[derive(Debug)]\nstruct Rectangle {\n    width: u32,\n    height: u32,\n}\n\nfn main() {\n    let scale = 2;\n    let rect = Rectangle {\n        width: dbg!(30 * scale),               // prints and still returns 60\n        height: 50,\n    };\n    dbg!(&rect);                               // borrow: rect stays usable\n    let area = rect.width * rect.height;\n    println!(\"area = {area}\");\n}",
+"note": "`dbg!` printed the expression `30 * scale` with its value and returned 60 into the struct field, so the program's behaviour did not change. Debug output goes to standard error with the file and line number, which is why it appears with `[main.rs:...]` prefixes. Passing `&rect` kept ownership in `main`.",
+"output": "[main.rs:10:16] 30 * scale = 60\n[main.rs:13:5] &rect = Rectangle {\n    width: 60,\n    height: 50,\n}\narea = 3000"
+}
+],
+"mistakes": [
+"**Loose parameters or tuples for related data.** Order mix-ups compile silently. Use a struct.",
+"**`dbg!(value)` on a value you still need.** It moves non-Copy values. Use `dbg!(&value)`.",
+"**Leaving `dbg!` calls in committed code.** Clippy can warn about them (`clippy::dbg_macro`)."
+],
+"keys": [
+"Structs make related data grouped and labelled; signatures document themselves.",
+"`#[derive(Debug)]` with `{:?}` and `{:#?}` prints structs for developers.",
+"`dbg!` shows file, line, expression and value, and returns the value.",
+"Borrow with `&` when passing structs to functions that only read them."
+]
+},
+"5.3": {
+"idea": [
+"**Methods** are functions defined inside an `impl` block for a type, whose first parameter is `self`. They are called with dot syntax (`rect.area()`), and the type of `self` says what the method does with the instance: `&self` borrows it to read (most common), `&mut self` borrows it to modify, and plain `self` takes ownership, consuming the instance (useful when transforming it into something else). Rust automatically adds `&`, `&mut` or `*` at the call site to match, so you always write `rect.area()`.",
+"Methods can take extra parameters after `self`: `rect.can_hold(&other)`. Grouping behaviour with the data in `impl` blocks also organises code: everything you can do with a `Rectangle` is in one place, and other code finds it by typing `rect.` in an editor.",
+"Functions in an `impl` block that do **not** take `self` are **associated functions**, called with `::` on the type: `Rectangle::square(10)`. They are most often **constructors**; by convention `new` is the standard constructor, but descriptive names (`square`, `from_config`, `with_capacity`) are common and clearer. Inside an `impl`, `Self` is an alias for the type. A type can have several `impl` blocks."
+],
+"how": [
+"`impl Type { fn method(&self) ... }`; call `value.method()`.",
+"`&self` to read, `&mut self` to modify, `self` to consume.",
+"Extra parameters follow `self`: `fn can_hold(&self, other: &Rectangle) -> bool`.",
+"Associated functions (no `self`): `fn new(...) -> Self`, called `Type::new(...)`.",
+"`Self` refers to the type inside its `impl`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Rectangle with methods and constructors",
+"code": "#[derive(Debug)]\nstruct Rectangle {\n    width: u32,\n    height: u32,\n}\n\nimpl Rectangle {\n    fn new(width: u32, height: u32) -> Self {\n        Self { width, height }\n    }\n\n    fn square(size: u32) -> Self {\n        Self::new(size, size)\n    }\n\n    fn area(&self) -> u32 {\n        self.width * self.height\n    }\n\n    fn can_hold(&self, other: &Rectangle) -> bool {\n        self.width > other.width && self.height > other.height\n    }\n\n    fn scale(&mut self, factor: u32) {\n        self.width *= factor;\n        self.height *= factor;\n    }\n\n    fn into_square(self) -> Rectangle {\n        let side = self.width.max(self.height);\n        Rectangle::square(side)\n    }\n}\n\nfn main() {\n    let mut big = Rectangle::new(30, 50);\n    let small = Rectangle::square(10);\n    println!(\"areas {} and {}; big holds small? {}\", big.area(), small.area(), big.can_hold(&small));\n    big.scale(2);\n    println!(\"after scaling: {big:?}, area {}\", big.area());\n    let sq = small.into_square();\n    println!(\"{sq:?}\");\n}",
+"note": "`new` and `square` are associated functions called with `::`. `area` and `can_hold` borrow with `&self`, `scale` needs `&mut self` (so `big` is declared `mut`), and `into_square` takes `self` by value, consuming `small`, which cannot be used afterwards. Every call site uses the same dot syntax.",
+"output": "areas 1500 and 100; big holds small? true\nafter scaling: Rectangle { width: 60, height: 100 }, area 6000\nRectangle { width: 10, height: 10 }"
+},
+{
+"lang": "rust",
+"title": "Calling a &mut self method on an immutable binding",
+"code": "struct Counter {\n    count: u32,\n}\n\nimpl Counter {\n    fn increment(&mut self) {\n        self.count += 1;\n    }\n}\n\nfn main() {\n    let counter = Counter { count: 0 };\n    counter.increment();\n    println!(\"{}\", counter.count);\n}",
+"note": "`increment` takes `&mut self`, which requires a mutable binding, and `counter` was declared without `mut`. The compiler suggests `let mut counter`. The method's signature makes its side effect visible, and the compiler enforces it.",
+"output": "error[E0596]: cannot borrow `counter` as mutable, as it is not declared as mutable\n  --> main.rs:13:5\n   |\n13 |     counter.increment();\n   |     ^^^^^^^ cannot borrow as mutable\n   |\nhelp: consider changing this to be mutable\n   |\n12 |     let mut counter = Counter { count: 0 };\n   |         +++",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Taking `self` by value when `&self` would do.** Callers lose the instance after one call.",
+"**Using `&mut self` for read-only methods.** It needlessly blocks other borrows.",
+"**Constructors that leave fields invalid.** Validate in `new` (or return a `Result`) so instances are always usable."
+],
+"keys": [
+"Methods live in `impl` blocks and take `self`, `&self` or `&mut self`.",
+"Choose `&self` to read, `&mut self` to modify, `self` to consume.",
+"Associated functions (no `self`) such as `new` are called with `Type::`.",
+"`Self` names the type inside its `impl`."
+]
+},
+"6.1": {
+"idea": [
+"An **enum** defines a type by listing its possible **variants**: a value is exactly one of them. `enum IpAddr { V4(u8, u8, u8, u8), V6(String) }` says an address is either a version 4 address holding four bytes or a version 6 address holding a string. Unlike enums in many languages, each Rust variant can carry **its own data**, of different shapes: none, a tuple, or named fields. That makes enums perfect for modelling \"one of several kinds of thing\", such as messages, commands, events or states.",
+"Enums can have methods in `impl` blocks, just like structs, and they are usually handled with `match` (next lesson), which forces you to deal with every variant.",
+"The most important enum in the standard library is **`Option<T>`**: `Some(value)` or `None`. Rust has **no null**: a value that might be missing has type `Option<T>`, which is a different type from `T`, so the compiler stops you from using it as if it were always present. To get at the inner value you must handle the `None` case, with `match`, `if let`, or methods like `unwrap_or`, `map` and `?`. The billion-dollar mistake of null-pointer errors becomes a compile-time check."
+],
+"how": [
+"`enum Name { A, B(i32), C { x: i32, y: i32 } }`; create with `Name::B(5)`.",
+"Put methods on enums in `impl` blocks.",
+"`Option<T>` = `Some(T)` or `None`; no null in safe Rust.",
+"Get the value out by handling `None`: `match`, `if let`, `unwrap_or`, `map`.",
+"`Option<T>` and `T` are different types; the compiler keeps them apart."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Variants with different data, and Option instead of null",
+"code": "#[derive(Debug)]\nenum Message {\n    Quit,\n    Move { x: i32, y: i32 },\n    Write(String),\n    ChangeColor(u8, u8, u8),\n}\n\nimpl Message {\n    fn describe(&self) -> String {\n        match self {\n            Message::Quit => \"quit\".to_string(),\n            Message::Move { x, y } => format!(\"move to ({x}, {y})\"),\n            Message::Write(text) => format!(\"write {text:?}\"),\n            Message::ChangeColor(r, g, b) => format!(\"colour #{r:02x}{g:02x}{b:02x}\"),\n        }\n    }\n}\n\nfn find_user(id: u32) -> Option<&'static str> {\n    match id {\n        1 => Some(\"Ada\"),\n        2 => Some(\"Ben\"),\n        _ => None,\n    }\n}\n\nfn main() {\n    let inbox = [Message::Write(String::from(\"hi\")), Message::Move { x: 3, y: -1 }, Message::ChangeColor(0, 128, 255), Message::Quit];\n    for m in &inbox {\n        println!(\"{}\", m.describe());\n    }\n    for id in [1, 7] {\n        let name = find_user(id).unwrap_or(\"unknown\");\n        println!(\"user {id}: {name} (raw: {:?})\", find_user(id));\n    }\n}",
+"note": "Each variant holds different data, yet all are one type, so they fit in one array and one method handles them all. `find_user` returns `Option` instead of a null; the caller decides what a missing user means, here with `unwrap_or`.",
+"output": "write \"hi\"\nmove to (3, -1)\ncolour #0080ff\nquit\nuser 1: Ada (raw: Some(\"Ada\"))\nuser 7: unknown (raw: None)"
+},
+{
+"lang": "rust",
+"title": "An Option is not the value inside it",
+"code": "fn main() {\n    let price: Option<u32> = Some(250);\n    let with_tax = price * 115 / 100;\n    println!(\"{with_tax}\");\n}",
+"note": "You cannot multiply an `Option<u32>` as if it were a number, because it might be `None`. The compiler refuses until you handle the missing case, for example `price.map(|p| p * 115 / 100)` or `price.unwrap_or(0) * 115 / 100`. This is the check that eliminates null-pointer crashes.",
+"output": "error[E0369]: cannot multiply `Option<u32>` by `{integer}`\n --> main.rs:3:26\n  |\n3 |     let with_tax = price * 115 / 100;\n  |                    ----- ^ --- {integer}\n  |                    |\n  |                    Option<u32>\n  |\n  = note: `Option<u32>` is defined in another crate",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Separate structs plus a \"kind\" field.** An enum with data per variant models it directly and safely.",
+"**Sentinel values like -1 or \"\" for \"missing\".** Use `Option`.",
+"**Calling `.unwrap()` everywhere.** It panics on `None`; handle the case or use `unwrap_or`, `?`, `if let`."
+],
+"keys": [
+"Enums list variants; each variant can carry different data.",
+"Enums get methods like structs and are handled with `match`.",
+"`Option<T>` replaces null: `Some(value)` or `None`.",
+"The compiler forces you to handle `None` before using the value."
+]
+},
+"6.2": {
+"idea": [
+"**`match`** compares a value against a series of **patterns** and runs the code of the first arm that matches. Each arm is `pattern => expression`, and the whole `match` is an expression, so it can produce a value. Patterns can be literal values, variable names, wildcards and, most powerfully, enum variants that **bind** the data inside them: `Coin::Quarter(state) => ...` gives you the `state` stored in that variant.",
+"Matching is **exhaustive**: the compiler checks that every possible value is covered and refuses the program otherwise. For enums like `Option` this means you cannot forget the `None` case; for integers or strings, where listing every value is impossible, finish with a **catch-all**: a variable name (`other => ...`) if you need the value, or `_` if you do not. Arms are checked in order, so put specific patterns before general ones (a catch-all first would make the rest unreachable, and the compiler warns).",
+"Arms can have multiple patterns with `|` (`1 | 2 => ...`), ranges (`1..=9`), and **guards**: extra conditions after `if` (`Some(n) if n < 0 => ...`). An arm's expression can be a block `{ ... }` for several lines. Matching on a reference (`match &value`) binds references, leaving the value usable afterwards."
+],
+"how": [
+"`match value { pattern => expr, ... }`; first matching arm wins.",
+"Bind variant data: `Some(x) => ...`, `Shape::Circle { radius } => ...`.",
+"Exhaustive: cover every case, or end with `other =>` / `_ =>`.",
+"`|` for alternatives, `a..=b` for ranges, `if cond` guards.",
+"`match` is an expression: `let label = match n { ... };`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Binding data, guards and catch-alls",
+"code": "#[derive(Debug, Clone, Copy)]\nenum Province {\n    Quebec,\n    Ontario,\n    BritishColumbia,\n}\n\nenum Coin {\n    Penny,\n    Nickel,\n    Dime,\n    Quarter(Province),\n}\n\nfn cents(coin: &Coin) -> u32 {\n    match coin {\n        Coin::Penny => 1,\n        Coin::Nickel => 5,\n        Coin::Dime => 10,\n        Coin::Quarter(province) => {\n            println!(\"  a commemorative quarter from {province:?}!\");\n            25\n        }\n    }\n}\n\nfn describe(reading: Option<i32>) -> String {\n    match reading {\n        None => \"no reading\".to_string(),\n        Some(t) if t < -20 => format!(\"{t}°: dangerously cold\"),\n        Some(t @ -20..=0) => format!(\"{t}°: freezing\"),\n        Some(1 | 2 | 3) => \"barely above zero\".to_string(),\n        Some(t) => format!(\"{t}°\"),\n    }\n}\n\nfn main() {\n    let purse = [Coin::Quarter(Province::Quebec), Coin::Dime, Coin::Penny, Coin::Quarter(Province::Ontario)];\n    let total: u32 = purse.iter().map(cents).sum();\n    println!(\"total: {total} cents\");\n    for r in [None, Some(-31), Some(-5), Some(2), Some(18)] {\n        println!(\"{}\", describe(r));\n    }\n    let _ = Province::BritishColumbia;\n}",
+"note": "The quarter arm bound the province stored in the variant and used a block for two lines. In `describe`, a guard handled extreme cold, `t @ -20..=0` matched a range while binding the value, `1 | 2 | 3` listed alternatives, and the final `Some(t)` caught everything else. Order matters: the guard arm must come before the general one.",
+"output": "  a commemorative quarter from Quebec!\n  a commemorative quarter from Ontario!\ntotal: 61 cents\nno reading\n-31°: dangerously cold\n-5°: freezing\nbarely above zero\n18°"
+},
+{
+"lang": "rust",
+"title": "Forgetting None",
+"code": "fn label(n: Option<u32>) -> String {\n    match n {\n        Some(0) => \"zero\".to_string(),\n        Some(x) => format!(\"{x}\"),\n    }\n}\n\nfn main() {\n    println!(\"{}\", label(Some(3)));\n}",
+"note": "The compiler lists the missing pattern, `None`, and refuses to compile. Every `match` on an Option, Result or your own enum is checked like this, which is why adding a new variant to an enum safely flags every place in the code that must handle it.",
+"output": "error[E0004]: non-exhaustive patterns: `None` not covered\n --> main.rs:2:11\n  |\n2 |     match n {\n  |           ^ pattern `None` not covered\n  |\n  = note: not covered\n  = note: the matched value is of type `Option<u32>`\nhelp: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**A catch-all arm first.** Every later arm becomes unreachable. Put specific patterns first.",
+"**Using `_` when you will later add variants.** A wildcard silences the compiler's helpful \"not covered\" errors. Prefer listing variants for your own enums.",
+"**Matching an owned value you still need.** Match on a reference (`match &value`)."
+],
+"keys": [
+"`match` tries patterns in order and is an expression.",
+"Patterns bind data from enum variants.",
+"Matching is exhaustive: cover every case or use a catch-all.",
+"`|`, ranges, `@` bindings and `if` guards refine patterns."
+]
+},
+"6.3": {
+"idea": [
+"Sometimes you care about just one pattern. Writing a full `match` with a `_ => ()` arm is noisy, so Rust offers **`if let`**: `if let Some(max) = config_max { println!(\"max is {max}\"); }` runs the block only when the pattern matches, binding the value. An `else` branch handles everything else. It is the same pattern matching as `match`, minus the exhaustiveness check, a trade of thoroughness for brevity that suits \"do something if present\" cases.",
+"**`let ... else`** (let-else) handles the opposite situation: you need a value to continue, and otherwise you want to leave. `let Some(user) = find_user(id) else { return Err(\"no such user\"); };` binds `user` for the **rest of the function** (not just a block, unlike `if let`), and the `else` block must **diverge**: `return`, `break`, `continue` or panic. This keeps the \"happy path\" un-indented instead of nesting it inside `if let` blocks.",
+"**`while let`** loops as long as a pattern matches, for example popping from a stack until it is empty: `while let Some(top) = stack.pop() { ... }`. Together with `match`, these four forms cover every situation: all cases (`match`), one case (`if let`), required value or leave (`let else`), and repeat while matching (`while let`)."
+],
+"how": [
+"`if let Pattern = value { ... } else { ... }` for one interesting case.",
+"`let Pattern = value else { return ...; };` to require a value; the binding lives on after it.",
+"The `else` of let-else must diverge: `return`, `break`, `continue`, `panic!`.",
+"`while let Some(x) = stack.pop() { ... }` loops until the pattern fails.",
+"Use `match` when several cases matter; the compiler checks it exhaustively."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "if let, let-else and while let",
+"code": "use std::collections::HashMap;\n\nfn parse_setting(line: &str) -> Result<(String, u32), String> {\n    let Some((key, value)) = line.split_once('=') else {\n        return Err(format!(\"{line:?}: expected key=value\"));\n    };\n    let Ok(number) = value.trim().parse::<u32>() else {\n        return Err(format!(\"{line:?}: value is not a number\"));\n    };\n    Ok((key.trim().to_string(), number))           // happy path, no nesting\n}\n\nfn main() {\n    let mut settings = HashMap::new();\n    for line in [\"width = 80\", \"height\", \"depth = deep\", \"margin=4\"] {\n        match parse_setting(line) {\n            Ok((k, v)) => {\n                settings.insert(k, v);\n            }\n            Err(e) => println!(\"skipped {e}\"),\n        }\n    }\n    if let Some(width) = settings.get(\"width\") {\n        println!(\"width is set to {width}\");\n    } else {\n        println!(\"no width\");\n    }\n\n    let mut todo = vec![\"write tests\", \"fix bug\", \"review PR\"];\n    while let Some(task) = todo.pop() {\n        println!(\"doing: {task}\");\n    }\n}",
+"note": "In `parse_setting`, each let-else either binds a value for the rest of the function or returns an error, so the success path stays flat. `if let` handled the one case of interest with an `else`. `while let` popped tasks until `pop` returned `None`, which ended the loop.",
+"output": "skipped \"height\": expected key=value\nskipped \"depth = deep\": value is not a number\nwidth is set to 80\ndoing: review PR\ndoing: fix bug\ndoing: write tests"
+},
+{
+"lang": "rust",
+"title": "The else of let-else must leave",
+"code": "fn port(text: &str) -> u16 {\n    let Ok(p) = text.parse::<u16>() else {\n        println!(\"bad port, using 8080\");\n    };\n    p\n}\n\nfn main() {\n    println!(\"{}\", port(\"80a\"));\n}",
+"note": "If parsing fails, there is no value for `p`, so the `else` block must not fall through; the compiler requires it to diverge (return, break, continue or panic). Returning the default from inside the `else` (`return 8080;`) fixes it.",
+"output": "error[E0308]: `else` clause of `let...else` does not diverge\n --> main.rs:2:42\n  |\n2 |       let Ok(p) = text.parse::<u16>() else {\n  |  __________________________________________^\n3 | |         println!(\"bad port, using 8080\");\n4 | |     };\n  | |_____^ expected `!`, found `()`\n  |\n  = note:   expected type `!`\n  = help: try adding a diverging expression, such as `return` or `panic!(..)`\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**`if let` where several cases matter.** You lose exhaustiveness checking. Use `match`.",
+"**Deeply nested `if let` blocks.** Use let-else to keep the happy path flat.",
+"**Forgetting that `if let` bindings only live inside the block.** Use let-else when you need the value afterwards."
+],
+"keys": [
+"`if let` handles one pattern, with an optional `else`.",
+"`let ... else` requires a value or diverges; the binding lasts for the rest of the scope.",
+"`while let` repeats while a pattern matches.",
+"`match` remains the tool when every case matters."
+]
+},
+"7.1": {
+"idea": [
+"Rust code is organised in three layers. A **crate** is the smallest unit the compiler builds: either a **binary crate** (a program with a `main` function) or a **library crate** (code for other crates to use, with no `main`). Each crate has a **crate root**, the source file the compiler starts from: `src/main.rs` for the binary and `src/lib.rs` for the library. A **package** is what `cargo new` creates: a folder with a `Cargo.toml` that describes how to build one or more crates.",
+"The rules are simple. A package can contain at most **one library** crate and any number of **binary** crates. Cargo finds them by convention, no configuration needed: `src/lib.rs` makes the library (named after the package), `src/main.rs` makes a binary with the package's name, and every file in `src/bin/` becomes an additional binary named after the file.",
+"The common professional layout is a **library plus a thin binary**: almost all the logic lives in `src/lib.rs` (and its modules), and `src/main.rs` only parses arguments and calls the library. The library is then easy to test, reuse and document, and the binary refers to it by the package name (`use my_package::run;`) exactly as an outside crate would."
+],
+"how": [
+"Binary crate root: `src/main.rs`; library crate root: `src/lib.rs`.",
+"Extra binaries: `src/bin/name.rs`, run with `cargo run --bin name`.",
+"One library, many binaries per package.",
+"The binary uses the library by the package name: `use package_name::item;`.",
+"Keep logic in the library; keep `main.rs` thin."
+],
+"examples": [
+{
+"lang": "bash",
+"title": "One package, a library and two binaries",
+"code": "$ cargo new --lib toolkit && cd toolkit && mkdir -p src/bin\n$ find src -type f | sort\nsrc/bin/report.rs\nsrc/lib.rs\nsrc/main.rs\n$ cat src/lib.rs\npub fn word_count(text: &str) -> usize {\n    text.split_whitespace().count()\n}\n$ cat src/main.rs\nfn main() {\n    println!(\"{}\", toolkit::word_count(\"the main binary uses the library\"));\n}\n$ cat src/bin/report.rs\nuse toolkit::word_count;\nfn main() {\n    println!(\"report: {} words\", word_count(\"a second binary, same library\"));\n}\n$ cargo run --quiet\n6\n$ cargo run --quiet --bin report\nreport: 5 words",
+"note": "Cargo discovered three crates from the file layout alone: the library from `lib.rs`, the default binary from `main.rs`, and a second binary from `src/bin/report.rs`. Both binaries call the library by the package name, exactly as an external user would.",
+"output": ""
+},
+{
+"lang": "rust",
+"title": "A library function and a thin main in one file",
+"code": "mod toolkit {\n    pub struct Stats {\n        pub words: usize,\n        pub longest: String,\n    }\n\n    pub fn analyse(text: &str) -> Stats {\n        let words: Vec<&str> = text.split_whitespace().collect();\n        let longest = words.iter().max_by_key(|w| w.len()).copied().unwrap_or(\"\").to_string();\n        Stats { words: words.len(), longest }\n    }\n}\n\nfn main() {\n    // main only gathers input and prints; the logic lives in the \"library\" module\n    let text = \"packages contain crates and crates contain modules\";\n    let stats = toolkit::analyse(text);\n    println!(\"{} words, longest: {}\", stats.words, stats.longest);\n}",
+"note": "Here a module stands in for `src/lib.rs` so the example fits in one file, but the shape is the professional one: `analyse` is testable logic with no printing, and `main` only connects input and output. Splitting it into `lib.rs` and `main.rs` changes nothing but the file layout.",
+"output": "7 words, longest: packages"
+}
+],
+"mistakes": [
+"**All the logic in `main.rs`.** It cannot be unit-tested from integration tests or reused. Move it to `lib.rs`.",
+"**Expecting two libraries in one package.** A package has at most one; use a workspace for more (lesson 14.3).",
+"**Referring to the library as `crate::` from main.rs.** In the binary, the library is an external crate: use its package name."
+],
+"keys": [
+"Crates are compiled units: binaries have `main`, libraries do not.",
+"Crate roots: `src/main.rs`, `src/lib.rs`; extra binaries in `src/bin/`.",
+"A package has at most one library and any number of binaries.",
+"Put logic in the library and keep the binary thin."
+]
+},
+"7.2": {
+"idea": [
+"**Modules** organise code inside a crate into a tree of named scopes. `mod front_of_house { ... }` declares a module; modules can nest, and the crate root is the implicit top of the tree, called `crate`. Modules group related code and, just as importantly, control **privacy**.",
+"Everything in Rust is **private by default**: an item (function, struct, enum, module, constant) is visible only inside the module where it is defined and its children. `pub` makes an item visible to the parent module and beyond. That default lets you hide implementation details and change them freely, exposing only a small, deliberate public interface.",
+"Privacy has two details worth remembering. For **structs**, `pub struct` makes the type public but its **fields stay private** unless each is marked `pub`; a struct with private fields can only be created through a public constructor, which is how you guarantee its fields are always valid. For **enums**, `pub enum` makes **all variants** public, because an enum with hidden variants would be unusable. Child modules can see everything in their ancestors (private items included); parents cannot see into children's private items."
+],
+"how": [
+"`mod name { ... }` declares a module; nest freely.",
+"Items are private by default; `pub` exposes them to the parent and beyond.",
+"`pub struct` with private fields + a `pub fn new` keeps invariants.",
+"`pub enum` exposes all variants.",
+"Children see their ancestors' private items; parents don't see children's."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A restaurant module tree with privacy",
+"code": "mod restaurant {\n    pub mod front_of_house {\n        pub fn add_to_waitlist(name: &str) -> String {\n            format!(\"{name} added ({})\", seat_estimate())\n        }\n        fn seat_estimate() -> &'static str {        // private helper\n            \"about 10 minutes\"\n        }\n    }\n\n    pub mod back_of_house {\n        pub struct Breakfast {\n            pub toast: String,\n            seasonal_fruit: String,                  // private: chosen by the chef\n        }\n\n        impl Breakfast {\n            pub fn summer(toast: &str) -> Breakfast {\n                Breakfast { toast: String::from(toast), seasonal_fruit: String::from(\"peaches\") }\n            }\n            pub fn describe(&self) -> String {\n                format!(\"{} toast with {}\", self.toast, self.seasonal_fruit)\n            }\n        }\n\n        pub enum Appetizer {\n            Soup,\n            Salad,\n        }\n    }\n}\n\nuse restaurant::back_of_house::{Appetizer, Breakfast};\n\nfn main() {\n    println!(\"{}\", restaurant::front_of_house::add_to_waitlist(\"Ada\"));\n    let mut meal = Breakfast::summer(\"rye\");\n    meal.toast = String::from(\"wheat\");               // pub field: allowed\n    println!(\"{}\", meal.describe());\n    for a in [Appetizer::Soup, Appetizer::Salad] {\n        println!(\"{}\", match a { Appetizer::Soup => \"soup\", Appetizer::Salad => \"salad\" });\n    }\n}",
+"note": "The private helper `seat_estimate` is used inside its module but invisible outside. `Breakfast` is public with one public and one private field, so outside code can change the toast but cannot create a breakfast directly or pick the fruit; it must use `Breakfast::summer`. The enum's variants are public automatically.",
+"output": "Ada added (about 10 minutes)\nwheat toast with peaches\nsoup\nsalad"
+},
+{
+"lang": "rust",
+"title": "Touching a private item from outside",
+"code": "mod bank {\n    pub struct Account {\n        pub owner: String,\n        balance: i64,\n    }\n\n    impl Account {\n        pub fn open(owner: &str) -> Account {\n            Account { owner: owner.to_string(), balance: 0 }\n        }\n    }\n}\n\nfn main() {\n    let mut account = bank::Account::open(\"Ada\");\n    account.balance = 1_000_000;\n    println!(\"{}\", account.owner);\n}",
+"note": "`balance` is a private field, so code outside the `bank` module cannot set it, and the compiler says so. That is the point: the only way to change a balance should be through methods that enforce the rules (deposits, withdrawals), and privacy makes that guarantee checkable by the compiler.",
+"output": "error[E0616]: field `balance` of struct `Account` is private\n  --> main.rs:16:13\n   |\n16 |     account.balance = 1_000_000;\n   |             ^^^^^^^ private field",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Making everything `pub`.** You lose the ability to change internals. Expose the minimum.",
+"**`pub struct` and expecting public fields.** Fields need their own `pub`.",
+"**Public fields on types with invariants.** Keep them private and provide methods."
+],
+"keys": [
+"Modules form a tree rooted at `crate`.",
+"Items are private by default; `pub` opens them up.",
+"Struct fields have their own privacy; enum variants follow the enum.",
+"Private fields plus constructors guarantee valid instances."
+]
+},
+"7.3": {
+"idea": [
+"A **path** names an item in the module tree. An **absolute path** starts from the crate root with `crate::` (or from an external crate's name, like `std::`); a **relative path** starts from the current module, using `self::` (optional) or **`super::`** to go up to the parent. Choose absolute paths when code might move independently of what it uses, relative ones for tightly related modules; both are common.",
+"Writing long paths everywhere is tiring, so **`use`** creates a shortcut in the current scope: `use std::collections::HashMap;`. The idiom is to bring **functions** in by their parent module (`use crate::util::files;` then `files::read(...)`), so a call shows where the function comes from, and to bring **structs, enums and traits** in by their full path (`use std::collections::HashMap;`). Rename on import with **`as`** when two names clash (`use std::fmt::Result as FmtResult;`). Group imports with braces and `self`: `use std::io::{self, Write};`.",
+"**`pub use`** re-exports a name: it brings an item into scope and makes it public at the new location. Libraries use this to offer a simple, flat public API (`mylib::Config`) while keeping a deeper internal structure (`mylib::config::loader::Config`). External crates from Cargo.toml are available by name; `std` is always available."
+],
+"how": [
+"`crate::a::b::f()` absolute; `super::f()` parent; `self::f()` current module.",
+"`use path::Item;` creates a shortcut for the current scope only.",
+"Functions: import the parent module; types and traits: import the item.",
+"`as` renames; `{self, A, B}` groups; `*` glob (mostly for preludes and tests).",
+"`pub use` re-exports to build a clean public API."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "use, as, super and pub use",
+"code": "mod shop {\n    pub mod pricing {\n        pub fn with_tax(cents: u32) -> u32 {\n            cents + super::tax::amount(cents)        // relative path to a sibling module\n        }\n    }\n\n    mod tax {\n        pub fn amount(cents: u32) -> u32 {\n            cents * 15 / 100\n        }\n    }\n\n    pub mod model {\n        #[derive(Debug)]\n        pub struct Item {\n            pub name: String,\n            pub cents: u32,\n        }\n    }\n\n    pub use self::model::Item;                       // re-export: shop::Item\n}\n\nuse std::fmt::Result as FmtResult;\nuse std::fmt::{self, Display};\nuse shop::pricing;                                   // functions: import the module\nuse shop::Item;                                      // types: import the item (via the re-export)\n\nstruct Price(u32);\n\nimpl Display for Price {\n    fn fmt(&self, f: &mut fmt::Formatter) -> FmtResult {\n        write!(f, \"${}.{:02}\", self.0 / 100, self.0 % 100)\n    }\n}\n\nfn main() {\n    let item = Item { name: String::from(\"teapot\"), cents: 2499 };\n    let total = pricing::with_tax(item.cents);\n    println!(\"{} costs {} with tax\", item.name, Price(total));\n    println!(\"absolute path works too: {}\", crate::shop::pricing::with_tax(100));\n}",
+"note": "`super::tax::amount` reached a private sibling module from inside `pricing`. `pub use self::model::Item` re-exported the struct so users write `shop::Item` instead of `shop::model::Item`. `as` renamed `fmt::Result` to avoid confusing it with the ordinary `Result`, and `pricing::with_tax` shows where the function lives at the call site.",
+"output": "teapot costs $28.73 with tax\nabsolute path works too: 115"
+},
+{
+"lang": "rust",
+"title": "use only applies to its own scope",
+"code": "mod reports {\n    pub fn total() -> u32 {\n        42\n    }\n}\n\nuse reports::total;\n\nmod printing {\n    pub fn show() {\n        println!(\"{}\", total());\n    }\n}\n\nfn main() {\n    printing::show();\n}",
+"note": "The `use` at the crate root created a shortcut only for that scope, not for the child module `printing`, so the compiler cannot find `total` there and suggests importing it. Each module needs its own `use` lines, or a path like `super::total()` or `crate::reports::total()`.",
+"output": "error[E0425]: cannot find function `total` in this scope\n  --> main.rs:11:24\n   |\n11 |         println!(\"{}\", total());\n   |                        ^^^^^ not found in this scope\n   |\nhelp: consider importing this function through its public re-export",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Expecting `use` to apply inside child modules.** Each module has its own scope.",
+"**Importing functions directly.** `read()` alone hides its origin; import the module and call `files::read()`.",
+"**Exposing a deep internal structure.** Re-export the important types with `pub use`."
+],
+"keys": [
+"Absolute paths start at `crate::`; relative ones use `self::` and `super::`.",
+"`use` creates scope-local shortcuts; `as` renames.",
+"Import modules for functions, items for types and traits.",
+"`pub use` re-exports to give a library a clean API."
+]
+},
+"7.4": {
+"idea": [
+"As a crate grows, modules move out of one big file into their own files. The rule is short: **`mod name;`** (with a semicolon instead of a body) tells the compiler \"the contents of this module are in a file\". For a module declared in the crate root, the compiler looks for **`src/name.rs`** (or the older style `src/name/mod.rs`). For a nested module `mod hosting;` declared inside `src/front_of_house.rs`, it looks in **`src/front_of_house/hosting.rs`**: the folder is named after the parent module.",
+"Each file is declared **exactly once**, with `mod`, in its parent. `mod` is not an import: it defines where a module sits in the tree. After that, other code refers to it by path and `use`, as before. Forgetting the `mod` line is the classic mistake: the file exists, but the compiler never reads it, and `use crate::name` fails with \"unresolved import\".",
+"Moving code between files never changes paths: `crate::front_of_house::hosting::add_to_waitlist` is the same whether `hosting` is inline or in a file. So you can start with everything in one file and split it later without touching any calling code. Organise modules by **feature** (orders, billing, users) rather than by kind of thing (models, utils), so a change usually touches one module."
+],
+"how": [
+"`mod name;` in the parent; contents in `name.rs` next to it.",
+"Nested: `src/parent.rs` contains `mod child;`, contents in `src/parent/child.rs`.",
+"Declare each module once; use paths and `use` everywhere else.",
+"Paths stay the same whether a module is inline or in a file.",
+"Organise by feature; keep `lib.rs`/`main.rs` mostly as a list of modules."
+],
+"examples": [
+{
+"lang": "bash",
+"title": "From one file to several, same paths",
+"code": "$ tree src\nsrc\n├── front_of_house\n│   └── hosting.rs\n├── front_of_house.rs\n└── lib.rs\n$ cat src/lib.rs\nmod front_of_house;                 // contents in src/front_of_house.rs\n\npub use crate::front_of_house::hosting;\n\npub fn eat_at_restaurant() -> String {\n    hosting::add_to_waitlist(\"Ada\")\n}\n$ cat src/front_of_house.rs\npub mod hosting;                    // contents in src/front_of_house/hosting.rs\n$ cat src/front_of_house/hosting.rs\npub fn add_to_waitlist(name: &str) -> String {\n    format!(\"{name} is on the waitlist\")\n}\n$ cargo test --quiet --doc 2>/dev/null; cargo build --quiet && echo \"builds\"\nbuilds",
+"note": "Each `mod name;` line points the compiler at a file: `front_of_house.rs` next to `lib.rs`, and `hosting.rs` inside a folder named after its parent. The path `crate::front_of_house::hosting::add_to_waitlist` is identical to the version with everything in one file, so no calling code changed.",
+"output": ""
+},
+{
+"lang": "rust",
+"title": "The same tree, inline, as the compiler sees it",
+"code": "mod front_of_house {\n    pub mod hosting {\n        pub fn add_to_waitlist(name: &str) -> String {\n            format!(\"{name} is on the waitlist\")\n        }\n        pub fn seat(name: &str) -> String {\n            format!(\"{name} is seated\")\n        }\n    }\n}\n\npub use crate::front_of_house::hosting;\n\npub fn eat_at_restaurant() -> Vec<String> {\n    vec![hosting::add_to_waitlist(\"Ada\"), hosting::seat(\"Ada\")]\n}\n\nfn main() {\n    for line in eat_at_restaurant() {\n        println!(\"{line}\");\n    }\n    println!(\"full path: {}\", crate::front_of_house::hosting::seat(\"Ben\"));\n}",
+"note": "This is the exact module tree the multi-file layout produces: replacing each inline `mod name { ... }` with `mod name;` and moving its body to the matching file changes nothing for the compiler or for callers. Splitting files is purely an organisational step.",
+"output": "Ada is on the waitlist\nAda is seated\nfull path: Ben is seated"
+}
+],
+"mistakes": [
+"**Creating `name.rs` but forgetting `mod name;`.** The compiler never reads the file.",
+"**Declaring the same file with `mod` in two places.** Declare it once; use paths elsewhere.",
+"**Thinking `mod` imports like `use`.** `mod` places a module in the tree; `use` creates shortcuts."
+],
+"keys": [
+"`mod name;` loads a module's body from `name.rs` (or `name/mod.rs`).",
+"Nested modules live in a folder named after their parent.",
+"Each module is declared once; paths are unaffected by file layout.",
+"Split files when it helps reading; organise by feature."
+]
+},
+"8.1": {
+"idea": [
+"**`Vec<T>`** is a growable list of values of one type, stored next to each other on the heap. Create one with `Vec::new()` (an annotation like `Vec<i32>` is needed if nothing is pushed yet) or with the `vec![1, 2, 3]` macro. `push` adds to the end and `pop` removes from the end, returning an `Option` (`None` when empty). The vector must be `mut` to change.",
+"Two ways to read an element: indexing `v[2]` returns the value and **panics** if the index is out of range, while `v.get(2)` returns `Option<&T>`, `None` when out of range. Use indexing when an out-of-range index is a bug, `get` when it can legitimately happen (user input).",
+"Iterate with `for x in &v` (shared references), `for x in &mut v` (mutable references, change each element with `*x += 1`) or `for x in v` (takes ownership, consuming the vector). The borrowing rules apply to vectors as a whole: holding a reference to an element while pushing is refused, because `push` may move the whole buffer to a bigger allocation. To store different types in one vector, wrap them in an **enum** (or use trait objects, chapter 18). When a vector is dropped, all its elements are dropped too."
+],
+"how": [
+"`Vec::new()`, `vec![...]`, `Vec::with_capacity(n)` if you know the size.",
+"`push`, `pop` (returns Option), `insert`, `remove`, `len`, `is_empty`, `contains`, `sort`.",
+"`v[i]` panics if out of range; `v.get(i)` returns Option.",
+"Iterate: `&v` read, `&mut v` modify (`*x`), `v` consume.",
+"An enum lets one Vec hold several kinds of value."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Building, reading and changing a Vec",
+"code": "#[derive(Debug)]\nenum Cell {\n    Int(i64),\n    Text(String),\n    Empty,\n}\n\nfn main() {\n    let mut scores: Vec<u32> = Vec::new();\n    for s in [72, 95, 88] {\n        scores.push(s);\n    }\n    scores.extend([61, 100]);\n    println!(\"{scores:?}, len {}\", scores.len());\n    println!(\"third: {}, get(10): {:?}, last: {:?}\", scores[2], scores.get(10), scores.last());\n\n    for s in &mut scores {\n        *s = (*s + 5).min(100);                      // curve every score, capped at 100\n    }\n    scores.sort_unstable_by(|a, b| b.cmp(a));\n    println!(\"curved and sorted: {scores:?}\");\n    while let Some(lowest) = scores.pop() {\n        if lowest >= 90 {\n            scores.push(lowest);\n            break;\n        }\n        println!(\"removed {lowest}\");\n    }\n    println!(\"kept: {scores:?}\");\n\n    let row = vec![Cell::Int(42), Cell::Text(String::from(\"total\")), Cell::Empty];\n    for cell in &row {\n        print!(\"{cell:?}  \");\n    }\n    println!();\n}",
+"note": "`&mut scores` gave mutable references, so `*s = ...` changed each element in place. After sorting in descending order, `pop` removed from the end (the lowest scores) until one was 90 or more, which was pushed back. The enum let one vector hold integers, text and empty cells.",
+"output": "[72, 95, 88, 61, 100], len 5\nthird: 88, get(10): None, last: Some(100)\ncurved and sorted: [100, 100, 93, 77, 66]\nremoved 66\nremoved 77\nkept: [100, 100, 93]\nInt(42)  Text(\"total\")  Empty"
+},
+{
+"lang": "rust",
+"title": "Indexing past the end panics; get does not",
+"code": "fn main() {\n    let queue = vec![\"Ada\", \"Ben\", \"Cy\"];\n    let position = 5;\n    match queue.get(position) {\n        Some(name) => println!(\"position {position}: {name}\"),\n        None => println!(\"position {position} is empty (only {} waiting)\", queue.len()),\n    }\n    println!(\"now indexing directly...\");\n    let name = queue[position];\n    println!(\"never reached: {name}\");\n}",
+"note": "`get` returned `None` and the program handled it gracefully. Direct indexing with the same out-of-range position panicked with the length and the index in the message. Choose `get` when a missing element is a normal situation, and indexing when it would indicate a bug.",
+"output": "position 5 is empty (only 3 waiting)\nnow indexing directly...\n\nthread 'main' panicked at main.rs:9:21:\nindex out of bounds: the len is 3 but the index is 5\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+}
+],
+"mistakes": [
+"**Holding `&v[0]` while pushing.** The compiler refuses; take what you need first, or copy the value.",
+"**Indexing with untrusted numbers.** Use `get` and handle `None`.",
+"**`for x in v` when you still need `v`.** That consumes it; iterate over `&v`."
+],
+"keys": [
+"`Vec<T>` is a growable, heap-allocated list of one type.",
+"`push`/`pop`, indexing (panics) versus `get` (Option).",
+"Iterate with `&v`, `&mut v` or `v` depending on what you need.",
+"Use an enum to store different kinds of value in one vector."
+]
+},
+"8.2": {
+"idea": [
+"Rust has two main string types. **`String`** is an owned, growable, heap-allocated UTF-8 buffer: you can push to it and change it. **`&str`** (a string slice) is a borrowed view into UTF-8 text owned by someone else: a `String`, or text baked into the binary for literals. Functions usually take `&str` and return `String`; `&String` converts to `&str` automatically.",
+"Build strings with `push_str` (append a `&str`), `push` (append a `char`), `format!` (like `println!` but returning a `String`, the most readable way to combine values), or `+`, which takes ownership of its left side: `s1 + &s2` moves `s1` and reuses its buffer. `to_string()`, `String::from` and `.to_owned()` turn a `&str` into a `String`.",
+"A Rust string is a sequence of **UTF-8 bytes**, and characters take 1 to 4 bytes each. That is why **strings cannot be indexed** with `s[0]`: a byte position does not identify a character, and returning one byte of \"é\" would be wrong. Instead, choose the unit you mean: `.bytes()` for raw bytes, `.chars()` for Unicode scalar values, and for user-perceived characters (\"grapheme clusters\", like a flag emoji or an accented letter built from two code points) the `unicode-segmentation` crate. `len()` returns the number of **bytes**."
+],
+"how": [
+"`String::new()`, `String::from(\"x\")`, `\"x\".to_string()`, `format!(...)`.",
+"`push_str(&str)`, `push(char)`, `s1 + &s2` (moves s1), `insert_str`, `replace`, `trim`.",
+"`len()` is bytes; `chars().count()` is characters.",
+"No `s[i]`; iterate `.chars()` or `.bytes()`; slice with byte ranges on char boundaries.",
+"Take `&str` parameters; return `String`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Building strings and counting the right units",
+"code": "fn initials(full_name: &str) -> String {\n    full_name.split_whitespace().filter_map(|w| w.chars().next()).flat_map(|c| c.to_uppercase()).collect()\n}\n\nfn main() {\n    let mut log = String::from(\"start\");\n    log.push_str(\", step 1\");\n    log.push('!');\n    let first = String::from(\"tic\");\n    let both = first + \"-\" + \"tac\";                  // `first` moved into `both`\n    let menu = format!(\"{} | {} | {}\", log, both, initials(\"élodie de la roche\"));\n    println!(\"{menu}\");\n\n    for word in [\"cafe\", \"café\", \"naïve\", \"🦀rust\", \"日本\"] {\n        println!(\"{word:8} bytes={:2} chars={} first char={:?}\", word.len(), word.chars().count(), word.chars().next().unwrap());\n    }\n\n    let city = \"Montréal\";\n    println!(\"bytes of 'é': {:?}\", \"é\".bytes().collect::<Vec<u8>>());\n    println!(\"reversed: {}\", city.chars().rev().collect::<String>());\n    println!(\"upper: {}, contains \\\"réa\\\": {}, replaced: {}\", city.to_uppercase(), city.contains(\"réa\"), city.replace(\"é\", \"e\"));\n}",
+"note": "`+` moved `first` and reused its buffer, and `format!` combined everything readably without moving anything. The table shows why indexing is refused: \"café\" is 5 bytes but 4 characters, the crab takes 4 bytes, and each Japanese character 3. Character-aware methods (`chars`, `to_uppercase`, `replace`) handle UTF-8 correctly.",
+"output": "start, step 1! | tic-tac | ÉDLR\ncafe     bytes= 4 chars=4 first char='c'\ncafé     bytes= 5 chars=4 first char='c'\nnaïve    bytes= 6 chars=5 first char='n'\n🦀rust    bytes= 8 chars=5 first char='🦀'\n日本       bytes= 6 chars=2 first char='日'\nbytes of 'é': [195, 169]\nreversed: laértnoM\nupper: MONTRÉAL, contains \"réa\": true, replaced: Montreal"
+},
+{
+"lang": "rust",
+"title": "Strings cannot be indexed by position",
+"code": "fn main() {\n    let greeting = String::from(\"hello\");\n    let first = greeting[0];\n    println!(\"{first}\");\n}",
+"note": "The compiler refuses `greeting[0]` and explains that `String` cannot be indexed by an integer. Because characters can span several bytes, there is no single correct answer, so Rust makes you choose: `greeting.chars().next()` for the first character, `greeting.as_bytes()[0]` for the first byte, or `&greeting[0..1]` for a slice of the first byte.",
+"output": "error[E0277]: the type `str` cannot be indexed by `{integer}`\n --> main.rs:3:26\n  |\n3 |     let first = greeting[0];\n  |                          ^ string indices are ranges of `usize`\n  |\n  = help: the trait `SliceIndex<str>` is not implemented for `{integer}`\n  = note: you can use `.chars().nth()` or `.bytes().nth()`\nhelp: `usize` implements trait `SliceIndex<T>`\n  = note: `SliceIndex<[T]>`\n  = note: `SliceIndex<ByteStr>`\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Assuming `len()` counts characters.** It counts bytes. Use `.chars().count()`.",
+"**Slicing text at a byte position.** A position inside a multi-byte character panics.",
+"**Using `+` in loops.** Use `push_str` or collect into a String; `format!` for combinations."
+],
+"keys": [
+"`String` owns growable UTF-8 text; `&str` borrows it.",
+"Build with `push_str`, `push`, `+` (moves the left side) and `format!`.",
+"Strings are UTF-8 bytes: no integer indexing, `len()` is in bytes.",
+"Choose `.chars()` or `.bytes()` to iterate in the unit you mean."
+]
+},
+"8.3": {
+"idea": [
+"**`HashMap<K, V>`** stores values by key, with fast lookup, insertion and removal (average constant time). Create one with `HashMap::new()` (it is not in the prelude: `use std::collections::HashMap;`), add with `insert`, and read with `get`, which returns `Option<&V>` because the key might be missing. Iterating gives `(key, value)` pairs in an **arbitrary order** that can differ between runs; sort the keys (or use a `BTreeMap`) when order matters.",
+"Ownership applies: inserting a `String` key or value **moves** it into the map, while `Copy` values are copied. `insert` on an existing key **overwrites** the old value and returns it.",
+"The **entry API** handles the common \"update or insert\" pattern in one lookup. `map.entry(key).or_insert(default)` returns a mutable reference to the value, inserting the default first if the key was missing. Word counting becomes `*counts.entry(word).or_insert(0) += 1;`. Variants: `or_insert_with(|| expensive())` computes the default only when needed, `or_default()` uses the type's default, and `and_modify(|v| ...)` changes an existing value. Keys must implement `Eq` and `Hash`: strings, integers, tuples of them, and your own types with `#[derive(PartialEq, Eq, Hash)]`."
+],
+"how": [
+"`use std::collections::HashMap;` `let mut m = HashMap::new();`.",
+"`insert(k, v)` (returns the old value), `get(&k)` → Option, `contains_key`, `remove`.",
+"Iterate `for (k, v) in &m`: order is arbitrary; sort for stable output.",
+"Entry API: `*m.entry(k).or_insert(0) += 1`, `.or_default()`, `.and_modify(...)`.",
+"Keys need `Eq + Hash`; inserted Strings are moved in."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Word counts with entry, sorted for stable output",
+"code": "use std::collections::HashMap;\n\nfn main() {\n    let text = \"the quick brown fox jumps over the lazy dog the end\";\n    let mut counts: HashMap<&str, u32> = HashMap::new();\n    for word in text.split_whitespace() {\n        *counts.entry(word).or_insert(0) += 1;\n    }\n    let mut by_count: Vec<(&str, u32)> = counts.into_iter().collect();\n    by_count.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));\n    println!(\"top three: {:?}\", &by_count[..3]);\n\n    let mut stock: HashMap<String, u32> = HashMap::new();\n    stock.insert(String::from(\"tea\"), 10);\n    let old = stock.insert(String::from(\"tea\"), 12);\n    println!(\"overwrote tea: old value {old:?}\");\n    stock.entry(String::from(\"tea\")).and_modify(|n| *n -= 2).or_insert(0);\n    stock.entry(String::from(\"cake\")).and_modify(|n| *n -= 2).or_insert(5);\n    let mut items: Vec<_> = stock.iter().collect();\n    items.sort();\n    println!(\"stock: {items:?}\");\n    println!(\"scones: {:?}, tea: {:?}\", stock.get(\"scones\"), stock.get(\"tea\"));\n\n    let mut groups: HashMap<char, Vec<&str>> = HashMap::new();\n    for name in [\"ada\", \"ben\", \"alan\", \"bea\", \"cy\"] {\n        groups.entry(name.chars().next().unwrap()).or_default().push(name);\n    }\n    let mut keys: Vec<_> = groups.keys().copied().collect();\n    keys.sort();\n    for k in keys {\n        println!(\"{k}: {:?}\", groups[&k]);\n    }\n}",
+"note": "The entry API inserted 0 for new words and incremented in a single lookup. Results were collected and sorted before printing, because HashMap iteration order is arbitrary. `insert` on an existing key returned the old value; `and_modify` changed tea, while cake did not exist so `or_insert` added it. `or_default` created an empty Vec for each new initial.",
+"output": "top three: [(\"the\", 3), (\"brown\", 1), (\"dog\", 1)]\noverwrote tea: old value Some(10)\nstock: [(\"cake\", 5), (\"tea\", 10)]\nscones: None, tea: Some(10)\na: [\"ada\", \"alan\"]\nb: [\"ben\", \"bea\"]\nc: [\"cy\"]"
+},
+{
+"lang": "rust",
+"title": "The map owns what you insert",
+"code": "use std::collections::HashMap;\n\nfn main() {\n    let mut capitals = HashMap::new();\n    let country = String::from(\"Canada\");\n    let city = String::from(\"Ottawa\");\n    capitals.insert(country, city);\n    println!(\"{country}: {:?}\", capitals.get(\"Canada\"));\n}",
+"note": "`insert` moved both Strings into the map, so `country` can no longer be used, and the compiler points at the move. Inserting clones, inserting references (`&str` keys that live long enough), or reading the key back from the map are the usual fixes.",
+"output": "error[E0382]: borrow of moved value: `country`\n --> main.rs:8:16\n  |\n5 |     let country = String::from(\"Canada\");\n  |         ------- move occurs because `country` has type `String`, which does not implement the `Copy` trait\n6 |     let city = String::from(\"Ottawa\");\n7 |     capitals.insert(country, city);\n  |                     ------- value moved here\n8 |     println!(\"{country}: {:?}\", capitals.get(\"Canada\"));\n  |                ^^^^^^^ value borrowed here after move\n  |\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Relying on HashMap iteration order.** It is arbitrary and changes between runs. Sort, or use BTreeMap.",
+"**`if map.contains_key(k) { ... } else { insert }`.** Two lookups and clumsy code. Use the entry API.",
+"**Expecting to use a String after inserting it.** The map took ownership."
+],
+"keys": [
+"`HashMap<K, V>` maps keys to values with fast average lookups.",
+"`get` returns an Option; `insert` overwrites and returns the old value.",
+"The entry API updates or inserts in one lookup.",
+"Iteration order is arbitrary; inserted owned values move into the map."
+]
+},
+"9.1": {
+"idea": [
+"Rust divides errors into two kinds. **Recoverable** errors, like a missing file or bad input, are expected possibilities and are returned as values with `Result` (next lesson). **Unrecoverable** errors are bugs: a condition that should be impossible, such as an index past the end or a broken invariant. For those, the program **panics**.",
+"A panic happens when you call `panic!(\"message\")` or when code you call panics: indexing out of bounds, `unwrap()` on `None` or `Err`, integer overflow in debug builds, division by zero. By default the panicking thread **unwinds**: it walks back up the stack, running destructors (`Drop`) so resources are released, prints the message with the file and line, and ends. A panic in `main`'s thread ends the program with a non-zero exit code.",
+"To see how the program got there, run with **`RUST_BACKTRACE=1`**: the backtrace lists the chain of function calls, most recent first; look for the first lines that are in your own code. For smaller binaries, a release profile can switch to `panic = \"abort\"` in `Cargo.toml`, which ends the process immediately without unwinding. Panics are not exceptions to be caught for control flow; they signal bugs to fix."
+],
+"how": [
+"`panic!(\"msg {x}\")` for impossible states; `unreachable!()`, `todo!()`, `unimplemented!()` are variants.",
+"Common hidden panics: `v[i]`, `unwrap`, `expect`, overflow in debug, divide by zero.",
+"`RUST_BACKTRACE=1 cargo run` shows the call chain; read from the top for your own frames.",
+"Unwinding runs `Drop` code; `panic = \"abort\"` in `[profile.release]` skips it.",
+"Use `Result` for expected failures; panic for bugs."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A panic unwinds and runs destructors",
+"code": "struct TempFile(&'static str);\n\nimpl Drop for TempFile {\n    fn drop(&mut self) {\n        println!(\"cleanup: removing {}\", self.0);\n    }\n}\n\nfn average(values: &[u32]) -> u32 {\n    if values.is_empty() {\n        panic!(\"average() called with no values; the caller must check first\");\n    }\n    values.iter().sum::<u32>() / values.len() as u32\n}\n\nfn main() {\n    let _tmp = TempFile(\"/tmp/report.part\");\n    println!(\"average of [3, 4, 8] = {}\", average(&[3, 4, 8]));\n    let readings: Vec<u32> = Vec::new();\n    println!(\"average of nothing = {}\", average(&readings));\n    println!(\"never printed\");\n}",
+"note": "The second call broke the function's precondition, so it panicked with a message explaining whose mistake it was, including the file and line. As the panic unwound out of `main`, the `TempFile` destructor still ran its cleanup, which is what unwinding guarantees. The last line never ran.",
+"output": "average of [3, 4, 8] = 5\n\nthread 'main' panicked at main.rs:11:9:\naverage() called with no values; the caller must check first\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ncleanup: removing /tmp/report.part"
+},
+{
+"lang": "rust",
+"title": "Panics hiding in everyday operations, caught to inspect them",
+"code": "use std::panic;\n\nfn show(label: &str, f: impl FnOnce() + panic::UnwindSafe) {\n    println!(\"{label}:\");\n    let _ = panic::catch_unwind(f);\n}\n\nfn main() {\n    panic::set_hook(Box::new(|info| {\n        let msg = info.payload().downcast_ref::<String>().cloned()\n            .or_else(|| info.payload().downcast_ref::<&str>().map(|s| s.to_string()))\n            .unwrap_or_default();\n        println!(\"  panic: {msg}\");\n    }));\n    let empty: Vec<i32> = vec![];\n    show(\"index past the end\", move || { let _ = empty[0]; });\n    show(\"unwrap on None\", || { let _: i32 = None.unwrap(); });\n    show(\"expect on Err\", || { \"x\".parse::<i32>().expect(\"config value must be a number\"); });\n    show(\"divide by zero\", || { let d = \"0\".parse::<i32>().unwrap(); let _ = 10 / d; });\n}",
+"note": "Each of these common operations panics on bad data. `catch_unwind` and a custom hook are used here only to show all four messages in one run; real programs should not catch panics for control flow. Notice how `expect` puts your own explanation in front of the error, which makes it far more useful than a bare `unwrap`.",
+"output": "index past the end:\n  panic: index out of bounds: the len is 0 but the index is 0\nunwrap on None:\n  panic: called `Option::unwrap()` on a `None` value\nexpect on Err:\n  panic: config value must be a number: ParseIntError { kind: InvalidDigit }\ndivide by zero:\n  panic: attempt to divide by zero"
+}
+],
+"mistakes": [
+"**Panicking on expected failures** like missing files or bad input. Return a `Result`.",
+"**`unwrap()` without thought.** When it fails the message is generic. Use `expect(\"why this can't fail\")` or handle the error.",
+"**Using `catch_unwind` as try/catch.** Panics are for bugs, not for control flow."
+],
+"keys": [
+"Panics signal bugs: unrecoverable, impossible states.",
+"Unwinding runs destructors; the message shows the file and line.",
+"`RUST_BACKTRACE=1` shows the call chain.",
+"Expected failures belong in `Result`, not panics."
+]
+},
+"9.2": {
+"idea": [
+"**`Result<T, E>`** is the enum for operations that can fail: `Ok(value)` on success, `Err(error)` on failure. Functions like `File::open` and `str::parse` return it, and because it is a type, the compiler makes sure callers deal with it; you cannot accidentally use a `Result` as if it were the value inside.",
+"Handle it with `match`, matching `Ok` and `Err`, and even different **kinds** of error (`ErrorKind::NotFound` versus permission problems). Shortcuts: `unwrap()` returns the value or panics; `expect(\"message\")` does the same with your message (prefer it); `unwrap_or(default)` and `unwrap_or_else(|e| ...)` substitute a value; `map` and `map_err` transform the success or error value.",
+"The **`?` operator** is the workhorse for **propagating** errors. Placed after an expression returning `Result`, it gives the `Ok` value, or immediately returns the `Err` from the current function. That function must itself return a `Result` (or `Option`, for `?` on Options) with a compatible error type: `?` converts the error with `From` if needed. A chain of fallible steps then reads as a straight line: `let text = fs::read_to_string(path)?; let n: u32 = text.trim().parse()?;`. `main` can return `Result<(), Box<dyn Error>>` so `?` works there too."
+],
+"how": [
+"`match result { Ok(v) => ..., Err(e) => ... }`; inspect `e.kind()` for io errors.",
+"`expect(\"why\")` over `unwrap()`; `unwrap_or`, `unwrap_or_else`, `map`, `map_err`.",
+"`value?` returns early with the error; the function must return `Result`/`Option`.",
+"`?` converts error types via `From`; `Box<dyn Error>` accepts any error.",
+"`fn main() -> Result<(), Box<dyn std::error::Error>>` to use `?` in main."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Reading a number from a file, three ways",
+"code": "use std::error::Error;\nuse std::fs;\nuse std::io::ErrorKind;\n\nfn read_limit_match(path: &str) -> u32 {\n    match fs::read_to_string(path) {\n        Ok(text) => match text.trim().parse() {\n            Ok(n) => n,\n            Err(e) => {\n                println!(\"  bad number in {path}: {e}\");\n                0\n            }\n        },\n        Err(e) if e.kind() == ErrorKind::NotFound => {\n            println!(\"  {path} not found, using the default\");\n            100\n        }\n        Err(e) => panic!(\"cannot read {path}: {e}\"),\n    }\n}\n\nfn read_limit(path: &str) -> Result<u32, Box<dyn Error>> {\n    let text = fs::read_to_string(path)?;          // io::Error -> Box<dyn Error>\n    let limit = text.trim().parse::<u32>()?;       // ParseIntError -> Box<dyn Error>\n    Ok(limit)\n}\n\nfn main() -> Result<(), Box<dyn Error>> {\n    fs::write(\"good.txt\", \"250\\n\")?;\n    fs::write(\"bad.txt\", \"lots\\n\")?;\n    for path in [\"good.txt\", \"bad.txt\", \"missing.txt\"] {\n        println!(\"match: {path} -> {}\", read_limit_match(path));\n    }\n    for path in [\"good.txt\", \"bad.txt\", \"missing.txt\"] {\n        match read_limit(path) {\n            Ok(n) => println!(\"?:     {path} -> {n}\"),\n            Err(e) => println!(\"?:     {path} -> error: {e}\"),\n        }\n    }\n    let quick = read_limit(\"missing.txt\").unwrap_or(100);\n    println!(\"unwrap_or: {quick}\");\n    Ok(())\n}",
+"note": "The `match` version distinguishes a missing file (use a default) from a bad number and from other I/O errors. The `?` version is two straight lines: each failure returns early, converted into `Box<dyn Error>`, and the caller decides what to do. `main` itself returns a `Result`, so the setup writes can use `?` as well.",
+"output": "match: good.txt -> 250\n  bad number in bad.txt: invalid digit found in string\nmatch: bad.txt -> 0\n  missing.txt not found, using the default\nmatch: missing.txt -> 100\n?:     good.txt -> 250\n?:     bad.txt -> error: invalid digit found in string\n?:     missing.txt -> error: No such file or directory (os error 2)\nunwrap_or: 100"
+},
+{
+"lang": "rust",
+"title": "? needs a function that returns Result",
+"code": "use std::fs;\n\nfn main() {\n    let text = fs::read_to_string(\"settings.toml\")?;\n    println!(\"{text}\");\n}",
+"note": "`?` returns the error early, but this `main` returns `()`, so there is nowhere to send it; the compiler explains and suggests changing the return type. Declaring `fn main() -> Result<(), Box<dyn std::error::Error>>` (and ending with `Ok(())`) makes it compile.",
+"output": "error[E0277]: the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)\n --> main.rs:4:51\n  |\n3 | fn main() {\n  | --------- this function should return `Result` or `Option` to accept `?`\n4 |     let text = fs::read_to_string(\"settings.toml\")?;\n  |                                                   ^ cannot use the `?` operator in a function that returns `()`\n  |\nhelp: consider adding return type\n  |\n4 |     let text = fs::read_to_string(\"settings.toml\")?;\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**`unwrap()` on every Result.** Programs crash on ordinary problems. Propagate with `?` or handle the error.",
+"**Matching deeply nested Results.** `?` keeps the code flat.",
+"**Swallowing errors with `unwrap_or_default()` silently.** At least log what went wrong."
+],
+"keys": [
+"`Result<T, E>` is `Ok(value)` or `Err(error)`, checked by the compiler.",
+"`match` handles specific error kinds; `expect`, `unwrap_or`, `map_err` are shortcuts.",
+"`?` propagates errors, converting them with `From`.",
+"`main` can return `Result` so `?` works everywhere."
+]
+},
+"9.3": {
+"idea": [
+"When should code panic and when should it return a `Result`? The default for a function that can fail is **`Result`**: it lets the caller decide, and callers know their situation better than you do. Panicking is appropriate when continuing would be wrong or dangerous: a **bug** in the program (a broken invariant, an impossible state), a violated **contract** that the caller was told about (like indexing past the end), or bad state that code cannot recover from.",
+"`unwrap` and `expect` are acceptable in a few places: examples and prototypes, tests (a panic is a test failure), and when you have information the compiler lacks, such as parsing a hard-coded valid IP address. In that last case, `expect` should explain why it cannot fail: `\"127.0.0.1\".parse::<IpAddr>().expect(\"hard-coded address is valid\")`.",
+"The best tool is often to **encode rules in types**. Instead of checking \"is this a number from 1 to 100?\" in every function, create a `Guess` type whose constructor validates once (returning a `Result`, or panicking if out-of-range values are a programming error), with a private field so no other code can create an invalid one. Every function that takes a `Guess` then knows the value is valid, and the check is never forgotten or duplicated. This \"parse, don't validate\" approach is one of the most powerful habits in Rust."
+],
+"how": [
+"Return `Result` for failures the caller can expect or handle.",
+"Panic for bugs, broken invariants and violated documented contracts.",
+"`expect(\"reason it can't fail\")` for values you know are valid.",
+"Validate once in a constructor; keep the field private; pass the type around.",
+"Document panics in a `# Panics` section of the doc comment."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A type that can only hold valid values",
+"code": "#[derive(Debug, Clone, Copy, PartialEq)]\npub struct Percent(u8);                              // private field: only `new` can build one\n\n#[derive(Debug, PartialEq)]\npub enum PercentError {\n    TooLarge(u32),\n    NotANumber(String),\n}\n\nimpl Percent {\n    pub fn new(value: u32) -> Result<Percent, PercentError> {\n        if value > 100 {\n            return Err(PercentError::TooLarge(value));\n        }\n        Ok(Percent(value as u8))\n    }\n\n    pub fn parse(text: &str) -> Result<Percent, PercentError> {\n        let n = text.trim().trim_end_matches('%').parse::<u32>().map_err(|_| PercentError::NotANumber(text.to_string()))?;\n        Percent::new(n)\n    }\n\n    pub fn of(self, amount: f64) -> f64 {\n        amount * self.0 as f64 / 100.0               // no check needed: always 0..=100\n    }\n}\n\nfn main() {\n    for input in [\"15%\", \"100\", \"250\", \"lots\"] {\n        match Percent::parse(input) {\n            Ok(p) => println!(\"{input:>5} -> {p:?}; tip on 84.50 = {:.2}\", p.of(84.50)),\n            Err(e) => println!(\"{input:>5} -> rejected: {e:?}\"),\n        }\n    }\n    let localhost: std::net::IpAddr = \"127.0.0.1\".parse().expect(\"hard-coded address is valid\");\n    println!(\"{localhost}\");\n}",
+"note": "Validation happens once, in `new`; because the field is private, every `Percent` in the program is guaranteed to be between 0 and 100, so `of` needs no checks. Invalid input becomes a descriptive error instead of a panic. The `expect` on a hard-coded address documents why it cannot fail.",
+"output": "  15% -> Percent(15); tip on 84.50 = 12.68\n  100 -> Percent(100); tip on 84.50 = 84.50\n  250 -> rejected: TooLarge(250)\n lots -> rejected: NotANumber(\"lots\")\n127.0.0.1"
+},
+{
+"lang": "rust",
+"title": "The private field cannot be bypassed",
+"code": "mod money {\n    pub struct Percent(u8);\n    impl Percent {\n        pub fn new(v: u8) -> Option<Percent> {\n            (v <= 100).then_some(Percent(v))\n        }\n    }\n}\n\nfn main() {\n    let bogus = money::Percent(250);\n    let _ = bogus;\n}",
+"note": "Outside its module, the tuple struct's private field means `Percent(250)` cannot be written at all; the compiler reports the private field. The only way in is `Percent::new`, which validates. That is how a type makes invalid states unrepresentable.",
+"output": "error[E0603]: tuple struct constructor `Percent` is private\n  --> main.rs:11:24\n   |\n 2 |     pub struct Percent(u8);\n   |                        -- a constructor is private if any of the fields is private\n11 |     let bogus = money::Percent(250);\n   |                        ^^^^^^^ private tuple struct constructor\n   |\n  --> main.rs:2:5\n   |\n 2 |     pub struct Percent(u8);\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Panicking in library code on bad input.** Callers cannot recover. Return `Result`.",
+"**Re-checking the same rule in every function.** Validate once in a type's constructor.",
+"**Bare `unwrap()` on values you \"know\" are fine.** Use `expect` with the reason."
+],
+"keys": [
+"Return `Result` for expected failures; panic for bugs and broken contracts.",
+"`unwrap`/`expect` are fine in tests, prototypes and provably safe cases.",
+"Encode rules in types with private fields and validating constructors.",
+"Once validated, the type carries the guarantee everywhere."
+]
+}
+}

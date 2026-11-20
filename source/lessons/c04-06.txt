@@ -1,0 +1,709 @@
+=== 4.1
+@idea
+**Ownership** is how Rust manages memory without a garbage collector and without manual `free`. Three rules: every value has exactly one **owner** (a variable); there is only one owner at a time; when the owner goes out of scope, the value is **dropped** and its memory freed. The compiler checks these rules at compile time, so they cost nothing at run time.
+
+The rules matter most for data on the **heap**. A `String` is three words on the stack (a pointer, a length and a capacity) pointing at text stored on the heap. If `let s2 = s1;` copied only those three words, both variables would point at the same heap memory and both would try to free it. Rust's answer is the **move**: after `let s2 = s1;`, `s1` is no longer valid, ownership has moved to `s2`, and using `s1` is a compile error. Nothing is copied on the heap; only the three stack words move.
+
+When you really want two independent copies, ask for one with **`.clone()`**, which duplicates the heap data (and is visibly a potentially costly operation). Simple values that live entirely on the stack, like integers, floats, booleans, chars and tuples of them, implement the **`Copy`** trait: assignment copies them and both variables stay usable, because copying a few bytes is cheap and there is nothing to free twice.
+@how
+- One owner per value; the value is dropped when its owner's scope ends.
+- `let b = a;` moves heap-owning types (`String`, `Vec`, `Box`): `a` becomes unusable.
+- `.clone()` makes a deep copy explicitly.
+- `Copy` types (integers, floats, bool, char, tuples/arrays of Copy) are copied, not moved.
+- String literals (`&str`) are references to fixed text, not owned heap strings.
+@example rust: Moves, clones, copies and drops
+struct Noisy(&'static str);
+
+impl Drop for Noisy {
+    fn drop(&mut self) {
+        println!("  dropping {}", self.0);
+    }
+}
+
+fn main() {
+    let s1 = String::from("hello");
+    let s2 = s1;                                  // move: s1 is no longer valid
+    let s3 = s2.clone();                          // deep copy of the heap text
+    println!("s2 = {s2}, s3 = {s3}, same heap data? {}", s2.as_ptr() == s3.as_ptr());
+
+    let x = 5;
+    let y = x;                                    // i32 is Copy: both stay usable
+    println!("x = {x}, y = {y}");
+
+    {
+        let _a = Noisy("inner value");
+        println!("inside the block");
+    }
+    println!("after the block");
+    let _b = Noisy("main's value");
+    println!("end of main");
+}
+@note
+After the move, only `s2` owns the text; the clone has its own heap buffer, which is why the pointers differ. Integers are simply copied. The `Drop` messages show exactly when values are freed: the inner value at the closing brace of its block, and main's value after "end of main".
+@example rust fail: Using a value after it moved
+fn main() {
+    let greeting = String::from("bonjour");
+    let moved = greeting;
+    println!("{greeting}, {moved}");
+}
+@note
+The compiler rejects the use of `greeting` after the move and explains why: `String` does not implement `Copy`, so assignment moved it. It even points at the line where the move happened and suggests `.clone()` if a copy is really needed. This is the compile-time check that makes double frees impossible.
+@mistakes
+- **Cloning everything to silence the compiler.** It works but hides design problems and costs time. Borrow instead (lesson 4.3).
+- **Thinking a move copies data.** Only the small stack part moves; the heap data stays where it is.
+- **Expecting `String` to behave like an integer.** Heap-owning types move; `Copy` types copy.
+@keys
+- Every value has one owner and is dropped when the owner goes out of scope.
+- Assigning a heap-owning value moves it; the old variable becomes invalid.
+- `.clone()` copies deeply and explicitly.
+- `Copy` types (simple stack values) are copied instead of moved.
+
+=== 4.2
+@idea
+Function calls follow the same ownership rules as assignment. Passing a `String` to a function **moves** it into the parameter: the function now owns it, and when the function ends the value is dropped, so the caller can no longer use it. Passing an integer **copies** it, and the caller keeps using its own.
+
+Return values move ownership back out. A function that creates a `String` and returns it hands ownership to the caller; a function can also take ownership, use the value and give it back. That works, but threading every value in and out of functions (`let (s, len) = calculate_length(s);`) quickly becomes clumsy.
+
+The usual solution is **borrowing**, the next lesson: pass a reference so the function can use the value without owning it. Taking ownership is still the right choice when the function genuinely needs to keep the value (storing it in a struct, sending it to another thread) or consume it (turning it into something else). A good guideline when designing functions: borrow (`&T`) to read, borrow mutably (`&mut T`) to modify in place, take by value (`T`) only to keep or consume.
+@how
+- Passing a non-Copy value moves it into the function.
+- Returning a value moves ownership to the caller.
+- `Copy` arguments are copied; the caller keeps its value.
+- Take ownership only to keep or consume; otherwise borrow.
+- The compiler tells you where a value moved if you use it afterwards.
+@example rust: Values moving into and out of functions
+fn take_and_shout(text: String) -> String {
+    text.to_uppercase()                   // consumes `text`, returns a new String
+}
+
+fn make_greeting(name: &str) -> String {
+    format!("Hello, {name}!")             // ownership of the new String goes to the caller
+}
+
+fn double(n: i32) -> i32 {
+    n * 2
+}
+
+fn store(log: &mut Vec<String>, entry: String) {
+    log.push(entry);                      // the Vec now owns the entry
+}
+
+fn main() {
+    let original = String::from("quiet please");
+    let loud = take_and_shout(original);
+    println!("{loud}");
+
+    let greeting = make_greeting("Ada");
+    println!("{greeting} ({} bytes)", greeting.len());
+
+    let n = 21;
+    println!("{} and n is still {n}", double(n));
+
+    let mut log = Vec::new();
+    store(&mut log, greeting);
+    store(&mut log, String::from("second entry"));
+    println!("log: {log:?}");
+}
+@note
+`take_and_shout` consumed its argument, so `original` cannot be used afterwards. `make_greeting` created a String and gave it to the caller. The integer was copied. `store` took ownership of each entry to keep it in the vector, a legitimate reason to take a value by ownership.
+@example rust fail: The caller lost the value
+fn word_count(text: String) -> usize {
+    text.split_whitespace().count()
+}
+
+fn main() {
+    let essay = String::from("Rust moves values into functions");
+    let words = word_count(essay);
+    println!("{words} words in: {essay}");
+}
+@note
+`word_count` only needed to read the text, yet its `String` parameter took ownership, so `essay` was moved and is unusable afterwards. The compiler even suggests changing the parameter to borrow. The fix is `fn word_count(text: &str)` and calling `word_count(&essay)`, exactly the next lesson.
+@mistakes
+- **Taking `String` parameters for read-only functions.** Callers lose their values. Take `&str`.
+- **Returning tuples just to give values back.** Borrow instead.
+- **Forgetting that `store(v)` gives `v` away.** If you need it later, pass a reference or a clone.
+@keys
+- Passing a value to a function moves or copies it, like assignment.
+- Returning a value moves ownership to the caller.
+- Take ownership only when the function keeps or consumes the value.
+- Prefer borrowing for functions that just read or modify.
+
+=== 4.3
+@idea
+A **reference** lets you use a value without owning it. `&s` creates a shared reference (a **borrow**); a function parameter `text: &String` (or better `&str`) receives it, and the caller keeps ownership: nothing is moved and nothing is dropped when the function returns. To modify a borrowed value, use a **mutable reference**, `&mut s`, which requires the variable itself to be `mut`.
+
+The **borrowing rules**, checked at compile time, are what make Rust memory-safe and free of data races: at any moment you can have **either** any number of shared references (`&T`) **or** exactly one mutable reference (`&mut T`), never both; and references must always be **valid**, never outliving the value they point to. "Many readers or one writer" means no part of the program can change data while another part is reading it.
+
+The rules apply to where references are actually used, not to where they are written (this is called non-lexical lifetimes): a shared reference's borrow ends after its last use, so you can create a mutable reference afterwards in the same scope. And because a reference can never outlive its value, **dangling references** are impossible: returning a reference to a local variable is a compile error.
+@how
+- `&value` borrows immutably; `&mut value` borrows mutably (the variable must be `mut`).
+- Many `&T` at once, or one `&mut T`, never both at the same time.
+- A borrow lasts until the reference's last use.
+- Use `*r` to read or write through a reference when needed (`*count += 1`).
+- Functions that only read take `&T`; functions that modify take `&mut T`.
+@example rust: Shared and mutable borrows in practice
+fn longest_word(text: &str) -> usize {
+    text.split_whitespace().map(|w| w.len()).max().unwrap_or(0)
+}
+
+fn add_exclamation(text: &mut String) {
+    text.push('!');
+}
+
+fn bump(counter: &mut u32) {
+    *counter += 1;
+}
+
+fn main() {
+    let mut message = String::from("borrowing is cheap");
+    let r1 = &message;
+    let r2 = &message;
+    println!("{r1} / {r2} / longest word: {}", longest_word(&message));
+    // r1 and r2 are not used after this line, so a mutable borrow is now allowed
+
+    add_exclamation(&mut message);
+    add_exclamation(&mut message);
+    println!("{message}");
+
+    let mut visits = 0;
+    for _ in 0..3 {
+        bump(&mut visits);
+    }
+    println!("visits: {visits}");
+}
+@note
+Two shared references read the string at the same time. Once their last use had passed, the mutable borrows for `add_exclamation` were allowed, and the caller still owns `message` throughout. `*counter += 1` writes through the mutable reference to change the caller's variable.
+@example rust fail: Reading and writing at the same time
+fn main() {
+    let mut scores = vec![10, 20, 30];
+    let first = &scores[0];
+    scores.push(40);
+    println!("first score: {first}");
+}
+@note
+`first` borrows into the vector, then `push` needs a mutable borrow while `first` is still used afterwards. The compiler refuses, and for a real reason: pushing may reallocate the vector's buffer, which would leave `first` pointing at freed memory. Moving the `println!` above the `push` makes it compile.
+@mistakes
+- **Holding a reference while modifying the collection.** Finish using the reference first, or copy the value out.
+- **Trying to return a reference to a local variable.** The value dies at the end of the function. Return the owned value.
+- **Adding `&mut` everywhere.** Use shared references unless you need to modify.
+@keys
+- References borrow without taking ownership.
+- Either many shared references or one mutable reference at a time.
+- Borrows end at their last use.
+- References can never dangle; the compiler guarantees it.
+
+=== 4.4
+@idea
+A **slice** is a reference to a contiguous part of a collection: a view, not a copy. A **string slice**, `&str`, points into some UTF-8 text: `&s[0..5]` refers to the first five bytes of `s`. It is a pointer plus a length, so creating one is free, and because it is a reference, the borrowing rules keep it valid: you cannot clear a `String` while a slice into it is still in use.
+
+String **literals** are slices too: `"hello"` has type `&'static str`, a slice pointing into text baked into the program binary. That is why idiomatic functions take `&str` rather than `&String`: a `&str` parameter accepts literals, whole Strings (via `&s`, thanks to automatic deref coercion) and parts of Strings, while `&String` accepts only the second.
+
+Range syntax mirrors the rest of the language: `&s[..3]`, `&s[2..]`, `&s[..]`. Slice ranges are in **bytes**, and must fall on character boundaries: slicing `"café"` at byte 4 splits the `é` (two bytes) and panics. For text, prefer methods that work in characters or words (`split_whitespace`, `chars`, `find`). Other collections have slices too: `&v[1..3]` on a `Vec<i32>` or an array is a `&[i32]`, and functions that take `&[T]` accept arrays, vectors and parts of them alike.
+@how
+- `&s[a..b]` slices bytes a to b-1; `&s[..b]`, `&s[a..]`, `&s[..]`.
+- Take `&str` parameters, not `&String`; take `&[T]`, not `&Vec<T>`.
+- Literals are `&'static str`.
+- Byte ranges must be on char boundaries; prefer `split_whitespace`, `find`, `chars` for text.
+- A slice keeps its source borrowed until its last use.
+@example rust: first_word and friends with slices
+fn first_word(s: &str) -> &str {
+    s.split_whitespace().next().unwrap_or("")
+}
+
+fn sum(values: &[i32]) -> i32 {
+    values.iter().sum()
+}
+
+fn main() {
+    let owned = String::from("hello wonderful world");
+    println!("{:?} {:?} {:?}", first_word(&owned), first_word("literal works too"), first_word(&owned[6..]));
+    println!("{:?} {:?} {:?}", &owned[..5], &owned[16..], &owned[6..15]);
+
+    let array = [1, 2, 3, 4, 5];
+    let vector = vec![10, 20, 30];
+    println!("{} {} {}", sum(&array), sum(&vector), sum(&array[1..3]));
+
+    let word = "café";
+    println!("{} bytes, {} chars, last char {:?}", word.len(), word.chars().count(), word.chars().last());
+    println!("is byte 4 a char boundary? {}", word.is_char_boundary(4));
+}
+@note
+Because `first_word` takes `&str`, it accepted a whole String, a literal and a part of a String. `sum(&[i32])` likewise works on arrays, vectors and sub-slices. "café" has 5 bytes but 4 characters; byte 4 falls inside the two-byte é, so slicing there would panic.
+@example rust fail: A slice keeps its source borrowed
+fn first_word(s: &str) -> &str {
+    s.split_whitespace().next().unwrap_or("")
+}
+
+fn main() {
+    let mut text = String::from("hello world");
+    let word = first_word(&text);
+    text.clear();
+    println!("the first word was {word}");
+}
+@note
+`word` is a slice pointing into `text`. Clearing the string while `word` is still used would leave it pointing at nothing, so the compiler rejects the program. In languages that return an index instead of a slice, this bug compiles and silently produces wrong results.
+@mistakes
+- **`&String` and `&Vec<T>` parameters.** They reject literals, arrays and sub-slices. Use `&str` and `&[T]`.
+- **Slicing text at arbitrary byte positions.** Non-ASCII characters make it panic. Use char-aware methods.
+- **Returning indexes into a string instead of slices.** The indexes go stale silently; slices are checked.
+@keys
+- Slices are views (pointer + length) into part of a collection.
+- String literals are `&'static str`; `&str` parameters accept every kind of string.
+- String slice ranges are in bytes and must respect char boundaries.
+- Borrowing rules keep slices valid as long as they are used.
+
+=== 5.1
+@idea
+A **struct** groups related values under one name, with a **named field** for each: `struct User { name: String, email: String, active: bool, logins: u64 }`. Create an instance by giving every field a value, in any order, and read or (if the binding is `mut`) change fields with dot notation. Mutability applies to the whole instance; Rust has no per-field `mut`.
+
+Two shortcuts reduce repetition. **Field init shorthand**: when a variable has the same name as a field, write `User { name, email, active: true, logins: 0 }`. **Struct update syntax**: `User { email: new_email, ..other }` takes the remaining fields from another instance; note that this moves any non-Copy fields (like `String`s) out of `other`.
+
+Two other shapes exist. **Tuple structs** have a name but unnamed fields (`struct Rgb(u8, u8, u8);`), useful to give a distinct type to a plain tuple: an `Rgb` and a `Point3(u8, u8, u8)` cannot be mixed up even though their contents match. **Unit-like structs** have no fields at all (`struct AlwaysEqual;`) and are used to implement traits on a type that holds no data. Structs usually **own** their data (`String` rather than `&str`), so an instance is valid for as long as it exists; holding references requires lifetimes (chapter 10).
+@how
+- `struct Name { field: Type, ... }`; create with `Name { field: value, ... }`.
+- Field init shorthand: `Name { field }` when a variable has the same name.
+- Update syntax: `Name { changed: v, ..old }` (moves non-Copy fields from `old`).
+- Tuple structs: `struct Meters(f64);` read with `.0`.
+- Unit-like structs: `struct Marker;`.
+- Own the data (`String`, `Vec`) unless you need references and lifetimes.
+@example rust: Structs in every shape
+#[derive(Debug)]
+struct User {
+    name: String,
+    email: String,
+    active: bool,
+    logins: u64,
+}
+
+fn new_user(name: String, email: String) -> User {
+    User { name, email, active: true, logins: 0 }    // field init shorthand
+}
+
+#[derive(Debug)]
+struct Rgb(u8, u8, u8);
+#[derive(Debug)]
+struct Meters(f64);
+#[derive(Debug)]
+struct Unit;
+
+fn main() {
+    let mut ada = new_user(String::from("Ada"), String::from("ada@example.com"));
+    ada.logins += 3;
+
+    let ben = User { name: String::from("Ben"), email: String::from("ben@example.com"), ..ada };
+    println!("{ben:?}");
+    println!("ada still has her name: {} (logins copied: {})", ada.name, ada.logins);
+
+    let teal = Rgb(0, 128, 128);
+    let height = Meters(1.82);
+    println!("{teal:?} green={} | {height:?} = {} cm | {:?}", teal.1, height.0 * 100.0, Unit);
+}
+@note
+`new_user` used field init shorthand. Ben's instance took `active` and `logins` from Ada through update syntax; those are Copy, so Ada keeps them, and her name and email were not used by the update, so they stay hers too. Tuple structs give names to tuples, and `#[derive(Debug)]` makes every shape printable with `{:?}`.
+@example rust fail: Update syntax moves Strings
+#[derive(Debug)]
+struct Config {
+    host: String,
+    port: u16,
+}
+
+fn main() {
+    let base = Config { host: String::from("localhost"), port: 8080 };
+    let other = Config { port: 9090, ..base };
+    println!("{other:?} and {base:?}");
+}
+@note
+`..base` moved `host`, a String, out of `base`, so `base` can no longer be used as a whole. The compiler explains that a partial move occurred. Cloning the field (`host: base.host.clone()`) or using `..base.clone()` keeps `base` intact.
+@mistakes
+- **Forgetting that update syntax moves non-Copy fields.** The source becomes partially unusable.
+- **Using `&str` fields to avoid allocating.** You then need lifetimes. Own the data with `String` at first.
+- **Plain tuples for meaningful data.** `(f64, f64)` could be anything; a named struct or tuple struct documents itself.
+@keys
+- Structs group named fields; the whole instance is mutable or not.
+- Field init shorthand and update syntax cut repetition (update moves non-Copy fields).
+- Tuple structs give distinct types to tuples; unit structs have no fields.
+- Structs normally own their data.
+
+=== 5.2
+@idea
+The Book's rectangle program shows why structs matter by refactoring the same calculation three times. Version one passes `width` and `height` as two loose parameters: nothing says they belong together. Version two uses a tuple `(u32, u32)`: grouped, but `dims.0` and `dims.1` hide which is which, so swapping them is an easy, silent bug. Version three defines `struct Rectangle { width: u32, height: u32 }` and passes `&Rectangle`: grouped and labelled, and the function signature now reads like the problem.
+
+Printing a struct needs a format. `{}` uses the `Display` trait, which you write by hand when there is a sensible user-facing form. For developers, add `#[derive(Debug)]` and print with `{:?}`, or `{:#?}` for a pretty, multi-line layout.
+
+The **`dbg!`** macro is the debugging companion: `dbg!(expression)` prints the file, line, the expression's source text and its value to standard error, then **returns** the value, so it can wrap part of a larger expression without changing the program (`let area = dbg!(width * 2) * height;`). Pass a reference (`dbg!(&rect)`) when you do not want it to take ownership. Remove `dbg!` calls before committing; that is what `println!` and logging are for.
+@how
+- Group related values in a struct; pass `&Struct` to functions that read them.
+- `#[derive(Debug)]` then `{:?}` or `{:#?}`.
+- Implement `Display` for user-facing output (lesson 10.2 covers traits).
+- `dbg!(expr)` prints file:line, the expression and its value to stderr, and returns the value.
+- `dbg!(&value)` to avoid moving it.
+@example rust: Three versions of the same program
+#[derive(Debug)]
+struct Rectangle {
+    width: u32,
+    height: u32,
+}
+
+fn area_loose(width: u32, height: u32) -> u32 {
+    width * height
+}
+
+fn area_tuple(dims: (u32, u32)) -> u32 {
+    dims.0 * dims.1                           // which one is the width?
+}
+
+fn area(rect: &Rectangle) -> u32 {
+    rect.width * rect.height                  // reads like the problem
+}
+
+fn main() {
+    let (w, h) = (30, 50);
+    let rect = Rectangle { width: 30, height: 50 };
+    println!("{} {} {}", area_loose(w, h), area_tuple((w, h)), area(&rect));
+    println!("{rect:?}");
+    println!("{rect:#?}");
+}
+@note
+All three versions compute 1500, but only the struct version says what the numbers mean, and `area(&rect)` borrows rather than taking the rectangle. `{:?}` prints the debug form on one line; `{:#?}` spreads it over several lines with indentation, easier to read for nested data.
+@example rust: dbg! returns its value
+#[derive(Debug)]
+struct Rectangle {
+    width: u32,
+    height: u32,
+}
+
+fn main() {
+    let scale = 2;
+    let rect = Rectangle {
+        width: dbg!(30 * scale),               // prints and still returns 60
+        height: 50,
+    };
+    dbg!(&rect);                               // borrow: rect stays usable
+    let area = rect.width * rect.height;
+    println!("area = {area}");
+}
+@note
+`dbg!` printed the expression `30 * scale` with its value and returned 60 into the struct field, so the program's behaviour did not change. Debug output goes to standard error with the file and line number, which is why it appears with `[main.rs:...]` prefixes. Passing `&rect` kept ownership in `main`.
+@mistakes
+- **Loose parameters or tuples for related data.** Order mix-ups compile silently. Use a struct.
+- **`dbg!(value)` on a value you still need.** It moves non-Copy values. Use `dbg!(&value)`.
+- **Leaving `dbg!` calls in committed code.** Clippy can warn about them (`clippy::dbg_macro`).
+@keys
+- Structs make related data grouped and labelled; signatures document themselves.
+- `#[derive(Debug)]` with `{:?}` and `{:#?}` prints structs for developers.
+- `dbg!` shows file, line, expression and value, and returns the value.
+- Borrow with `&` when passing structs to functions that only read them.
+
+=== 5.3
+@idea
+**Methods** are functions defined inside an `impl` block for a type, whose first parameter is `self`. They are called with dot syntax (`rect.area()`), and the type of `self` says what the method does with the instance: `&self` borrows it to read (most common), `&mut self` borrows it to modify, and plain `self` takes ownership, consuming the instance (useful when transforming it into something else). Rust automatically adds `&`, `&mut` or `*` at the call site to match, so you always write `rect.area()`.
+
+Methods can take extra parameters after `self`: `rect.can_hold(&other)`. Grouping behaviour with the data in `impl` blocks also organises code: everything you can do with a `Rectangle` is in one place, and other code finds it by typing `rect.` in an editor.
+
+Functions in an `impl` block that do **not** take `self` are **associated functions**, called with `::` on the type: `Rectangle::square(10)`. They are most often **constructors**; by convention `new` is the standard constructor, but descriptive names (`square`, `from_config`, `with_capacity`) are common and clearer. Inside an `impl`, `Self` is an alias for the type. A type can have several `impl` blocks.
+@how
+- `impl Type { fn method(&self) ... }`; call `value.method()`.
+- `&self` to read, `&mut self` to modify, `self` to consume.
+- Extra parameters follow `self`: `fn can_hold(&self, other: &Rectangle) -> bool`.
+- Associated functions (no `self`): `fn new(...) -> Self`, called `Type::new(...)`.
+- `Self` refers to the type inside its `impl`.
+@example rust: Rectangle with methods and constructors
+#[derive(Debug)]
+struct Rectangle {
+    width: u32,
+    height: u32,
+}
+
+impl Rectangle {
+    fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+
+    fn square(size: u32) -> Self {
+        Self::new(size, size)
+    }
+
+    fn area(&self) -> u32 {
+        self.width * self.height
+    }
+
+    fn can_hold(&self, other: &Rectangle) -> bool {
+        self.width > other.width && self.height > other.height
+    }
+
+    fn scale(&mut self, factor: u32) {
+        self.width *= factor;
+        self.height *= factor;
+    }
+
+    fn into_square(self) -> Rectangle {
+        let side = self.width.max(self.height);
+        Rectangle::square(side)
+    }
+}
+
+fn main() {
+    let mut big = Rectangle::new(30, 50);
+    let small = Rectangle::square(10);
+    println!("areas {} and {}; big holds small? {}", big.area(), small.area(), big.can_hold(&small));
+    big.scale(2);
+    println!("after scaling: {big:?}, area {}", big.area());
+    let sq = small.into_square();
+    println!("{sq:?}");
+}
+@note
+`new` and `square` are associated functions called with `::`. `area` and `can_hold` borrow with `&self`, `scale` needs `&mut self` (so `big` is declared `mut`), and `into_square` takes `self` by value, consuming `small`, which cannot be used afterwards. Every call site uses the same dot syntax.
+@example rust fail: Calling a &mut self method on an immutable binding
+struct Counter {
+    count: u32,
+}
+
+impl Counter {
+    fn increment(&mut self) {
+        self.count += 1;
+    }
+}
+
+fn main() {
+    let counter = Counter { count: 0 };
+    counter.increment();
+    println!("{}", counter.count);
+}
+@note
+`increment` takes `&mut self`, which requires a mutable binding, and `counter` was declared without `mut`. The compiler suggests `let mut counter`. The method's signature makes its side effect visible, and the compiler enforces it.
+@mistakes
+- **Taking `self` by value when `&self` would do.** Callers lose the instance after one call.
+- **Using `&mut self` for read-only methods.** It needlessly blocks other borrows.
+- **Constructors that leave fields invalid.** Validate in `new` (or return a `Result`) so instances are always usable.
+@keys
+- Methods live in `impl` blocks and take `self`, `&self` or `&mut self`.
+- Choose `&self` to read, `&mut self` to modify, `self` to consume.
+- Associated functions (no `self`) such as `new` are called with `Type::`.
+- `Self` names the type inside its `impl`.
+
+=== 6.1
+@idea
+An **enum** defines a type by listing its possible **variants**: a value is exactly one of them. `enum IpAddr { V4(u8, u8, u8, u8), V6(String) }` says an address is either a version 4 address holding four bytes or a version 6 address holding a string. Unlike enums in many languages, each Rust variant can carry **its own data**, of different shapes: none, a tuple, or named fields. That makes enums perfect for modelling "one of several kinds of thing", such as messages, commands, events or states.
+
+Enums can have methods in `impl` blocks, just like structs, and they are usually handled with `match` (next lesson), which forces you to deal with every variant.
+
+The most important enum in the standard library is **`Option<T>`**: `Some(value)` or `None`. Rust has **no null**: a value that might be missing has type `Option<T>`, which is a different type from `T`, so the compiler stops you from using it as if it were always present. To get at the inner value you must handle the `None` case, with `match`, `if let`, or methods like `unwrap_or`, `map` and `?`. The billion-dollar mistake of null-pointer errors becomes a compile-time check.
+@how
+- `enum Name { A, B(i32), C { x: i32, y: i32 } }`; create with `Name::B(5)`.
+- Put methods on enums in `impl` blocks.
+- `Option<T>` = `Some(T)` or `None`; no null in safe Rust.
+- Get the value out by handling `None`: `match`, `if let`, `unwrap_or`, `map`.
+- `Option<T>` and `T` are different types; the compiler keeps them apart.
+@example rust: Variants with different data, and Option instead of null
+#[derive(Debug)]
+enum Message {
+    Quit,
+    Move { x: i32, y: i32 },
+    Write(String),
+    ChangeColor(u8, u8, u8),
+}
+
+impl Message {
+    fn describe(&self) -> String {
+        match self {
+            Message::Quit => "quit".to_string(),
+            Message::Move { x, y } => format!("move to ({x}, {y})"),
+            Message::Write(text) => format!("write {text:?}"),
+            Message::ChangeColor(r, g, b) => format!("colour #{r:02x}{g:02x}{b:02x}"),
+        }
+    }
+}
+
+fn find_user(id: u32) -> Option<&'static str> {
+    match id {
+        1 => Some("Ada"),
+        2 => Some("Ben"),
+        _ => None,
+    }
+}
+
+fn main() {
+    let inbox = [Message::Write(String::from("hi")), Message::Move { x: 3, y: -1 }, Message::ChangeColor(0, 128, 255), Message::Quit];
+    for m in &inbox {
+        println!("{}", m.describe());
+    }
+    for id in [1, 7] {
+        let name = find_user(id).unwrap_or("unknown");
+        println!("user {id}: {name} (raw: {:?})", find_user(id));
+    }
+}
+@note
+Each variant holds different data, yet all are one type, so they fit in one array and one method handles them all. `find_user` returns `Option` instead of a null; the caller decides what a missing user means, here with `unwrap_or`.
+@example rust fail: An Option is not the value inside it
+fn main() {
+    let price: Option<u32> = Some(250);
+    let with_tax = price * 115 / 100;
+    println!("{with_tax}");
+}
+@note
+You cannot multiply an `Option<u32>` as if it were a number, because it might be `None`. The compiler refuses until you handle the missing case, for example `price.map(|p| p * 115 / 100)` or `price.unwrap_or(0) * 115 / 100`. This is the check that eliminates null-pointer crashes.
+@mistakes
+- **Separate structs plus a "kind" field.** An enum with data per variant models it directly and safely.
+- **Sentinel values like -1 or "" for "missing".** Use `Option`.
+- **Calling `.unwrap()` everywhere.** It panics on `None`; handle the case or use `unwrap_or`, `?`, `if let`.
+@keys
+- Enums list variants; each variant can carry different data.
+- Enums get methods like structs and are handled with `match`.
+- `Option<T>` replaces null: `Some(value)` or `None`.
+- The compiler forces you to handle `None` before using the value.
+
+=== 6.2
+@idea
+**`match`** compares a value against a series of **patterns** and runs the code of the first arm that matches. Each arm is `pattern => expression`, and the whole `match` is an expression, so it can produce a value. Patterns can be literal values, variable names, wildcards and, most powerfully, enum variants that **bind** the data inside them: `Coin::Quarter(state) => ...` gives you the `state` stored in that variant.
+
+Matching is **exhaustive**: the compiler checks that every possible value is covered and refuses the program otherwise. For enums like `Option` this means you cannot forget the `None` case; for integers or strings, where listing every value is impossible, finish with a **catch-all**: a variable name (`other => ...`) if you need the value, or `_` if you do not. Arms are checked in order, so put specific patterns before general ones (a catch-all first would make the rest unreachable, and the compiler warns).
+
+Arms can have multiple patterns with `|` (`1 | 2 => ...`), ranges (`1..=9`), and **guards**: extra conditions after `if` (`Some(n) if n < 0 => ...`). An arm's expression can be a block `{ ... }` for several lines. Matching on a reference (`match &value`) binds references, leaving the value usable afterwards.
+@how
+- `match value { pattern => expr, ... }`; first matching arm wins.
+- Bind variant data: `Some(x) => ...`, `Shape::Circle { radius } => ...`.
+- Exhaustive: cover every case, or end with `other =>` / `_ =>`.
+- `|` for alternatives, `a..=b` for ranges, `if cond` guards.
+- `match` is an expression: `let label = match n { ... };`.
+@example rust: Binding data, guards and catch-alls
+#[derive(Debug, Clone, Copy)]
+enum Province {
+    Quebec,
+    Ontario,
+    BritishColumbia,
+}
+
+enum Coin {
+    Penny,
+    Nickel,
+    Dime,
+    Quarter(Province),
+}
+
+fn cents(coin: &Coin) -> u32 {
+    match coin {
+        Coin::Penny => 1,
+        Coin::Nickel => 5,
+        Coin::Dime => 10,
+        Coin::Quarter(province) => {
+            println!("  a commemorative quarter from {province:?}!");
+            25
+        }
+    }
+}
+
+fn describe(reading: Option<i32>) -> String {
+    match reading {
+        None => "no reading".to_string(),
+        Some(t) if t < -20 => format!("{t}°: dangerously cold"),
+        Some(t @ -20..=0) => format!("{t}°: freezing"),
+        Some(1 | 2 | 3) => "barely above zero".to_string(),
+        Some(t) => format!("{t}°"),
+    }
+}
+
+fn main() {
+    let purse = [Coin::Quarter(Province::Quebec), Coin::Dime, Coin::Penny, Coin::Quarter(Province::Ontario)];
+    let total: u32 = purse.iter().map(cents).sum();
+    println!("total: {total} cents");
+    for r in [None, Some(-31), Some(-5), Some(2), Some(18)] {
+        println!("{}", describe(r));
+    }
+    let _ = Province::BritishColumbia;
+}
+@note
+The quarter arm bound the province stored in the variant and used a block for two lines. In `describe`, a guard handled extreme cold, `t @ -20..=0` matched a range while binding the value, `1 | 2 | 3` listed alternatives, and the final `Some(t)` caught everything else. Order matters: the guard arm must come before the general one.
+@example rust fail: Forgetting None
+fn label(n: Option<u32>) -> String {
+    match n {
+        Some(0) => "zero".to_string(),
+        Some(x) => format!("{x}"),
+    }
+}
+
+fn main() {
+    println!("{}", label(Some(3)));
+}
+@note
+The compiler lists the missing pattern, `None`, and refuses to compile. Every `match` on an Option, Result or your own enum is checked like this, which is why adding a new variant to an enum safely flags every place in the code that must handle it.
+@mistakes
+- **A catch-all arm first.** Every later arm becomes unreachable. Put specific patterns first.
+- **Using `_` when you will later add variants.** A wildcard silences the compiler's helpful "not covered" errors. Prefer listing variants for your own enums.
+- **Matching an owned value you still need.** Match on a reference (`match &value`).
+@keys
+- `match` tries patterns in order and is an expression.
+- Patterns bind data from enum variants.
+- Matching is exhaustive: cover every case or use a catch-all.
+- `|`, ranges, `@` bindings and `if` guards refine patterns.
+
+=== 6.3
+@idea
+Sometimes you care about just one pattern. Writing a full `match` with a `_ => ()` arm is noisy, so Rust offers **`if let`**: `if let Some(max) = config_max { println!("max is {max}"); }` runs the block only when the pattern matches, binding the value. An `else` branch handles everything else. It is the same pattern matching as `match`, minus the exhaustiveness check, a trade of thoroughness for brevity that suits "do something if present" cases.
+
+**`let ... else`** (let-else) handles the opposite situation: you need a value to continue, and otherwise you want to leave. `let Some(user) = find_user(id) else { return Err("no such user"); };` binds `user` for the **rest of the function** (not just a block, unlike `if let`), and the `else` block must **diverge**: `return`, `break`, `continue` or panic. This keeps the "happy path" un-indented instead of nesting it inside `if let` blocks.
+
+**`while let`** loops as long as a pattern matches, for example popping from a stack until it is empty: `while let Some(top) = stack.pop() { ... }`. Together with `match`, these four forms cover every situation: all cases (`match`), one case (`if let`), required value or leave (`let else`), and repeat while matching (`while let`).
+@how
+- `if let Pattern = value { ... } else { ... }` for one interesting case.
+- `let Pattern = value else { return ...; };` to require a value; the binding lives on after it.
+- The `else` of let-else must diverge: `return`, `break`, `continue`, `panic!`.
+- `while let Some(x) = stack.pop() { ... }` loops until the pattern fails.
+- Use `match` when several cases matter; the compiler checks it exhaustively.
+@example rust: if let, let-else and while let
+use std::collections::HashMap;
+
+fn parse_setting(line: &str) -> Result<(String, u32), String> {
+    let Some((key, value)) = line.split_once('=') else {
+        return Err(format!("{line:?}: expected key=value"));
+    };
+    let Ok(number) = value.trim().parse::<u32>() else {
+        return Err(format!("{line:?}: value is not a number"));
+    };
+    Ok((key.trim().to_string(), number))           // happy path, no nesting
+}
+
+fn main() {
+    let mut settings = HashMap::new();
+    for line in ["width = 80", "height", "depth = deep", "margin=4"] {
+        match parse_setting(line) {
+            Ok((k, v)) => {
+                settings.insert(k, v);
+            }
+            Err(e) => println!("skipped {e}"),
+        }
+    }
+    if let Some(width) = settings.get("width") {
+        println!("width is set to {width}");
+    } else {
+        println!("no width");
+    }
+
+    let mut todo = vec!["write tests", "fix bug", "review PR"];
+    while let Some(task) = todo.pop() {
+        println!("doing: {task}");
+    }
+}
+@note
+In `parse_setting`, each let-else either binds a value for the rest of the function or returns an error, so the success path stays flat. `if let` handled the one case of interest with an `else`. `while let` popped tasks until `pop` returned `None`, which ended the loop.
+@example rust fail: The else of let-else must leave
+fn port(text: &str) -> u16 {
+    let Ok(p) = text.parse::<u16>() else {
+        println!("bad port, using 8080");
+    };
+    p
+}
+
+fn main() {
+    println!("{}", port("80a"));
+}
+@note
+If parsing fails, there is no value for `p`, so the `else` block must not fall through; the compiler requires it to diverge (return, break, continue or panic). Returning the default from inside the `else` (`return 8080;`) fixes it.
+@mistakes
+- **`if let` where several cases matter.** You lose exhaustiveness checking. Use `match`.
+- **Deeply nested `if let` blocks.** Use let-else to keep the happy path flat.
+- **Forgetting that `if let` bindings only live inside the block.** Use let-else when you need the value afterwards.
+@keys
+- `if let` handles one pattern, with an optional `else`.
+- `let ... else` requires a value or diverges; the binding lasts for the rest of the scope.
+- `while let` repeats while a pattern matches.
+- `match` remains the tool when every case matters.

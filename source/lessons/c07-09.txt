@@ -1,0 +1,753 @@
+=== 7.1
+@idea
+Rust code is organised in three layers. A **crate** is the smallest unit the compiler builds: either a **binary crate** (a program with a `main` function) or a **library crate** (code for other crates to use, with no `main`). Each crate has a **crate root**, the source file the compiler starts from: `src/main.rs` for the binary and `src/lib.rs` for the library. A **package** is what `cargo new` creates: a folder with a `Cargo.toml` that describes how to build one or more crates.
+
+The rules are simple. A package can contain at most **one library** crate and any number of **binary** crates. Cargo finds them by convention, no configuration needed: `src/lib.rs` makes the library (named after the package), `src/main.rs` makes a binary with the package's name, and every file in `src/bin/` becomes an additional binary named after the file.
+
+The common professional layout is a **library plus a thin binary**: almost all the logic lives in `src/lib.rs` (and its modules), and `src/main.rs` only parses arguments and calls the library. The library is then easy to test, reuse and document, and the binary refers to it by the package name (`use my_package::run;`) exactly as an outside crate would.
+@how
+- Binary crate root: `src/main.rs`; library crate root: `src/lib.rs`.
+- Extra binaries: `src/bin/name.rs`, run with `cargo run --bin name`.
+- One library, many binaries per package.
+- The binary uses the library by the package name: `use package_name::item;`.
+- Keep logic in the library; keep `main.rs` thin.
+@example bash: One package, a library and two binaries
+$ cargo new --lib toolkit && cd toolkit && mkdir -p src/bin
+$ find src -type f | sort
+src/bin/report.rs
+src/lib.rs
+src/main.rs
+$ cat src/lib.rs
+pub fn word_count(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+$ cat src/main.rs
+fn main() {
+    println!("{}", toolkit::word_count("the main binary uses the library"));
+}
+$ cat src/bin/report.rs
+use toolkit::word_count;
+fn main() {
+    println!("report: {} words", word_count("a second binary, same library"));
+}
+$ cargo run --quiet
+6
+$ cargo run --quiet --bin report
+report: 5 words
+@note
+Cargo discovered three crates from the file layout alone: the library from `lib.rs`, the default binary from `main.rs`, and a second binary from `src/bin/report.rs`. Both binaries call the library by the package name, exactly as an external user would.
+@example rust: A library function and a thin main in one file
+mod toolkit {
+    pub struct Stats {
+        pub words: usize,
+        pub longest: String,
+    }
+
+    pub fn analyse(text: &str) -> Stats {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let longest = words.iter().max_by_key(|w| w.len()).copied().unwrap_or("").to_string();
+        Stats { words: words.len(), longest }
+    }
+}
+
+fn main() {
+    // main only gathers input and prints; the logic lives in the "library" module
+    let text = "packages contain crates and crates contain modules";
+    let stats = toolkit::analyse(text);
+    println!("{} words, longest: {}", stats.words, stats.longest);
+}
+@note
+Here a module stands in for `src/lib.rs` so the example fits in one file, but the shape is the professional one: `analyse` is testable logic with no printing, and `main` only connects input and output. Splitting it into `lib.rs` and `main.rs` changes nothing but the file layout.
+@mistakes
+- **All the logic in `main.rs`.** It cannot be unit-tested from integration tests or reused. Move it to `lib.rs`.
+- **Expecting two libraries in one package.** A package has at most one; use a workspace for more (lesson 14.3).
+- **Referring to the library as `crate::` from main.rs.** In the binary, the library is an external crate: use its package name.
+@keys
+- Crates are compiled units: binaries have `main`, libraries do not.
+- Crate roots: `src/main.rs`, `src/lib.rs`; extra binaries in `src/bin/`.
+- A package has at most one library and any number of binaries.
+- Put logic in the library and keep the binary thin.
+
+=== 7.2
+@idea
+**Modules** organise code inside a crate into a tree of named scopes. `mod front_of_house { ... }` declares a module; modules can nest, and the crate root is the implicit top of the tree, called `crate`. Modules group related code and, just as importantly, control **privacy**.
+
+Everything in Rust is **private by default**: an item (function, struct, enum, module, constant) is visible only inside the module where it is defined and its children. `pub` makes an item visible to the parent module and beyond. That default lets you hide implementation details and change them freely, exposing only a small, deliberate public interface.
+
+Privacy has two details worth remembering. For **structs**, `pub struct` makes the type public but its **fields stay private** unless each is marked `pub`; a struct with private fields can only be created through a public constructor, which is how you guarantee its fields are always valid. For **enums**, `pub enum` makes **all variants** public, because an enum with hidden variants would be unusable. Child modules can see everything in their ancestors (private items included); parents cannot see into children's private items.
+@how
+- `mod name { ... }` declares a module; nest freely.
+- Items are private by default; `pub` exposes them to the parent and beyond.
+- `pub struct` with private fields + a `pub fn new` keeps invariants.
+- `pub enum` exposes all variants.
+- Children see their ancestors' private items; parents don't see children's.
+@example rust: A restaurant module tree with privacy
+mod restaurant {
+    pub mod front_of_house {
+        pub fn add_to_waitlist(name: &str) -> String {
+            format!("{name} added ({})", seat_estimate())
+        }
+        fn seat_estimate() -> &'static str {        // private helper
+            "about 10 minutes"
+        }
+    }
+
+    pub mod back_of_house {
+        pub struct Breakfast {
+            pub toast: String,
+            seasonal_fruit: String,                  // private: chosen by the chef
+        }
+
+        impl Breakfast {
+            pub fn summer(toast: &str) -> Breakfast {
+                Breakfast { toast: String::from(toast), seasonal_fruit: String::from("peaches") }
+            }
+            pub fn describe(&self) -> String {
+                format!("{} toast with {}", self.toast, self.seasonal_fruit)
+            }
+        }
+
+        pub enum Appetizer {
+            Soup,
+            Salad,
+        }
+    }
+}
+
+use restaurant::back_of_house::{Appetizer, Breakfast};
+
+fn main() {
+    println!("{}", restaurant::front_of_house::add_to_waitlist("Ada"));
+    let mut meal = Breakfast::summer("rye");
+    meal.toast = String::from("wheat");               // pub field: allowed
+    println!("{}", meal.describe());
+    for a in [Appetizer::Soup, Appetizer::Salad] {
+        println!("{}", match a { Appetizer::Soup => "soup", Appetizer::Salad => "salad" });
+    }
+}
+@note
+The private helper `seat_estimate` is used inside its module but invisible outside. `Breakfast` is public with one public and one private field, so outside code can change the toast but cannot create a breakfast directly or pick the fruit; it must use `Breakfast::summer`. The enum's variants are public automatically.
+@example rust fail: Touching a private item from outside
+mod bank {
+    pub struct Account {
+        pub owner: String,
+        balance: i64,
+    }
+
+    impl Account {
+        pub fn open(owner: &str) -> Account {
+            Account { owner: owner.to_string(), balance: 0 }
+        }
+    }
+}
+
+fn main() {
+    let mut account = bank::Account::open("Ada");
+    account.balance = 1_000_000;
+    println!("{}", account.owner);
+}
+@note
+`balance` is a private field, so code outside the `bank` module cannot set it, and the compiler says so. That is the point: the only way to change a balance should be through methods that enforce the rules (deposits, withdrawals), and privacy makes that guarantee checkable by the compiler.
+@mistakes
+- **Making everything `pub`.** You lose the ability to change internals. Expose the minimum.
+- **`pub struct` and expecting public fields.** Fields need their own `pub`.
+- **Public fields on types with invariants.** Keep them private and provide methods.
+@keys
+- Modules form a tree rooted at `crate`.
+- Items are private by default; `pub` opens them up.
+- Struct fields have their own privacy; enum variants follow the enum.
+- Private fields plus constructors guarantee valid instances.
+
+=== 7.3
+@idea
+A **path** names an item in the module tree. An **absolute path** starts from the crate root with `crate::` (or from an external crate's name, like `std::`); a **relative path** starts from the current module, using `self::` (optional) or **`super::`** to go up to the parent. Choose absolute paths when code might move independently of what it uses, relative ones for tightly related modules; both are common.
+
+Writing long paths everywhere is tiring, so **`use`** creates a shortcut in the current scope: `use std::collections::HashMap;`. The idiom is to bring **functions** in by their parent module (`use crate::util::files;` then `files::read(...)`), so a call shows where the function comes from, and to bring **structs, enums and traits** in by their full path (`use std::collections::HashMap;`). Rename on import with **`as`** when two names clash (`use std::fmt::Result as FmtResult;`). Group imports with braces and `self`: `use std::io::{self, Write};`.
+
+**`pub use`** re-exports a name: it brings an item into scope and makes it public at the new location. Libraries use this to offer a simple, flat public API (`mylib::Config`) while keeping a deeper internal structure (`mylib::config::loader::Config`). External crates from Cargo.toml are available by name; `std` is always available.
+@how
+- `crate::a::b::f()` absolute; `super::f()` parent; `self::f()` current module.
+- `use path::Item;` creates a shortcut for the current scope only.
+- Functions: import the parent module; types and traits: import the item.
+- `as` renames; `{self, A, B}` groups; `*` glob (mostly for preludes and tests).
+- `pub use` re-exports to build a clean public API.
+@example rust: use, as, super and pub use
+mod shop {
+    pub mod pricing {
+        pub fn with_tax(cents: u32) -> u32 {
+            cents + super::tax::amount(cents)        // relative path to a sibling module
+        }
+    }
+
+    mod tax {
+        pub fn amount(cents: u32) -> u32 {
+            cents * 15 / 100
+        }
+    }
+
+    pub mod model {
+        #[derive(Debug)]
+        pub struct Item {
+            pub name: String,
+            pub cents: u32,
+        }
+    }
+
+    pub use self::model::Item;                       // re-export: shop::Item
+}
+
+use std::fmt::Result as FmtResult;
+use std::fmt::{self, Display};
+use shop::pricing;                                   // functions: import the module
+use shop::Item;                                      // types: import the item (via the re-export)
+
+struct Price(u32);
+
+impl Display for Price {
+    fn fmt(&self, f: &mut fmt::Formatter) -> FmtResult {
+        write!(f, "${}.{:02}", self.0 / 100, self.0 % 100)
+    }
+}
+
+fn main() {
+    let item = Item { name: String::from("teapot"), cents: 2499 };
+    let total = pricing::with_tax(item.cents);
+    println!("{} costs {} with tax", item.name, Price(total));
+    println!("absolute path works too: {}", crate::shop::pricing::with_tax(100));
+}
+@note
+`super::tax::amount` reached a private sibling module from inside `pricing`. `pub use self::model::Item` re-exported the struct so users write `shop::Item` instead of `shop::model::Item`. `as` renamed `fmt::Result` to avoid confusing it with the ordinary `Result`, and `pricing::with_tax` shows where the function lives at the call site.
+@example rust fail: use only applies to its own scope
+mod reports {
+    pub fn total() -> u32 {
+        42
+    }
+}
+
+use reports::total;
+
+mod printing {
+    pub fn show() {
+        println!("{}", total());
+    }
+}
+
+fn main() {
+    printing::show();
+}
+@note
+The `use` at the crate root created a shortcut only for that scope, not for the child module `printing`, so the compiler cannot find `total` there and suggests importing it. Each module needs its own `use` lines, or a path like `super::total()` or `crate::reports::total()`.
+@mistakes
+- **Expecting `use` to apply inside child modules.** Each module has its own scope.
+- **Importing functions directly.** `read()` alone hides its origin; import the module and call `files::read()`.
+- **Exposing a deep internal structure.** Re-export the important types with `pub use`.
+@keys
+- Absolute paths start at `crate::`; relative ones use `self::` and `super::`.
+- `use` creates scope-local shortcuts; `as` renames.
+- Import modules for functions, items for types and traits.
+- `pub use` re-exports to give a library a clean API.
+
+=== 7.4
+@idea
+As a crate grows, modules move out of one big file into their own files. The rule is short: **`mod name;`** (with a semicolon instead of a body) tells the compiler "the contents of this module are in a file". For a module declared in the crate root, the compiler looks for **`src/name.rs`** (or the older style `src/name/mod.rs`). For a nested module `mod hosting;` declared inside `src/front_of_house.rs`, it looks in **`src/front_of_house/hosting.rs`**: the folder is named after the parent module.
+
+Each file is declared **exactly once**, with `mod`, in its parent. `mod` is not an import: it defines where a module sits in the tree. After that, other code refers to it by path and `use`, as before. Forgetting the `mod` line is the classic mistake: the file exists, but the compiler never reads it, and `use crate::name` fails with "unresolved import".
+
+Moving code between files never changes paths: `crate::front_of_house::hosting::add_to_waitlist` is the same whether `hosting` is inline or in a file. So you can start with everything in one file and split it later without touching any calling code. Organise modules by **feature** (orders, billing, users) rather than by kind of thing (models, utils), so a change usually touches one module.
+@how
+- `mod name;` in the parent; contents in `name.rs` next to it.
+- Nested: `src/parent.rs` contains `mod child;`, contents in `src/parent/child.rs`.
+- Declare each module once; use paths and `use` everywhere else.
+- Paths stay the same whether a module is inline or in a file.
+- Organise by feature; keep `lib.rs`/`main.rs` mostly as a list of modules.
+@example bash: From one file to several, same paths
+$ tree src
+src
+├── front_of_house
+│   └── hosting.rs
+├── front_of_house.rs
+└── lib.rs
+$ cat src/lib.rs
+mod front_of_house;                 // contents in src/front_of_house.rs
+
+pub use crate::front_of_house::hosting;
+
+pub fn eat_at_restaurant() -> String {
+    hosting::add_to_waitlist("Ada")
+}
+$ cat src/front_of_house.rs
+pub mod hosting;                    // contents in src/front_of_house/hosting.rs
+$ cat src/front_of_house/hosting.rs
+pub fn add_to_waitlist(name: &str) -> String {
+    format!("{name} is on the waitlist")
+}
+$ cargo test --quiet --doc 2>/dev/null; cargo build --quiet && echo "builds"
+builds
+@note
+Each `mod name;` line points the compiler at a file: `front_of_house.rs` next to `lib.rs`, and `hosting.rs` inside a folder named after its parent. The path `crate::front_of_house::hosting::add_to_waitlist` is identical to the version with everything in one file, so no calling code changed.
+@example rust: The same tree, inline, as the compiler sees it
+mod front_of_house {
+    pub mod hosting {
+        pub fn add_to_waitlist(name: &str) -> String {
+            format!("{name} is on the waitlist")
+        }
+        pub fn seat(name: &str) -> String {
+            format!("{name} is seated")
+        }
+    }
+}
+
+pub use crate::front_of_house::hosting;
+
+pub fn eat_at_restaurant() -> Vec<String> {
+    vec![hosting::add_to_waitlist("Ada"), hosting::seat("Ada")]
+}
+
+fn main() {
+    for line in eat_at_restaurant() {
+        println!("{line}");
+    }
+    println!("full path: {}", crate::front_of_house::hosting::seat("Ben"));
+}
+@note
+This is the exact module tree the multi-file layout produces: replacing each inline `mod name { ... }` with `mod name;` and moving its body to the matching file changes nothing for the compiler or for callers. Splitting files is purely an organisational step.
+@mistakes
+- **Creating `name.rs` but forgetting `mod name;`.** The compiler never reads the file.
+- **Declaring the same file with `mod` in two places.** Declare it once; use paths elsewhere.
+- **Thinking `mod` imports like `use`.** `mod` places a module in the tree; `use` creates shortcuts.
+@keys
+- `mod name;` loads a module's body from `name.rs` (or `name/mod.rs`).
+- Nested modules live in a folder named after their parent.
+- Each module is declared once; paths are unaffected by file layout.
+- Split files when it helps reading; organise by feature.
+
+=== 8.1
+@idea
+**`Vec<T>`** is a growable list of values of one type, stored next to each other on the heap. Create one with `Vec::new()` (an annotation like `Vec<i32>` is needed if nothing is pushed yet) or with the `vec![1, 2, 3]` macro. `push` adds to the end and `pop` removes from the end, returning an `Option` (`None` when empty). The vector must be `mut` to change.
+
+Two ways to read an element: indexing `v[2]` returns the value and **panics** if the index is out of range, while `v.get(2)` returns `Option<&T>`, `None` when out of range. Use indexing when an out-of-range index is a bug, `get` when it can legitimately happen (user input).
+
+Iterate with `for x in &v` (shared references), `for x in &mut v` (mutable references, change each element with `*x += 1`) or `for x in v` (takes ownership, consuming the vector). The borrowing rules apply to vectors as a whole: holding a reference to an element while pushing is refused, because `push` may move the whole buffer to a bigger allocation. To store different types in one vector, wrap them in an **enum** (or use trait objects, chapter 18). When a vector is dropped, all its elements are dropped too.
+@how
+- `Vec::new()`, `vec![...]`, `Vec::with_capacity(n)` if you know the size.
+- `push`, `pop` (returns Option), `insert`, `remove`, `len`, `is_empty`, `contains`, `sort`.
+- `v[i]` panics if out of range; `v.get(i)` returns Option.
+- Iterate: `&v` read, `&mut v` modify (`*x`), `v` consume.
+- An enum lets one Vec hold several kinds of value.
+@example rust: Building, reading and changing a Vec
+#[derive(Debug)]
+enum Cell {
+    Int(i64),
+    Text(String),
+    Empty,
+}
+
+fn main() {
+    let mut scores: Vec<u32> = Vec::new();
+    for s in [72, 95, 88] {
+        scores.push(s);
+    }
+    scores.extend([61, 100]);
+    println!("{scores:?}, len {}", scores.len());
+    println!("third: {}, get(10): {:?}, last: {:?}", scores[2], scores.get(10), scores.last());
+
+    for s in &mut scores {
+        *s = (*s + 5).min(100);                      // curve every score, capped at 100
+    }
+    scores.sort_unstable_by(|a, b| b.cmp(a));
+    println!("curved and sorted: {scores:?}");
+    while let Some(lowest) = scores.pop() {
+        if lowest >= 90 {
+            scores.push(lowest);
+            break;
+        }
+        println!("removed {lowest}");
+    }
+    println!("kept: {scores:?}");
+
+    let row = vec![Cell::Int(42), Cell::Text(String::from("total")), Cell::Empty];
+    for cell in &row {
+        print!("{cell:?}  ");
+    }
+    println!();
+}
+@note
+`&mut scores` gave mutable references, so `*s = ...` changed each element in place. After sorting in descending order, `pop` removed from the end (the lowest scores) until one was 90 or more, which was pushed back. The enum let one vector hold integers, text and empty cells.
+@example rust: Indexing past the end panics; get does not
+fn main() {
+    let queue = vec!["Ada", "Ben", "Cy"];
+    let position = 5;
+    match queue.get(position) {
+        Some(name) => println!("position {position}: {name}"),
+        None => println!("position {position} is empty (only {} waiting)", queue.len()),
+    }
+    println!("now indexing directly...");
+    let name = queue[position];
+    println!("never reached: {name}");
+}
+@note
+`get` returned `None` and the program handled it gracefully. Direct indexing with the same out-of-range position panicked with the length and the index in the message. Choose `get` when a missing element is a normal situation, and indexing when it would indicate a bug.
+@mistakes
+- **Holding `&v[0]` while pushing.** The compiler refuses; take what you need first, or copy the value.
+- **Indexing with untrusted numbers.** Use `get` and handle `None`.
+- **`for x in v` when you still need `v`.** That consumes it; iterate over `&v`.
+@keys
+- `Vec<T>` is a growable, heap-allocated list of one type.
+- `push`/`pop`, indexing (panics) versus `get` (Option).
+- Iterate with `&v`, `&mut v` or `v` depending on what you need.
+- Use an enum to store different kinds of value in one vector.
+
+=== 8.2
+@idea
+Rust has two main string types. **`String`** is an owned, growable, heap-allocated UTF-8 buffer: you can push to it and change it. **`&str`** (a string slice) is a borrowed view into UTF-8 text owned by someone else: a `String`, or text baked into the binary for literals. Functions usually take `&str` and return `String`; `&String` converts to `&str` automatically.
+
+Build strings with `push_str` (append a `&str`), `push` (append a `char`), `format!` (like `println!` but returning a `String`, the most readable way to combine values), or `+`, which takes ownership of its left side: `s1 + &s2` moves `s1` and reuses its buffer. `to_string()`, `String::from` and `.to_owned()` turn a `&str` into a `String`.
+
+A Rust string is a sequence of **UTF-8 bytes**, and characters take 1 to 4 bytes each. That is why **strings cannot be indexed** with `s[0]`: a byte position does not identify a character, and returning one byte of "é" would be wrong. Instead, choose the unit you mean: `.bytes()` for raw bytes, `.chars()` for Unicode scalar values, and for user-perceived characters ("grapheme clusters", like a flag emoji or an accented letter built from two code points) the `unicode-segmentation` crate. `len()` returns the number of **bytes**.
+@how
+- `String::new()`, `String::from("x")`, `"x".to_string()`, `format!(...)`.
+- `push_str(&str)`, `push(char)`, `s1 + &s2` (moves s1), `insert_str`, `replace`, `trim`.
+- `len()` is bytes; `chars().count()` is characters.
+- No `s[i]`; iterate `.chars()` or `.bytes()`; slice with byte ranges on char boundaries.
+- Take `&str` parameters; return `String`.
+@example rust: Building strings and counting the right units
+fn initials(full_name: &str) -> String {
+    full_name.split_whitespace().filter_map(|w| w.chars().next()).flat_map(|c| c.to_uppercase()).collect()
+}
+
+fn main() {
+    let mut log = String::from("start");
+    log.push_str(", step 1");
+    log.push('!');
+    let first = String::from("tic");
+    let both = first + "-" + "tac";                  // `first` moved into `both`
+    let menu = format!("{} | {} | {}", log, both, initials("élodie de la roche"));
+    println!("{menu}");
+
+    for word in ["cafe", "café", "naïve", "🦀rust", "日本"] {
+        println!("{word:8} bytes={:2} chars={} first char={:?}", word.len(), word.chars().count(), word.chars().next().unwrap());
+    }
+
+    let city = "Montréal";
+    println!("bytes of 'é': {:?}", "é".bytes().collect::<Vec<u8>>());
+    println!("reversed: {}", city.chars().rev().collect::<String>());
+    println!("upper: {}, contains \"réa\": {}, replaced: {}", city.to_uppercase(), city.contains("réa"), city.replace("é", "e"));
+}
+@note
+`+` moved `first` and reused its buffer, and `format!` combined everything readably without moving anything. The table shows why indexing is refused: "café" is 5 bytes but 4 characters, the crab takes 4 bytes, and each Japanese character 3. Character-aware methods (`chars`, `to_uppercase`, `replace`) handle UTF-8 correctly.
+@example rust fail: Strings cannot be indexed by position
+fn main() {
+    let greeting = String::from("hello");
+    let first = greeting[0];
+    println!("{first}");
+}
+@note
+The compiler refuses `greeting[0]` and explains that `String` cannot be indexed by an integer. Because characters can span several bytes, there is no single correct answer, so Rust makes you choose: `greeting.chars().next()` for the first character, `greeting.as_bytes()[0]` for the first byte, or `&greeting[0..1]` for a slice of the first byte.
+@mistakes
+- **Assuming `len()` counts characters.** It counts bytes. Use `.chars().count()`.
+- **Slicing text at a byte position.** A position inside a multi-byte character panics.
+- **Using `+` in loops.** Use `push_str` or collect into a String; `format!` for combinations.
+@keys
+- `String` owns growable UTF-8 text; `&str` borrows it.
+- Build with `push_str`, `push`, `+` (moves the left side) and `format!`.
+- Strings are UTF-8 bytes: no integer indexing, `len()` is in bytes.
+- Choose `.chars()` or `.bytes()` to iterate in the unit you mean.
+
+=== 8.3
+@idea
+**`HashMap<K, V>`** stores values by key, with fast lookup, insertion and removal (average constant time). Create one with `HashMap::new()` (it is not in the prelude: `use std::collections::HashMap;`), add with `insert`, and read with `get`, which returns `Option<&V>` because the key might be missing. Iterating gives `(key, value)` pairs in an **arbitrary order** that can differ between runs; sort the keys (or use a `BTreeMap`) when order matters.
+
+Ownership applies: inserting a `String` key or value **moves** it into the map, while `Copy` values are copied. `insert` on an existing key **overwrites** the old value and returns it.
+
+The **entry API** handles the common "update or insert" pattern in one lookup. `map.entry(key).or_insert(default)` returns a mutable reference to the value, inserting the default first if the key was missing. Word counting becomes `*counts.entry(word).or_insert(0) += 1;`. Variants: `or_insert_with(|| expensive())` computes the default only when needed, `or_default()` uses the type's default, and `and_modify(|v| ...)` changes an existing value. Keys must implement `Eq` and `Hash`: strings, integers, tuples of them, and your own types with `#[derive(PartialEq, Eq, Hash)]`.
+@how
+- `use std::collections::HashMap;` `let mut m = HashMap::new();`.
+- `insert(k, v)` (returns the old value), `get(&k)` → Option, `contains_key`, `remove`.
+- Iterate `for (k, v) in &m`: order is arbitrary; sort for stable output.
+- Entry API: `*m.entry(k).or_insert(0) += 1`, `.or_default()`, `.and_modify(...)`.
+- Keys need `Eq + Hash`; inserted Strings are moved in.
+@example rust: Word counts with entry, sorted for stable output
+use std::collections::HashMap;
+
+fn main() {
+    let text = "the quick brown fox jumps over the lazy dog the end";
+    let mut counts: HashMap<&str, u32> = HashMap::new();
+    for word in text.split_whitespace() {
+        *counts.entry(word).or_insert(0) += 1;
+    }
+    let mut by_count: Vec<(&str, u32)> = counts.into_iter().collect();
+    by_count.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    println!("top three: {:?}", &by_count[..3]);
+
+    let mut stock: HashMap<String, u32> = HashMap::new();
+    stock.insert(String::from("tea"), 10);
+    let old = stock.insert(String::from("tea"), 12);
+    println!("overwrote tea: old value {old:?}");
+    stock.entry(String::from("tea")).and_modify(|n| *n -= 2).or_insert(0);
+    stock.entry(String::from("cake")).and_modify(|n| *n -= 2).or_insert(5);
+    let mut items: Vec<_> = stock.iter().collect();
+    items.sort();
+    println!("stock: {items:?}");
+    println!("scones: {:?}, tea: {:?}", stock.get("scones"), stock.get("tea"));
+
+    let mut groups: HashMap<char, Vec<&str>> = HashMap::new();
+    for name in ["ada", "ben", "alan", "bea", "cy"] {
+        groups.entry(name.chars().next().unwrap()).or_default().push(name);
+    }
+    let mut keys: Vec<_> = groups.keys().copied().collect();
+    keys.sort();
+    for k in keys {
+        println!("{k}: {:?}", groups[&k]);
+    }
+}
+@note
+The entry API inserted 0 for new words and incremented in a single lookup. Results were collected and sorted before printing, because HashMap iteration order is arbitrary. `insert` on an existing key returned the old value; `and_modify` changed tea, while cake did not exist so `or_insert` added it. `or_default` created an empty Vec for each new initial.
+@example rust fail: The map owns what you insert
+use std::collections::HashMap;
+
+fn main() {
+    let mut capitals = HashMap::new();
+    let country = String::from("Canada");
+    let city = String::from("Ottawa");
+    capitals.insert(country, city);
+    println!("{country}: {:?}", capitals.get("Canada"));
+}
+@note
+`insert` moved both Strings into the map, so `country` can no longer be used, and the compiler points at the move. Inserting clones, inserting references (`&str` keys that live long enough), or reading the key back from the map are the usual fixes.
+@mistakes
+- **Relying on HashMap iteration order.** It is arbitrary and changes between runs. Sort, or use BTreeMap.
+- **`if map.contains_key(k) { ... } else { insert }`.** Two lookups and clumsy code. Use the entry API.
+- **Expecting to use a String after inserting it.** The map took ownership.
+@keys
+- `HashMap<K, V>` maps keys to values with fast average lookups.
+- `get` returns an Option; `insert` overwrites and returns the old value.
+- The entry API updates or inserts in one lookup.
+- Iteration order is arbitrary; inserted owned values move into the map.
+
+=== 9.1
+@idea
+Rust divides errors into two kinds. **Recoverable** errors, like a missing file or bad input, are expected possibilities and are returned as values with `Result` (next lesson). **Unrecoverable** errors are bugs: a condition that should be impossible, such as an index past the end or a broken invariant. For those, the program **panics**.
+
+A panic happens when you call `panic!("message")` or when code you call panics: indexing out of bounds, `unwrap()` on `None` or `Err`, integer overflow in debug builds, division by zero. By default the panicking thread **unwinds**: it walks back up the stack, running destructors (`Drop`) so resources are released, prints the message with the file and line, and ends. A panic in `main`'s thread ends the program with a non-zero exit code.
+
+To see how the program got there, run with **`RUST_BACKTRACE=1`**: the backtrace lists the chain of function calls, most recent first; look for the first lines that are in your own code. For smaller binaries, a release profile can switch to `panic = "abort"` in `Cargo.toml`, which ends the process immediately without unwinding. Panics are not exceptions to be caught for control flow; they signal bugs to fix.
+@how
+- `panic!("msg {x}")` for impossible states; `unreachable!()`, `todo!()`, `unimplemented!()` are variants.
+- Common hidden panics: `v[i]`, `unwrap`, `expect`, overflow in debug, divide by zero.
+- `RUST_BACKTRACE=1 cargo run` shows the call chain; read from the top for your own frames.
+- Unwinding runs `Drop` code; `panic = "abort"` in `[profile.release]` skips it.
+- Use `Result` for expected failures; panic for bugs.
+@example rust: A panic unwinds and runs destructors
+struct TempFile(&'static str);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        println!("cleanup: removing {}", self.0);
+    }
+}
+
+fn average(values: &[u32]) -> u32 {
+    if values.is_empty() {
+        panic!("average() called with no values; the caller must check first");
+    }
+    values.iter().sum::<u32>() / values.len() as u32
+}
+
+fn main() {
+    let _tmp = TempFile("/tmp/report.part");
+    println!("average of [3, 4, 8] = {}", average(&[3, 4, 8]));
+    let readings: Vec<u32> = Vec::new();
+    println!("average of nothing = {}", average(&readings));
+    println!("never printed");
+}
+@note
+The second call broke the function's precondition, so it panicked with a message explaining whose mistake it was, including the file and line. As the panic unwound out of `main`, the `TempFile` destructor still ran its cleanup, which is what unwinding guarantees. The last line never ran.
+@example rust: Panics hiding in everyday operations, caught to inspect them
+use std::panic;
+
+fn show(label: &str, f: impl FnOnce() + panic::UnwindSafe) {
+    println!("{label}:");
+    let _ = panic::catch_unwind(f);
+}
+
+fn main() {
+    panic::set_hook(Box::new(|info| {
+        let msg = info.payload().downcast_ref::<String>().cloned()
+            .or_else(|| info.payload().downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        println!("  panic: {msg}");
+    }));
+    let empty: Vec<i32> = vec![];
+    show("index past the end", move || { let _ = empty[0]; });
+    show("unwrap on None", || { let _: i32 = None.unwrap(); });
+    show("expect on Err", || { "x".parse::<i32>().expect("config value must be a number"); });
+    show("divide by zero", || { let d = "0".parse::<i32>().unwrap(); let _ = 10 / d; });
+}
+@note
+Each of these common operations panics on bad data. `catch_unwind` and a custom hook are used here only to show all four messages in one run; real programs should not catch panics for control flow. Notice how `expect` puts your own explanation in front of the error, which makes it far more useful than a bare `unwrap`.
+@mistakes
+- **Panicking on expected failures** like missing files or bad input. Return a `Result`.
+- **`unwrap()` without thought.** When it fails the message is generic. Use `expect("why this can't fail")` or handle the error.
+- **Using `catch_unwind` as try/catch.** Panics are for bugs, not for control flow.
+@keys
+- Panics signal bugs: unrecoverable, impossible states.
+- Unwinding runs destructors; the message shows the file and line.
+- `RUST_BACKTRACE=1` shows the call chain.
+- Expected failures belong in `Result`, not panics.
+
+=== 9.2
+@idea
+**`Result<T, E>`** is the enum for operations that can fail: `Ok(value)` on success, `Err(error)` on failure. Functions like `File::open` and `str::parse` return it, and because it is a type, the compiler makes sure callers deal with it; you cannot accidentally use a `Result` as if it were the value inside.
+
+Handle it with `match`, matching `Ok` and `Err`, and even different **kinds** of error (`ErrorKind::NotFound` versus permission problems). Shortcuts: `unwrap()` returns the value or panics; `expect("message")` does the same with your message (prefer it); `unwrap_or(default)` and `unwrap_or_else(|e| ...)` substitute a value; `map` and `map_err` transform the success or error value.
+
+The **`?` operator** is the workhorse for **propagating** errors. Placed after an expression returning `Result`, it gives the `Ok` value, or immediately returns the `Err` from the current function. That function must itself return a `Result` (or `Option`, for `?` on Options) with a compatible error type: `?` converts the error with `From` if needed. A chain of fallible steps then reads as a straight line: `let text = fs::read_to_string(path)?; let n: u32 = text.trim().parse()?;`. `main` can return `Result<(), Box<dyn Error>>` so `?` works there too.
+@how
+- `match result { Ok(v) => ..., Err(e) => ... }`; inspect `e.kind()` for io errors.
+- `expect("why")` over `unwrap()`; `unwrap_or`, `unwrap_or_else`, `map`, `map_err`.
+- `value?` returns early with the error; the function must return `Result`/`Option`.
+- `?` converts error types via `From`; `Box<dyn Error>` accepts any error.
+- `fn main() -> Result<(), Box<dyn std::error::Error>>` to use `?` in main.
+@example rust: Reading a number from a file, three ways
+use std::error::Error;
+use std::fs;
+use std::io::ErrorKind;
+
+fn read_limit_match(path: &str) -> u32 {
+    match fs::read_to_string(path) {
+        Ok(text) => match text.trim().parse() {
+            Ok(n) => n,
+            Err(e) => {
+                println!("  bad number in {path}: {e}");
+                0
+            }
+        },
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            println!("  {path} not found, using the default");
+            100
+        }
+        Err(e) => panic!("cannot read {path}: {e}"),
+    }
+}
+
+fn read_limit(path: &str) -> Result<u32, Box<dyn Error>> {
+    let text = fs::read_to_string(path)?;          // io::Error -> Box<dyn Error>
+    let limit = text.trim().parse::<u32>()?;       // ParseIntError -> Box<dyn Error>
+    Ok(limit)
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    fs::write("good.txt", "250\n")?;
+    fs::write("bad.txt", "lots\n")?;
+    for path in ["good.txt", "bad.txt", "missing.txt"] {
+        println!("match: {path} -> {}", read_limit_match(path));
+    }
+    for path in ["good.txt", "bad.txt", "missing.txt"] {
+        match read_limit(path) {
+            Ok(n) => println!("?:     {path} -> {n}"),
+            Err(e) => println!("?:     {path} -> error: {e}"),
+        }
+    }
+    let quick = read_limit("missing.txt").unwrap_or(100);
+    println!("unwrap_or: {quick}");
+    Ok(())
+}
+@note
+The `match` version distinguishes a missing file (use a default) from a bad number and from other I/O errors. The `?` version is two straight lines: each failure returns early, converted into `Box<dyn Error>`, and the caller decides what to do. `main` itself returns a `Result`, so the setup writes can use `?` as well.
+@example rust fail: ? needs a function that returns Result
+use std::fs;
+
+fn main() {
+    let text = fs::read_to_string("settings.toml")?;
+    println!("{text}");
+}
+@note
+`?` returns the error early, but this `main` returns `()`, so there is nowhere to send it; the compiler explains and suggests changing the return type. Declaring `fn main() -> Result<(), Box<dyn std::error::Error>>` (and ending with `Ok(())`) makes it compile.
+@mistakes
+- **`unwrap()` on every Result.** Programs crash on ordinary problems. Propagate with `?` or handle the error.
+- **Matching deeply nested Results.** `?` keeps the code flat.
+- **Swallowing errors with `unwrap_or_default()` silently.** At least log what went wrong.
+@keys
+- `Result<T, E>` is `Ok(value)` or `Err(error)`, checked by the compiler.
+- `match` handles specific error kinds; `expect`, `unwrap_or`, `map_err` are shortcuts.
+- `?` propagates errors, converting them with `From`.
+- `main` can return `Result` so `?` works everywhere.
+
+=== 9.3
+@idea
+When should code panic and when should it return a `Result`? The default for a function that can fail is **`Result`**: it lets the caller decide, and callers know their situation better than you do. Panicking is appropriate when continuing would be wrong or dangerous: a **bug** in the program (a broken invariant, an impossible state), a violated **contract** that the caller was told about (like indexing past the end), or bad state that code cannot recover from.
+
+`unwrap` and `expect` are acceptable in a few places: examples and prototypes, tests (a panic is a test failure), and when you have information the compiler lacks, such as parsing a hard-coded valid IP address. In that last case, `expect` should explain why it cannot fail: `"127.0.0.1".parse::<IpAddr>().expect("hard-coded address is valid")`.
+
+The best tool is often to **encode rules in types**. Instead of checking "is this a number from 1 to 100?" in every function, create a `Guess` type whose constructor validates once (returning a `Result`, or panicking if out-of-range values are a programming error), with a private field so no other code can create an invalid one. Every function that takes a `Guess` then knows the value is valid, and the check is never forgotten or duplicated. This "parse, don't validate" approach is one of the most powerful habits in Rust.
+@how
+- Return `Result` for failures the caller can expect or handle.
+- Panic for bugs, broken invariants and violated documented contracts.
+- `expect("reason it can't fail")` for values you know are valid.
+- Validate once in a constructor; keep the field private; pass the type around.
+- Document panics in a `# Panics` section of the doc comment.
+@example rust: A type that can only hold valid values
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Percent(u8);                              // private field: only `new` can build one
+
+#[derive(Debug, PartialEq)]
+pub enum PercentError {
+    TooLarge(u32),
+    NotANumber(String),
+}
+
+impl Percent {
+    pub fn new(value: u32) -> Result<Percent, PercentError> {
+        if value > 100 {
+            return Err(PercentError::TooLarge(value));
+        }
+        Ok(Percent(value as u8))
+    }
+
+    pub fn parse(text: &str) -> Result<Percent, PercentError> {
+        let n = text.trim().trim_end_matches('%').parse::<u32>().map_err(|_| PercentError::NotANumber(text.to_string()))?;
+        Percent::new(n)
+    }
+
+    pub fn of(self, amount: f64) -> f64 {
+        amount * self.0 as f64 / 100.0               // no check needed: always 0..=100
+    }
+}
+
+fn main() {
+    for input in ["15%", "100", "250", "lots"] {
+        match Percent::parse(input) {
+            Ok(p) => println!("{input:>5} -> {p:?}; tip on 84.50 = {:.2}", p.of(84.50)),
+            Err(e) => println!("{input:>5} -> rejected: {e:?}"),
+        }
+    }
+    let localhost: std::net::IpAddr = "127.0.0.1".parse().expect("hard-coded address is valid");
+    println!("{localhost}");
+}
+@note
+Validation happens once, in `new`; because the field is private, every `Percent` in the program is guaranteed to be between 0 and 100, so `of` needs no checks. Invalid input becomes a descriptive error instead of a panic. The `expect` on a hard-coded address documents why it cannot fail.
+@example rust fail: The private field cannot be bypassed
+mod money {
+    pub struct Percent(u8);
+    impl Percent {
+        pub fn new(v: u8) -> Option<Percent> {
+            (v <= 100).then_some(Percent(v))
+        }
+    }
+}
+
+fn main() {
+    let bogus = money::Percent(250);
+    let _ = bogus;
+}
+@note
+Outside its module, the tuple struct's private field means `Percent(250)` cannot be written at all; the compiler reports the private field. The only way in is `Percent::new`, which validates. That is how a type makes invalid states unrepresentable.
+@mistakes
+- **Panicking in library code on bad input.** Callers cannot recover. Return `Result`.
+- **Re-checking the same rule in every function.** Validate once in a type's constructor.
+- **Bare `unwrap()` on values you "know" are fine.** Use `expect` with the reason.
+@keys
+- Return `Result` for expected failures; panic for bugs and broken contracts.
+- `unwrap`/`expect` are fine in tests, prototypes and provably safe cases.
+- Encode rules in types with private fields and validating constructors.
+- Once validated, the type carries the guarantee everywhere.
