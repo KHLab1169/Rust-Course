@@ -1,0 +1,1078 @@
+=== A1.1
+@idea
+Teams choose Rust for a specific combination: **memory safety without a garbage collector**, performance on par with C and C++, **fearless concurrency** (data races are compile errors), and first-class tooling. Use-after-free, double free, null dereferences and buffer overflows, which cause a large share of security vulnerabilities in C and C++ code, are ruled out at compile time in safe Rust. That is why Rust shows up in operating systems, browsers, cloud infrastructure, command-line tools, embedded devices and WebAssembly.
+
+The trade-off is a steeper learning curve and slower compile times: the compiler asks you to make ownership and error handling explicit up front. In exchange, refactoring is safer, and "if it compiles, it usually works" becomes a practical experience rather than a slogan.
+
+A professional setup is the same everywhere: **rustup** for toolchains, **cargo** for building and dependencies, **rust-analyzer** in the editor, **rustfmt** for formatting (`cargo fmt`), **Clippy** for lints (`cargo clippy -- -D warnings` in CI), and `cargo test` and `cargo doc`. Add `cargo-watch` or `bacon` to re-check on every save, and `cargo audit` or `cargo deny` to check dependencies for known vulnerabilities and licences.
+@how
+- Install with rustup; editor with rust-analyzer.
+- `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`, `cargo doc --open` daily.
+- `cargo check` (or `bacon`/`cargo watch`) for instant feedback.
+- `cargo audit` / `cargo deny` for dependency vulnerabilities and licences.
+- CI runs fmt check, clippy and tests on every push.
+@example bash: Clippy and rustfmt catching real problems
+$ cat src/main.rs
+fn total(prices: &Vec<f64>) -> f64 {
+    let mut sum = 0.0;
+    for i in 0..prices.len() { sum = sum + prices[i]; }
+    return sum;
+}
+fn main() { println!("{}", total(&vec![1.5, 2.5])); }
+$ cargo clippy --quiet
+warning: writing `&Vec` instead of `&[_]` involves a new object where a slice will do
+ --> src/main.rs:1:18
+  |
+1 | fn total(prices: &Vec<f64>) -> f64 {
+  |                  ^^^^^^^^^ help: change this to: `&[f64]`
+warning: the loop variable `i` is only used to index `prices`
+ --> src/main.rs:3:14
+warning: manual implementation of an assign operation
+ --> src/main.rs:3:32
+  |
+3 |     for i in 0..prices.len() { sum = sum + prices[i]; }
+  |                                ^^^^^^^^^^^^^^^^^^^^^ help: replace it with: `sum += prices[i]`
+warning: unneeded `return` statement
+ --> src/main.rs:4:5
+$ cargo fmt && cargo clippy --fix --allow-dirty --quiet && cat src/main.rs
+fn total(prices: &[f64]) -> f64 {
+    let mut sum = 0.0;
+    for price in prices {
+        sum += price;
+    }
+    sum
+}
+fn main() {
+    println!("{}", total(&vec![1.5, 2.5]));
+}
+@note
+Clippy flagged four non-idiomatic patterns, each with a suggested fix, and `cargo clippy --fix` applied them while `cargo fmt` normalised the layout. Running both in CI (with `-D warnings` to fail on any lint) keeps a codebase consistent without arguments in review. Output abridged from a real run.
+@example rust: The same function, idiomatic, and why it matters
+fn total(prices: &[f64]) -> f64 {
+    prices.iter().sum()
+}
+
+fn main() {
+    let from_vec = vec![1.5, 2.5, 6.0];
+    let from_array = [10.0, 20.0];
+    println!("{} {} {}", total(&from_vec), total(&from_array), total(&from_vec[1..]));
+    println!("empty: {}", total(&[]));
+}
+@note
+Taking `&[f64]` instead of `&Vec<f64>` lets the function accept vectors, arrays and sub-slices, and `iter().sum()` replaces the manual index loop with no bounds checks to get wrong. The "-0" for an empty slice is a floating-point quirk: float sums start from negative zero, so that summing only negative zeros stays negative. These are exactly the changes Clippy suggested, and they make the API more useful as well as more idiomatic.
+@mistakes
+- **Skipping Clippy.** It catches bugs and teaches idioms; run it in CI with `-D warnings`.
+- **Fighting the borrow checker with clones everywhere.** Learn the ownership patterns instead (module A03).
+- **Judging Rust by compile errors in week one.** The errors are the safety checks other languages skip.
+@keys
+- Rust offers memory safety without GC, C-like speed and compile-time data-race freedom.
+- The cost is a learning curve and longer compiles.
+- Daily tools: cargo, rust-analyzer, rustfmt, Clippy, cargo test/doc.
+- Audit dependencies and enforce fmt and Clippy in CI.
+
+=== A1.2
+@idea
+This self-test runs through the core of the language in one program, so you can spot gaps quickly. **Bindings** are immutable unless `mut`; shadowing creates new bindings. **Types** are inferred locally but always explicit in function signatures; integers don't convert implicitly. **Expressions** produce values, including blocks, `if` and `match`; the last expression without a semicolon is a block's value.
+
+**Ownership**: every value has one owner; assigning or passing a heap-owning value moves it; `Copy` types are copied; `.clone()` is explicit. **Borrowing**: `&T` many at once or `&mut T` alone, and references never outlive their data. **Slices** (`&str`, `&[T]`) borrow parts of collections, and idiomatic functions take them as parameters. **Errors**: `Option` for absence, `Result` for failure, `?` to propagate, panics only for bugs.
+
+If any line of the example surprises you, or any of the compile errors below are not immediately clear, revisit the matching chapter of Track 1 before continuing: everything in Track 2 builds on these rules being second nature.
+@how
+- Immutable by default; `mut` when needed; shadow to transform.
+- Signatures are explicit; no implicit numeric conversion.
+- Moves for heap types, copies for `Copy` types, clones explicit.
+- Borrow with `&`/`&mut`; take `&str`/`&[T]` parameters.
+- `Option`/`Result` with `?`; panic only on bugs.
+@example rust: Everything in one small program
+use std::collections::HashMap;
+
+fn parse_line(line: &str) -> Result<(&str, u32), String> {
+    let (name, score) = line.split_once(':').ok_or(format!("missing ':' in {line:?}"))?;
+    let score = score.trim().parse::<u32>().map_err(|e| format!("{name}: {e}"))?;
+    Ok((name.trim(), score))
+}
+
+fn best<'a>(scores: &'a HashMap<&str, u32>) -> Option<(&'a str, u32)> {
+    scores.iter().max_by_key(|(_, s)| **s).map(|(n, s)| (*n, *s))
+}
+
+fn main() {
+    let input = String::from("ada: 91\nben: 78\ncy oops\nada: 95\ndee: x");
+    let mut scores: HashMap<&str, u32> = HashMap::new();
+    let mut errors = Vec::new();
+    for line in input.lines() {
+        match parse_line(line) {
+            Ok((name, score)) => {
+                let entry = scores.entry(name).or_insert(0);
+                *entry = (*entry).max(score);
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    let label = if errors.is_empty() { "clean" } else { "with problems" };
+    println!("parsed {} people {label}: {errors:?}", scores.len());
+    if let Some((name, score)) = best(&scores) {
+        println!("best: {name} with {score}");
+    }
+    let total: u32 = scores.values().sum();
+    let average = total as f64 / scores.len() as f64;
+    println!("average best score: {average:.1}");
+}
+@note
+The program touches every core idea: borrowing slices of `input` as map keys, `?` with `ok_or` and `map_err` for errors, `entry` with a mutable reference, `if` as an expression, a lifetime tying the result of `best` to the map, and an explicit conversion before dividing. Bad lines become errors instead of crashes.
+@example rust fail: Three classic mistakes in one function
+fn longest_name(names: Vec<String>) -> &str {
+    let mut best = names[0];
+    for n in names {
+        if n.len() > best.len() {
+            best = n;
+        }
+    }
+    &best
+}
+
+fn main() {}
+@note
+The compiler stops at the first problem: the return type `&str` has no input reference to borrow from, so it asks for a lifetime. Underneath are two more: `names[0]` tries to move a String out of a vector, and returning `&best` would point at a local that dies. The idiomatic version takes `&[String]` and returns `Option<&str>`.
+@mistakes
+- **Taking `Vec<String>` by value just to read it.** Take `&[String]` or `&[&str]`.
+- **Moving out of a vector with indexing.** Borrow (`&names[0]`) or clone.
+- **Returning references to locals.** Return owned values, or borrow from an input.
+@keys
+- Immutability, explicit signatures and expression-oriented code.
+- Ownership and moves; borrowing rules; slices as parameters.
+- `Option`, `Result` and `?` for absence and failure.
+- If the self-test surprises you, revisit Track 1 first.
+
+=== A1.3
+@idea
+Structs and enums together model a domain precisely. **Structs** group fields that always exist together ("a product has a name and a price"). **Enums** model alternatives ("a payment is cash, card or gift card"), and each variant carries exactly the data that case needs, so impossible combinations (a card payment without a card number) cannot be represented. Recursive enums (with `Box`) model trees such as expressions, file systems or JSON values.
+
+**`match`** handles every variant, and exhaustiveness checking makes enums safe to extend: add a variant and the compiler lists every `match` that must handle it. Methods in `impl` blocks keep behaviour next to the data, and returning `Result` from operations that can fail (division by zero, unknown variables) keeps the model honest.
+
+The example builds a tiny **expression evaluator**: `Expr` is an enum with number, variable and operation variants; evaluation is a recursive `match`. It is a classic exercise because it combines recursion, Box, pattern matching with nested destructuring, error handling and `Display` in under fifty lines.
+@how
+- Struct for "all of these"; enum for "one of these", with per-variant data.
+- Recursive enums need `Box` (or `Vec`, `Rc`) for indirection.
+- `match` exhaustively; avoid `_` on your own enums so new variants are flagged.
+- Methods return `Result` for failures; implement `Display` for user output.
+- Make illegal states unrepresentable.
+@example rust: A tiny expression evaluator
+use std::collections::HashMap;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+enum Expr {
+    Num(f64),
+    Var(String),
+    Add(Box<Expr>, Box<Expr>),
+    Mul(Box<Expr>, Box<Expr>),
+    Div(Box<Expr>, Box<Expr>),
+}
+
+use Expr::*;
+
+#[derive(Debug, PartialEq)]
+enum EvalError {
+    UnknownVariable(String),
+    DivisionByZero,
+}
+
+impl Expr {
+    fn eval(&self, env: &HashMap<&str, f64>) -> Result<f64, EvalError> {
+        Ok(match self {
+            Num(n) => *n,
+            Var(name) => *env.get(name.as_str()).ok_or_else(|| EvalError::UnknownVariable(name.clone()))?,
+            Add(a, b) => a.eval(env)? + b.eval(env)?,
+            Mul(a, b) => a.eval(env)? * b.eval(env)?,
+            Div(a, b) => {
+                let d = b.eval(env)?;
+                if d == 0.0 {
+                    return Err(EvalError::DivisionByZero);
+                }
+                a.eval(env)? / d
+            }
+        })
+    }
+}
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Num(n) => write!(f, "{n}"),
+            Var(v) => write!(f, "{v}"),
+            Add(a, b) => write!(f, "({a} + {b})"),
+            Mul(a, b) => write!(f, "{a} * {b}"),
+            Div(a, b) => write!(f, "{a} / {b}"),
+        }
+    }
+}
+
+fn main() {
+    let price_with_tax = Mul(Box::new(Add(Box::new(Var("price".into())), Box::new(Num(2.0)))), Box::new(Num(1.15)));
+    let env = HashMap::from([("price", 18.0), ("people", 0.0)]);
+    println!("{price_with_tax} = {:?}", price_with_tax.eval(&env));
+    let split = Div(Box::new(price_with_tax.clone()), Box::new(Var("people".into())));
+    println!("{split} = {:?}", split.eval(&env));
+    println!("{} = {:?}", Var("tip".into()), Var("tip".into()).eval(&env));
+}
+@note
+Each variant carries exactly what it needs, `Box` makes the recursive type sized, and `eval` is one exhaustive `match` using `?` to propagate errors from sub-expressions. The same structure gives a `Display` implementation for free-form printing. Division by zero and unknown variables become typed errors, not panics.
+@example rust fail: Adding a variant flags every match that must handle it
+enum Payment {
+    Cash,
+    Card { last4: String },
+    GiftCard(u32),
+}
+
+fn fee(p: &Payment) -> u32 {
+    match p {
+        Payment::Cash => 0,
+        Payment::Card { .. } => 30,
+    }
+}
+
+fn main() {
+    println!("{}", fee(&Payment::Cash));
+}
+@note
+`GiftCard` was added to the enum but `fee` was not updated, and the compiler refuses to build until it is handled, naming the missing variant. This is why idiomatic code avoids a `_` catch-all on its own enums: the compiler becomes a checklist of every place a new case matters.
+@mistakes
+- **Structs full of optional fields for "kinds".** Use an enum with per-variant data.
+- **`_ =>` on your own enums.** You lose the compiler's help when variants are added.
+- **Panicking in evaluation code.** Return a typed error.
+@keys
+- Structs for "and", enums for "or"; make illegal states unrepresentable.
+- Recursive enums use Box.
+- Exhaustive matches turn new variants into compiler checklists.
+- Return typed errors; implement Display for output.
+
+=== A2.1
+@idea
+`Vec<T>` is the default collection, and knowing how it grows helps you use it well. A vector has a **length** (elements in use) and a **capacity** (allocated space). When a push exceeds the capacity, it allocates a bigger buffer (roughly doubling) and moves the elements, so `push` is **amortised O(1)**. If you know the final size, `Vec::with_capacity(n)` or `reserve(n)` avoids the repeated reallocations; `shrink_to_fit` releases unused space.
+
+A `Vec` is a perfect **stack** (`push`/`pop`/`last`), and `insert(0, x)` or `remove(0)` are O(n) because everything shifts. For a **queue**, use **`VecDeque<T>`**, a ring buffer with O(1) `push_back`, `push_front`, `pop_front` and `pop_back`; it is the right tool for breadth-first search, job queues and sliding windows. Other useful methods: `retain` (filter in place), `dedup` (remove consecutive duplicates), `drain(range)` (remove and iterate), `swap_remove` (O(1) removal that doesn't keep order), `sort_unstable` (faster when stability doesn't matter), `binary_search` on sorted data, and `chunks`/`windows`.
+
+**`LinkedList`** exists but is rarely the right choice: each node is a separate allocation, cache behaviour is poor, and VecDeque does most of its jobs faster.
+@how
+- `with_capacity(n)` / `reserve(n)` when the size is known; `len()` vs `capacity()`.
+- Stack: `push`, `pop`, `last`; avoid `insert(0)` and `remove(0)` on large vectors.
+- Queue/deque: `VecDeque` with `push_back`, `pop_front`, etc.
+- In-place tools: `retain`, `dedup`, `drain`, `swap_remove`, `sort_unstable`, `binary_search`.
+- `chunks(n)`, `windows(n)` for grouped and sliding views.
+@example rust: Capacity, stacks, queues and in-place tools
+use std::collections::VecDeque;
+
+fn main() {
+    let mut v = Vec::new();
+    let mut growths = Vec::new();
+    for i in 0..20 {
+        let before = v.capacity();
+        v.push(i);
+        if v.capacity() != before {
+            growths.push(v.capacity());
+        }
+    }
+    println!("capacity grew at: {growths:?}");
+    let prepared: Vec<u32> = Vec::with_capacity(1000);
+    println!("with_capacity: len {} capacity {}", prepared.len(), prepared.capacity());
+
+    let mut undo = vec!["type a", "type b", "delete"];
+    while let Some(action) = undo.pop() {
+        print!("undo {action:?}; ");
+    }
+    println!();
+
+    let mut queue: VecDeque<&str> = VecDeque::from(["job1", "job2"]);
+    queue.push_back("job3");
+    queue.push_front("urgent");
+    println!("served first: {:?}, then {:?}, left {:?}", queue.pop_front(), queue.pop_front(), queue);
+
+    let mut readings = vec![3, 3, 7, -1, 7, 7, 12, -4, 12];
+    readings.retain(|&r| r >= 0);
+    readings.dedup();
+    println!("cleaned: {readings:?}");
+    let maxima: Vec<i32> = readings.windows(2).map(|w| w[0].max(w[1])).collect();
+    println!("pairwise max: {maxima:?}, chunks: {:?}", readings.chunks(2).collect::<Vec<_>>());
+    let mut sorted = readings.clone();
+    sorted.sort_unstable();
+    println!("binary_search(7) = {:?}, (8) = {:?}", sorted.binary_search(&7), sorted.binary_search(&8));
+}
+@note
+Capacity grew in jumps (4, 8, 16, 32), so 20 pushes needed only four reallocations. The Vec served as an undo stack, and VecDeque served as a queue with a priority job pushed to the front. `retain` and `dedup` cleaned the data in place; `binary_search` returns `Ok(index)` when found and `Err(insertion_point)` when not.
+@example rust: Why queues shouldn't use Vec::remove(0)
+use std::collections::VecDeque;
+use std::time::Instant;
+
+fn main() {
+    let n = 60_000;
+    let mut v: Vec<u32> = (0..n).collect();
+    let start = Instant::now();
+    while !v.is_empty() {
+        v.remove(0);                                // shifts every remaining element
+    }
+    let t_vec = start.elapsed();
+
+    let mut d: VecDeque<u32> = (0..n).collect();
+    let start = Instant::now();
+    while d.pop_front().is_some() {}
+    let t_deque = start.elapsed();
+    println!("VecDeque at least 20x faster at draining from the front: {}", t_vec > t_deque * 20);
+}
+@note
+Removing from the front of a Vec shifts all remaining elements, so draining it is O(n²), while VecDeque's ring buffer pops from the front in O(1). Exact times vary, so only the comparison is printed; the gap grows with the size of the queue.
+@mistakes
+- **`remove(0)` in a loop.** Quadratic time. Use VecDeque.
+- **Pushing thousands of items without `with_capacity` when the size is known.** Extra reallocations.
+- **`binary_search` on unsorted data.** Results are meaningless. Sort first.
+@keys
+- Vec grows by reallocating; push is amortised O(1); reserve when size is known.
+- Vec is a stack; VecDeque is the queue/deque.
+- `retain`, `dedup`, `drain`, `windows`, `chunks` work in place or as views.
+- LinkedList is rarely the right choice.
+
+=== A2.2
+@idea
+`HashMap<K, V>` and `HashSet<T>` are hash tables: average O(1) insert, lookup and removal. Keys must implement **`Eq` and `Hash`**, and they must agree: values that are equal must hash the same. For your own types, `#[derive(PartialEq, Eq, Hash)]` gets this right automatically, hashing every field that equality compares; if you implement `PartialEq` by hand (say, case-insensitive), implement `Hash` consistently too, or lookups will silently fail.
+
+**`HashSet`** stores unique values and supports set algebra: `union`, `intersection`, `difference` and `symmetric_difference` return iterators, and `is_subset`/`is_disjoint` answer relationship questions. Collecting into a HashSet is the idiomatic way to deduplicate.
+
+Two properties matter in practice. **Iteration order is arbitrary** and differs between runs (std uses randomly seeded SipHash to resist hash-flooding attacks), so never depend on it: sort, or use `BTreeMap`/`BTreeSet`, or `IndexMap` (crate) when insertion order matters. And for performance-critical code with trusted keys, a faster non-cryptographic hasher (`rustc-hash`'s FxHashMap, `ahash`) can make maps noticeably quicker. The **entry API** remains the tool for update-or-insert.
+@how
+- `#[derive(PartialEq, Eq, Hash)]` for key types; keep manual Eq and Hash consistent.
+- HashSet: `insert` returns false for duplicates; `union`, `intersection`, `difference`, `is_subset`.
+- Never rely on iteration order; sort or use BTree collections.
+- Entry API for counting and grouping.
+- Faster hashers for trusted keys; default SipHash resists DoS.
+@example rust: Custom keys and set algebra
+use std::collections::{HashMap, HashSet};
+
+fn sorted<'a>(items: impl Iterator<Item = &'a &'a str>) -> Vec<&'a str> {
+    let mut v: Vec<&str> = items.copied().collect();
+    v.sort();
+    v
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Seat {
+    row: char,
+    number: u8,
+}
+
+fn main() {
+    let mut booked: HashMap<Seat, &str> = HashMap::new();
+    booked.insert(Seat { row: 'A', number: 1 }, "ada");
+    booked.insert(Seat { row: 'A', number: 2 }, "ben");
+    let wanted = Seat { row: 'A', number: 2 };
+    println!("A2 booked by {:?}, B1 by {:?}", booked.get(&wanted), booked.get(&Seat { row: 'B', number: 1 }));
+
+    let python: HashSet<&str> = ["ada", "ben", "cy", "dee"].into_iter().collect();
+    let rust: HashSet<&str> = ["cy", "dee", "eve"].into_iter().collect();
+    println!("both: {:?}", sorted(python.intersection(&rust)));
+    println!("either: {:?}", sorted(python.union(&rust)));
+    println!("python only: {:?}", sorted(python.difference(&rust)));
+    println!("exactly one: {:?}", sorted(python.symmetric_difference(&rust)));
+    let core: HashSet<&str> = ["cy"].into_iter().collect();
+    println!("core is subset of rust: {}", core.is_subset(&rust));
+
+    let mut seen = HashSet::new();
+    let emails = ["a@x.com", "b@x.com", "a@x.com", "c@x.com", "b@x.com"];
+    let duplicates: Vec<&str> = emails.iter().filter(|e| !seen.insert(**e)).copied().collect();
+    println!("duplicates: {duplicates:?}, unique count {}", seen.len());
+
+    let mut seats: Vec<&Seat> = booked.keys().collect();
+    seats.sort();
+    println!("seats in a stable order: {seats:?}");
+}
+@note
+Deriving `Hash` and `Eq` made `Seat` usable as a key, and a freshly built equal Seat finds the booking. Set operations return iterators, collected and sorted here because hash order is arbitrary. `insert` returning false is a one-line duplicate detector. Sorting the keys (thanks to the derived `Ord`) gives stable output.
+@example rust: Inconsistent Eq and Hash break lookups
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+
+#[derive(Debug)]
+struct Email(String);
+
+impl PartialEq for Email {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(&other.0)          // case-insensitive equality...
+    }
+}
+impl Eq for Email {}
+
+impl Hash for Email {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state);                            // ...but case-sensitive hashing: a bug
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct FixedEmail(String);
+
+impl FixedEmail {
+    fn new(s: &str) -> Self {
+        FixedEmail(s.to_ascii_lowercase())             // normalise once; derive the rest
+    }
+}
+
+fn main() {
+    let a = Email("Ada@Example.com".into());
+    let b = Email("ada@example.com".into());
+    println!("equal? {}", a == b);
+    let mut set = HashSet::new();
+    set.insert(a);
+    println!("buggy set contains the equal value? {}", set.contains(&b));
+
+    let mut fixed = HashSet::new();
+    fixed.insert(FixedEmail::new("Ada@Example.com"));
+    println!("fixed set contains it? {}", fixed.contains(&FixedEmail::new("ada@example.com")));
+}
+@note
+The two emails compare equal, yet the set cannot find one when given the other, because they hash to different buckets: equal values must have equal hashes. The robust fix is to normalise the data once in a constructor and derive everything, so equality and hashing can never disagree.
+@mistakes
+- **Depending on HashMap iteration order.** It changes between runs. Sort or use BTreeMap.
+- **Manual `PartialEq` without a matching `Hash`.** Lookups fail silently. Normalise and derive.
+- **Mutating a key's fields while it is in a map.** Its hash changes and it gets lost. Keys should be immutable.
+@keys
+- Keys need consistent `Eq` and `Hash`; derive them.
+- HashSet provides deduplication and set algebra.
+- Iteration order is arbitrary; sort for stable output.
+- Normalise data before hashing when equality is custom.
+
+=== A2.3
+@idea
+The **B-tree** collections keep keys **sorted**. `BTreeMap<K, V>` and `BTreeSet<T>` have O(log n) operations (instead of a hash map's average O(1)), and in return iteration is always in key order, and **range queries** are efficient: `map.range("b".."d")` or `set.range(10..=20)` visit only the keys in that interval. `first_key_value`/`last_key_value` give the minimum and maximum. Keys need `Ord` rather than `Hash`. Choose BTree collections when you need ordered output, ranges, or deterministic iteration (reports, tests, serialised output).
+
+**`BinaryHeap<T>`** is a priority queue: `push` adds in O(log n) and `pop` always removes the **largest** element (it is a max-heap). For a min-heap, wrap values in **`std::cmp::Reverse`**: `heap.push(Reverse(cost))`. Tuples order field by field, so `(priority, name)` or `Reverse((distance, node))` give natural multi-key priorities.
+
+Priority queues power schedulers, "top k" queries, merging sorted streams and graph algorithms. **Dijkstra's shortest-path algorithm** is the classic: a min-heap of `(distance, node)` always expands the closest unvisited node next.
+@how
+- `BTreeMap`/`BTreeSet`: sorted iteration, `range(a..b)`, `first_key_value`, `last_key_value`; keys need `Ord`.
+- Use them for ordered or deterministic output and range queries.
+- `BinaryHeap`: max-heap; `push`, `pop`, `peek`, `into_sorted_vec`.
+- Min-heap: `Reverse(x)`; tuples order lexicographically.
+- Top-k: keep a min-heap of size k.
+@example rust: Sorted data, ranges and a priority queue
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+
+fn main() {
+    let mut temps: BTreeMap<&str, i32> = BTreeMap::new();
+    for (day, t) in [("2026-11-05", 4), ("2026-11-01", 9), ("2026-11-03", -2), ("2026-11-02", 7), ("2026-11-04", 1)] {
+        temps.insert(day, t);
+    }
+    println!("in date order: {:?}", temps.values().collect::<Vec<_>>());
+    println!("Nov 2-4: {:?}", temps.range("2026-11-02"..="2026-11-04").collect::<Vec<_>>());
+    println!("first {:?}, last {:?}", temps.first_key_value(), temps.last_key_value());
+
+    let ids: BTreeSet<u32> = [42, 7, 19, 88, 3, 64].into_iter().collect();
+    println!("ids 10..=70: {:?}", ids.range(10..=70).collect::<Vec<_>>());
+
+    let mut jobs = BinaryHeap::new();
+    for (priority, name) in [(2, "send newsletter"), (9, "fix outage"), (5, "review PR"), (9, "call customer")] {
+        jobs.push((priority, name));
+    }
+    while let Some((p, name)) = jobs.pop() {
+        print!("[{p}] {name}; ");
+    }
+    println!();
+
+    let prices = [12, 3, 45, 7, 30, 2, 18];
+    let mut top3 = BinaryHeap::new();                       // min-heap of size 3
+    for &p in &prices {
+        top3.push(Reverse(p));
+        if top3.len() > 3 {
+            top3.pop();                                     // drop the smallest
+        }
+    }
+    let mut best: Vec<i32> = top3.into_iter().map(|Reverse(p)| p).collect();
+    best.sort_unstable_by(|a, b| b.cmp(a));
+    println!("top 3 prices: {best:?}");
+}
+@note
+The BTreeMap iterated in date order regardless of insertion order, and `range` returned just the days requested. The BinaryHeap popped the highest priority first, breaking the tie between the two 9s by name (tuples compare field by field). Wrapping in `Reverse` turned it into a min-heap for an efficient top-3.
+@example rust: Dijkstra's shortest paths with a min-heap
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap};
+
+fn shortest(graph: &BTreeMap<&str, Vec<(&str, u32)>>, start: &str) -> BTreeMap<String, u32> {
+    let mut dist: BTreeMap<String, u32> = BTreeMap::new();
+    let mut heap = BinaryHeap::from([Reverse((0u32, start.to_string()))]);
+    while let Some(Reverse((d, node))) = heap.pop() {
+        if dist.contains_key(&node) {
+            continue;                                      // already settled with a shorter path
+        }
+        dist.insert(node.clone(), d);
+        for &(next, w) in graph.get(node.as_str()).into_iter().flatten() {
+            if !dist.contains_key(next) {
+                heap.push(Reverse((d + w, next.to_string())));
+            }
+        }
+    }
+    dist
+}
+
+fn main() {
+    let graph = BTreeMap::from([
+        ("Montréal", vec![("Ottawa", 200), ("Québec", 250), ("Toronto", 540)]),
+        ("Ottawa", vec![("Toronto", 450), ("Kingston", 200)]),
+        ("Kingston", vec![("Toronto", 260)]),
+        ("Québec", vec![]),
+        ("Toronto", vec![]),
+    ]);
+    for (city, km) in shortest(&graph, "Montréal") {
+        println!("{city:9} {km:>4} km");
+    }
+}
+@note
+The min-heap always expands the closest unsettled city, so each city's first appearance is its shortest distance; later, longer entries are skipped. Toronto is reached directly at 540 km rather than via Ottawa (650) or Kingston (660). Using BTreeMap makes the output order deterministic.
+@mistakes
+- **HashMap when output order matters.** Use BTreeMap or sort.
+- **Expecting BinaryHeap to pop the smallest.** It's a max-heap; use `Reverse`.
+- **Sorting a whole list to get the top k.** A size-k heap is cheaper for large inputs.
+@keys
+- BTreeMap/BTreeSet keep keys sorted, with efficient range queries.
+- They give deterministic iteration, at O(log n) per operation.
+- BinaryHeap is a max-heap priority queue; `Reverse` makes a min-heap.
+- Heaps power schedulers, top-k and Dijkstra.
+
+=== A3.1
+@idea
+Knowing where data lives makes ownership feel physical. The **stack** holds each function's local variables in a frame that is pushed on call and popped on return: allocation is just moving a pointer, so it is extremely fast, but sizes must be known at compile time. The **heap** holds data whose size is decided at run time or that must outlive a function call; allocating there means asking the allocator for memory and later freeing it.
+
+Common types have small, fixed **stack** parts. A `String` or `Vec<T>` is three words (pointer, capacity, length: 24 bytes on 64-bit) pointing at a heap buffer; a `&str` or `&[T]` is two words (pointer, length); `Box<T>` and `&T` are one word; `Option<Box<T>>` and `Option<&T>` are also one word thanks to the **niche optimisation** (null means None). `std::mem::size_of` tells you.
+
+A **move** copies only the stack part (those few words) and marks the old variable as unusable; the heap data never moves. That is why moving a huge `Vec` is cheap, and why using the old variable is forbidden: two owners of one buffer would free it twice. **Drop** runs when the owner goes out of scope, freeing heap memory deterministically, without a garbage collector.
+@how
+- Stack: fixed-size locals, fast push/pop; heap: run-time-sized or long-lived data.
+- `size_of::<T>()`: String/Vec = 24, &str/&[T] = 16, Box/& = 8 bytes on 64-bit.
+- Moves copy the stack part; heap buffers stay put.
+- `Option<Box<T>>`/`Option<&T>` cost nothing extra (niche optimisation).
+- Drop frees deterministically at the end of scope.
+@example rust: Measuring types and watching a move
+use std::mem::size_of;
+
+#[allow(dead_code)]
+enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+}
+
+fn main() {
+    println!("u8 {}, i32 {}, f64 {}, char {}, bool {}", size_of::<u8>(), size_of::<i32>(), size_of::<f64>(), size_of::<char>(), size_of::<bool>());
+    println!("String {}, Vec<u64> {}, &str {}, &[u8] {}", size_of::<String>(), size_of::<Vec<u64>>(), size_of::<&str>(), size_of::<&[u8]>());
+    println!("Box<u64> {}, &u64 {}, Option<Box<u64>> {}, Option<u64> {}", size_of::<Box<u64>>(), size_of::<&u64>(), size_of::<Option<Box<u64>>>(), size_of::<Option<u64>>());
+    println!("Shape enum {} (largest variant + tag)", size_of::<Shape>());
+
+    let big: Vec<u64> = (0..1_000_000).collect();
+    let heap_before = big.as_ptr();
+    let moved = big;                                   // copies 24 bytes, not 8 MB
+    println!("heap buffer unchanged by the move: {}", heap_before == moved.as_ptr());
+    let boxed = Box::new(moved);
+    println!("boxing moves the 24-byte header to the heap; data still at the same place: {}", heap_before == boxed.as_ptr());
+}
+@note
+Owned buffers like String and Vec are three words; slices are two (pointer and length); Box and references are one. `Option<Box<u64>>` is still 8 bytes because a null pointer represents None, while `Option<u64>` needs extra space for its tag. Moving a million-element vector copied only its 24-byte header: the heap buffer did not move.
+@example rust fail: The use-after-move the compiler prevents
+fn consume(data: Vec<u8>) -> usize {
+    data.len()                          // `data` is dropped (and freed) here
+}
+
+fn main() {
+    let payload = vec![1, 2, 3];
+    let n = consume(payload);
+    println!("{n} bytes; first is {}", payload[0]);
+}
+@note
+After the move, `consume` owned the buffer and freed it when it returned. Reading `payload[0]` afterwards would be a use-after-free in C; in Rust it is a compile error explaining where the value moved. The physical picture (one heap buffer, one owner) is exactly what the rule protects.
+@mistakes
+- **Assuming moves are expensive.** They copy a few words; the heap stays put.
+- **Boxing small values for "performance".** It adds an allocation and an indirection.
+- **Large arrays on the stack** (`[u8; 10_000_000]`). They can overflow the stack; use `Vec` or `Box<[T]>`.
+@keys
+- Stack frames are fast and fixed-size; the heap holds run-time-sized data.
+- String/Vec are 24-byte headers pointing at heap buffers.
+- Moves copy headers; the old variable becomes invalid.
+- Drop frees deterministically; niche optimisation makes `Option<Box<T>>` free.
+
+=== A3.2
+@idea
+Some borrowing situations come up constantly; knowing the patterns avoids most fights with the borrow checker. **Split borrows**: the compiler tracks struct fields separately, so you can borrow `self.items` mutably while reading `self.limit`, as long as you access the fields directly rather than through methods that borrow all of `self`. Destructuring (`let Self { items, limit } = self;`) makes this explicit.
+
+**Getting a value out of a `&mut`**: you cannot move out of a borrowed place, but you can swap something in. `std::mem::take(&mut x)` replaces `x` with its `Default` value (an empty Vec or String) and returns the old one; `mem::replace(&mut x, new)` puts in a value you choose; `mem::swap` exchanges two. `Option::take()` is the same idea for options. These are the standard way to move out of fields, transform state machines, or reuse buffers.
+
+**Avoiding clones**: `Cow<'a, str>` (clone on write) holds either a borrowed `&str` or an owned `String`, and only allocates when a change is actually needed, ideal for functions that usually return their input unchanged (escaping, normalising). **Iterating while modifying**: collect what you need first, use `retain`, or iterate over indices; the borrow checker is right that changing a collection while iterating over it is dangerous.
+@how
+- Borrow disjoint fields separately; destructure `self` to make it obvious.
+- `mem::take(&mut x)` (leaves Default), `mem::replace(&mut x, v)`, `mem::swap(&mut a, &mut b)`, `option.take()`.
+- `Cow<'a, str>`: `Cow::Borrowed(s)` when unchanged, `Cow::Owned(new)` when changed.
+- Modify collections with `retain`, `iter_mut`, or a collect-then-apply pass.
+- Clone only when you truly need two owners.
+@example rust: Split borrows, mem::take and Cow
+use std::borrow::Cow;
+use std::mem;
+
+struct Inbox {
+    messages: Vec<String>,
+    archived: Vec<String>,
+    max_len: usize,
+}
+
+impl Inbox {
+    fn truncate_long(&mut self) {
+        let Inbox { messages, max_len, .. } = self;           // disjoint field borrows
+        for m in messages.iter_mut() {
+            if m.len() > *max_len {
+                m.truncate(*max_len);
+                m.push('…');
+            }
+        }
+    }
+
+    fn archive_all(&mut self) -> usize {
+        let taken = mem::take(&mut self.messages);            // leaves an empty Vec behind
+        let n = taken.len();
+        self.archived.extend(taken);
+        n
+    }
+}
+
+fn escape_html(input: &str) -> Cow<'_, str> {
+    if !input.contains(['<', '>', '&']) {
+        return Cow::Borrowed(input);                          // no allocation
+    }
+    Cow::Owned(input.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;"))
+}
+
+fn main() {
+    let mut inbox = Inbox { messages: vec!["hi".into(), "a very long message about Rust".into()], archived: vec![], max_len: 10 };
+    inbox.truncate_long();
+    println!("{:?}", inbox.messages);
+    println!("archived {}, inbox now {:?}, archive {:?}", inbox.archive_all(), inbox.messages, inbox.archived);
+
+    let mut state = String::from("draft");
+    let old = mem::replace(&mut state, String::from("published"));
+    println!("state went from {old} to {state}");
+
+    for s in ["plain text", "<b>bold</b> & more"] {
+        let out = escape_html(s);
+        println!("{:24} borrowed? {:5} -> {out}", s, matches!(out, Cow::Borrowed(_)));
+    }
+}
+@note
+Destructuring `self` let the loop mutate `messages` while reading `max_len`. `mem::take` moved the whole message list out of `&mut self`, leaving an empty Vec, and `mem::replace` swapped in a new state while returning the old. `escape_html` returned the input borrowed when nothing needed escaping and only allocated when it did.
+@example rust fail: Moving out of a field behind &mut self
+struct Job {
+    log: Vec<String>,
+}
+
+impl Job {
+    fn finish(&mut self) -> Vec<String> {
+        self.log
+    }
+}
+
+fn main() {}
+@note
+Returning `self.log` would move the vector out of a struct we only borrowed, leaving it in an invalid state, so the compiler refuses ("cannot move out of `self.log` which is behind a mutable reference"). `std::mem::take(&mut self.log)` does exactly what was intended: hands back the log and leaves an empty one in its place.
+@mistakes
+- **Calling a `&mut self` method while holding a field borrow.** Access fields directly, or destructure.
+- **Cloning to get a value out of `&mut`.** Use `mem::take`/`replace` or `Option::take`.
+- **Always returning `String` from transformation functions.** `Cow` avoids allocating when nothing changes.
+@keys
+- The compiler tracks disjoint field borrows; destructure to use them.
+- `mem::take`, `mem::replace`, `mem::swap` and `Option::take` move values out of `&mut`.
+- `Cow` borrows when possible and allocates only on change.
+- Prefer these patterns to reflexive cloning.
+
+=== A3.3
+@idea
+Lifetimes become interesting in structs and generic code. A struct holding references needs lifetime parameters, and sometimes **more than one**: a `Parser<'src, 'cfg>` that borrows its input text and a separate configuration lets callers drop the configuration while still using slices of the input, which a single shared lifetime would forbid. Methods in `impl<'a> S<'a>` can return references tied to `'a` (the data the struct borrows), which then outlive the struct itself.
+
+The **elision rules**, applied by hand: (1) each reference parameter gets its own lifetime; (2) if there is exactly one input lifetime, it is assigned to all outputs; (3) if one of the inputs is `&self` or `&mut self`, its lifetime is assigned to the outputs. When none of these determines the output, you must annotate.
+
+**`T: 'static`** is commonly misread. It does not mean "lives forever"; it means "contains no non-static references", so the value *could* be kept as long as you like. Every owned type (`String`, `Vec<u8>`, your own structs without references) satisfies `'static`. That is why `thread::spawn` requires `'static`: the thread may outlive the caller, so the closure must own its data. `&'static str` is a different thing: a reference valid for the whole program, like a string literal.
+@how
+- Several lifetimes (`'a`, `'b`) when borrows are independent.
+- Methods returning `&'a T` borrow from the struct's data, not from `&self`.
+- Elision: one input lifetime → output; `&self` → output; otherwise annotate.
+- `T: 'static` = owns its data (no short-lived references); owned types qualify.
+- `&'static T` = reference valid for the whole program.
+@example rust: Two lifetimes and a 'static bound
+struct Tokenizer<'src, 'cfg> {
+    text: &'src str,
+    separators: &'cfg [char],
+    pos: usize,
+}
+
+impl<'src, 'cfg> Tokenizer<'src, 'cfg> {
+    fn next_token(&mut self) -> Option<&'src str> {          // tied to the text, not to self or the config
+        let rest = &self.text[self.pos..];
+        let rest_trimmed = rest.trim_start_matches(self.separators);
+        if rest_trimmed.is_empty() {
+            return None;
+        }
+        let start = self.pos + (rest.len() - rest_trimmed.len());
+        let len = rest_trimmed.find(self.separators).unwrap_or(rest_trimmed.len());
+        self.pos = start + len;
+        Some(&self.text[start..start + len])
+    }
+}
+
+fn first_tokens(text: &str) -> Vec<&str> {
+    let seps = vec![' ', ',', ';'];                           // a short-lived configuration
+    let mut t = Tokenizer { text, separators: &seps, pos: 0 };
+    let mut out = Vec::new();
+    while let Some(tok) = t.next_token() {
+        out.push(tok);
+    }
+    out                                                       // tokens outlive `seps` and `t`
+}
+
+fn keep_forever<T: std::fmt::Debug + Send + 'static>(value: T) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || format!("background thread owns {value:?}"))
+}
+
+fn main() {
+    let text = String::from("tea, cake; scones  jam");
+    println!("{:?}", first_tokens(&text));
+    println!("{}", keep_forever(String::from("an owned String is 'static")).join().unwrap());
+    println!("{}", keep_forever(vec![1, 2, 3]).join().unwrap());
+    let literal: &'static str = "lives for the whole program";
+    println!("{}", keep_forever(literal).join().unwrap());
+}
+@note
+Because the tokens are tied to `'src` only, `first_tokens` could return them after its local separator list and tokenizer were dropped; with a single lifetime for both borrows, this would not compile. `keep_forever` accepted an owned String and Vec as `'static`, since they contain no borrowed data, and a string literal, which is a `&'static str`.
+@example rust fail: A borrowed value is not 'static
+fn keep_forever<T: std::fmt::Debug + Send + 'static>(value: T) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || println!("{value:?}"))
+}
+
+fn main() {
+    let name = String::from("Ferris");
+    let borrowed: &str = &name;
+    keep_forever(borrowed).join().unwrap();
+}
+@note
+`&str` borrowed from a local String is not `'static`: the thread could outlive `name`. The compiler explains that `name` does not live long enough for the `'static` requirement. Passing the String itself (`keep_forever(name)`) satisfies the bound, because an owned String contains no short-lived references.
+@mistakes
+- **One lifetime for independent borrows.** Callers get needlessly restricted; use separate lifetimes.
+- **Reading `T: 'static` as "never freed".** It means "owns its data"; owned values are dropped normally.
+- **Adding `'static` to references to silence errors.** Usually the fix is to own the data.
+@keys
+- Structs can have several lifetimes for independent borrows.
+- Methods can return references tied to the borrowed data, outliving the struct.
+- Elision rules: single input, or `&self`, decide the output lifetime.
+- `T: 'static` means no short-lived references; owned types qualify.
+
+=== A4.1
+@idea
+Good error handling starts with a good **error type**. For a library or a module with distinct failure modes, define an **enum with one variant per failure**: `ConfigError::Io(io::Error)`, `ConfigError::Parse { line: usize, message: String }`, `ConfigError::Missing(&'static str)`. Callers can `match` on it and react differently to each case: retry an I/O error, show the line number for a parse error.
+
+To be a proper error, the type implements **`Display`** (the human-readable message, without a trailing period and without repeating the cause) and **`std::error::Error`**, whose **`source()`** method returns the underlying error, so tools can print the whole chain: "failed to load config: cannot read settings.toml: No such file or directory". `Debug` is derived.
+
+**`From` implementations** let the `?` operator convert automatically: `impl From<io::Error> for ConfigError` means a `fs::read_to_string(path)?` inside a function returning `Result<_, ConfigError>` wraps the I/O error in the right variant with no extra code. Writing all this by hand once makes clear what the `thiserror` crate (next lesson) generates for you.
+@how
+- `#[derive(Debug)] enum MyError { Io(io::Error), Parse { line: usize, msg: String }, ... }`.
+- `impl Display` with a concise message; don't repeat the source's message.
+- `impl std::error::Error` with `source()` returning the wrapped error.
+- `impl From<io::Error> for MyError` so `?` converts automatically.
+- Walk the chain with `source()` to print full context.
+@example rust: A config loader with its own error type
+use std::error::Error;
+use std::fmt;
+use std::fs;
+use std::io;
+use std::num::ParseIntError;
+
+#[derive(Debug)]
+enum ConfigError {
+    Io(io::Error),
+    BadNumber { line: usize, source: ParseIntError },
+    Missing(&'static str),
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ConfigError::Io(_) => write!(f, "cannot read the config file"),
+            ConfigError::BadNumber { line, .. } => write!(f, "line {line}: expected a number"),
+            ConfigError::Missing(key) => write!(f, "missing required key {key:?}"),
+        }
+    }
+}
+
+impl Error for ConfigError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            ConfigError::Io(e) => Some(e),
+            ConfigError::BadNumber { source, .. } => Some(source),
+            ConfigError::Missing(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for ConfigError {
+    fn from(e: io::Error) -> Self {
+        ConfigError::Io(e)
+    }
+}
+
+fn load_port(path: &str) -> Result<u16, ConfigError> {
+    let text = fs::read_to_string(path)?;                            // io::Error -> ConfigError via From
+    for (i, line) in text.lines().enumerate() {
+        if let Some(value) = line.strip_prefix("port=") {
+            let n: u32 = value.trim().parse().map_err(|source| ConfigError::BadNumber { line: i + 1, source })?;
+            return Ok(n as u16);
+        }
+    }
+    Err(ConfigError::Missing("port"))
+}
+
+fn report(e: &dyn Error) -> String {
+    let mut msg = e.to_string();
+    let mut cur = e.source();
+    while let Some(cause) = cur {
+        msg.push_str(&format!(": {cause}"));
+        cur = cause.source();
+    }
+    msg
+}
+
+fn main() {
+    fs::write("good.cfg", "host=localhost\nport=8080\n").unwrap();
+    fs::write("bad.cfg", "host=localhost\nport=80a\n").unwrap();
+    fs::write("empty.cfg", "host=localhost\n").unwrap();
+    for path in ["good.cfg", "bad.cfg", "empty.cfg", "nope.cfg"] {
+        match load_port(path) {
+            Ok(p) => println!("{path}: port {p}"),
+            Err(e) => {
+                let kind = match &e { ConfigError::Io(_) => "io", ConfigError::BadNumber { .. } => "parse", ConfigError::Missing(_) => "missing" };
+                println!("{path}: [{kind}] {}", report(&e));
+            }
+        }
+    }
+}
+@note
+Each failure is a distinct variant callers can match on (here to tag the kind). `?` converted the I/O error through `From`, and `map_err` built the parse variant with its line number. `report` walked the `source()` chain, so messages read like "line 2: expected a number: invalid digit found in string" without any variant repeating its cause.
+@example rust fail: ? needs a From conversion
+use std::fs;
+
+#[derive(Debug)]
+enum AppError {
+    NotFound,
+}
+
+fn load(path: &str) -> Result<String, AppError> {
+    let text = fs::read_to_string(path)?;
+    Ok(text)
+}
+
+fn main() {}
+@note
+`?` tries to convert the `io::Error` into `AppError` with `From`, and no such implementation exists, so the compiler reports that `?` couldn't convert the error and suggests implementing `From<std::io::Error>`. Adding the `From` impl (or a `map_err`) is what makes `?` work across error types.
+@mistakes
+- **One string error for everything.** Callers can't react to specific failures. Use an enum.
+- **Display messages that repeat the cause.** Chains then print it twice; let `source()` carry it.
+- **`map_err` everywhere.** Implement `From` for common conversions so `?` does it.
+@keys
+- An error enum with a variant per failure lets callers match.
+- Implement Display (message) and Error (with `source()`).
+- `From` impls let `?` convert automatically.
+- Walk `source()` to print the full error chain.
+
+=== A4.2
+@idea
+Writing `Display`, `Error` and `From` by hand is repetitive, and **thiserror** generates exactly that code from attributes, with no run-time cost and no trace in your public API. `#[derive(Debug, thiserror::Error)]` on the enum, then on each variant: `#[error("line {line}: expected a number")]` provides the Display message (fields can be interpolated), `#[source]` marks the underlying error for `source()`, and **`#[from]`** additionally generates the `From` impl so `?` converts automatically. `#[error(transparent)]` forwards both message and source to a wrapped error, useful for "other" variants.
+
+thiserror is meant for **libraries** (and for modules inside applications that want typed errors). Libraries should expose **typed errors** because their callers need to make decisions: is the failure retryable? did the user give bad input? A library that returns `Box<dyn Error>` or a string forces callers to parse messages, which breaks every time the wording changes.
+
+A common refinement is `#[non_exhaustive]` on public error enums, so the library can add variants later without a breaking change (callers must then include a catch-all arm). Keep variants meaningful to the caller, not a mirror of every internal function.
+@how
+- `#[derive(Debug, thiserror::Error)] pub enum MyError { ... }`.
+- `#[error("message {field}")]` for Display; `{0}` for tuple fields; `{source}` to include the cause (usually avoid).
+- `#[from]` generates From (and implies `#[source]`); `#[source]` alone for source without From.
+- `#[error(transparent)]` to wrap another error entirely.
+- Libraries expose typed errors; consider `#[non_exhaustive]`.
+@example rust: The config error, rewritten with thiserror
+use std::fs;
+use std::num::ParseIntError;
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ConfigError {
+    #[error("cannot read the config file")]
+    Io(#[from] std::io::Error),
+    #[error("line {line}: expected a number")]
+    BadNumber {
+        line: usize,
+        #[source]
+        source: ParseIntError,
+    },
+    #[error("missing required key {0:?}")]
+    Missing(&'static str),
+}
+
+pub fn load_port(path: &str) -> Result<u16, ConfigError> {
+    let text = fs::read_to_string(path)?;
+    for (i, line) in text.lines().enumerate() {
+        if let Some(v) = line.strip_prefix("port=") {
+            return v.trim().parse::<u16>().map_err(|source| ConfigError::BadNumber { line: i + 1, source });
+        }
+    }
+    Err(ConfigError::Missing("port"))
+}
+
+fn chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        s += &format!(": {c}");
+        cur = c.source();
+    }
+    s
+}
+
+fn main() {
+    fs::write("bad.cfg", "port=80a\n").unwrap();
+    fs::write("empty.cfg", "host=x\n").unwrap();
+    for path in ["bad.cfg", "empty.cfg", "nope.cfg"] {
+        let e = load_port(path).unwrap_err();
+        let retryable = matches!(e, ConfigError::Io(_));
+        println!("{path}: {} (retryable: {retryable})", chain(&e));
+    }
+}
+@deps thiserror@2
+@note
+The derive produced the same Display, Error and From implementations as the hand-written version in the previous lesson, from a few attributes. `#[from]` made `?` convert `io::Error`, and `#[source]` linked the parse error into the chain. Callers still match on variants, here to decide whether a failure is retryable.
+@example rust: Why callers need typed errors
+#[derive(Debug, thiserror::Error)]
+pub enum FetchError {
+    #[error("server busy, try again in {retry_after}s")]
+    RateLimited { retry_after: u64 },
+    #[error("resource {0} not found")]
+    NotFound(String),
+    #[error(transparent)]
+    Other(#[from] std::io::Error),
+}
+
+fn fetch(id: &str) -> Result<String, FetchError> {
+    match id {
+        "busy" => Err(FetchError::RateLimited { retry_after: 2 }),
+        "gone" => Err(FetchError::NotFound(id.into())),
+        "disk" => Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "cache file locked").into()),
+        _ => Ok(format!("data for {id}")),
+    }
+}
+
+fn main() {
+    for id in ["ok", "busy", "gone", "disk"] {
+        match fetch(id) {
+            Ok(data) => println!("{id}: {data}"),
+            Err(FetchError::RateLimited { retry_after }) => println!("{id}: will retry after {retry_after}s"),
+            Err(FetchError::NotFound(what)) => println!("{id}: skipping missing {what}"),
+            Err(e) => println!("{id}: giving up: {e}"),
+        }
+    }
+}
+@deps thiserror@2
+@note
+Because the error is typed, the caller makes real decisions: wait and retry on rate limiting, skip missing resources, give up on anything else, without parsing message strings. The transparent variant passed the I/O error's own message straight through.
+@mistakes
+- **Returning `Box<dyn Error>` or strings from library APIs.** Callers can't react to specific failures.
+- **Including `{source}` in messages.** The chain then repeats it. Let `source()` carry the cause.
+- **A variant for every internal function.** Model what the caller needs to distinguish.
+@keys
+- thiserror derives Display, Error and From from attributes, at no run-time cost.
+- `#[error]`, `#[source]`, `#[from]` and `transparent` cover most needs.
+- Libraries expose typed errors so callers can decide what to do.
+- `#[non_exhaustive]` leaves room to add variants.
+
+=== A4.3
+@idea
+Applications have different needs from libraries. The binary is the final caller: it rarely matches on specific error variants; it mostly wants to stop, report clearly what went wrong and why, and exit with an error code. **anyhow** is built for that. **`anyhow::Result<T>`** (an alias for `Result<T, anyhow::Error>`) accepts any error type through `?`, so functions that call several libraries don't need a combined error enum.
+
+The key feature is **context**. `.context("reading settings.toml")` or `.with_context(|| format!("parsing line {n}"))` wraps an error with a message describing what the program was doing, building a chain from high-level intent down to the root cause. Printing with `{:#}` shows the chain on one line; returning the error from `main` prints "Error: ..." with a "Caused by:" list. Context works on `Option` too, turning `None` into a descriptive error.
+
+`anyhow!("...")` creates an ad-hoc error, `bail!("...")` returns one early, and `ensure!(condition, "...")` checks a condition. When a caller does need to inspect a specific error, `err.downcast_ref::<io::Error>()` recovers the original type. The usual split: **thiserror in libraries, anyhow in binaries**.
+@how
+- `fn main() -> anyhow::Result<()>`; `?` accepts any error type.
+- `.context("doing X")?`, `.with_context(|| format!(...))?` on Result and Option.
+- `bail!("...")`, `ensure!(cond, "...")`, `anyhow!("...")` for ad-hoc errors.
+- `{:#}` prints the chain on one line; returning from main prints "Caused by".
+- `downcast_ref::<T>()` to inspect the root cause when needed.
+@example rust: An application main with context
+use anyhow::{bail, ensure, Context, Result};
+use std::fs;
+
+#[derive(Debug)]
+struct Settings {
+    workers: u32,
+    output: String,
+}
+
+fn parse_settings(text: &str) -> Result<Settings> {
+    let mut workers = None;
+    let mut output = None;
+    for (n, line) in text.lines().enumerate() {
+        let (key, value) = line.split_once('=').with_context(|| format!("line {}: expected key=value", n + 1))?;
+        match key.trim() {
+            "workers" => workers = Some(value.trim().parse::<u32>().with_context(|| format!("line {}: workers must be a number", n + 1))?),
+            "output" => output = Some(value.trim().to_string()),
+            other => bail!("line {}: unknown setting {other:?}", n + 1),
+        }
+    }
+    let workers = workers.context("workers is required")?;
+    ensure!((1..=64).contains(&workers), "workers must be between 1 and 64, got {workers}");
+    Ok(Settings { workers, output: output.unwrap_or_else(|| "out".into()) })
+}
+
+fn load(path: &str) -> Result<Settings> {
+    let text = fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+    parse_settings(&text).with_context(|| format!("invalid settings in {path}"))
+}
+
+fn main() {
+    let files = [("ok.ini", "workers=4\noutput=report"), ("typo.ini", "workers=four"), ("range.ini", "workers=500"),
+                 ("unknown.ini", "workers=2\ncolour=blue"), ("blank.ini", "output=x")];
+    for (name, text) in files {
+        fs::write(name, text).unwrap();
+    }
+    for path in ["ok.ini", "typo.ini", "range.ini", "unknown.ini", "blank.ini", "missing.ini"] {
+        match load(path) {
+            Ok(s) => println!("{path}: {s:?}"),
+            Err(e) => {
+                let io = e.root_cause().downcast_ref::<std::io::Error>().is_some();
+                println!("{path}: {e:#}{}", if io { "  [an I/O problem]" } else { "" });
+            }
+        }
+    }
+}
+@deps anyhow@1
+@note
+Each layer added context, so a failure reads from intent to root cause: "invalid settings in typo.ini: line 1: workers must be a number: invalid digit found in string". `context` turned the missing `workers` Option into an error, `bail!` and `ensure!` created ad-hoc errors, and `downcast_ref` on the root cause identified the missing file as an I/O problem.
+@example rust: What returning the error from main looks like
+use anyhow::{Context, Result};
+
+fn read_port() -> Result<u16> {
+    let raw = std::env::var("APP_PORT").context("APP_PORT is not set")?;
+    raw.parse().with_context(|| format!("APP_PORT={raw:?} is not a valid port"))
+}
+
+fn main() -> Result<()> {
+    let port = read_port().context("could not start the server")?;
+    println!("listening on {port}");
+    Ok(())
+}
+@deps anyhow@1
+@note
+Because `main` returns `anyhow::Result`, the error was printed automatically as "Error:" followed by the top-level context and a "Caused by:" list down to the environment variable problem, and the process exited with a non-zero code. No manual formatting was needed.
+@mistakes
+- **anyhow in a library's public API.** Callers lose the ability to match on errors. Use thiserror there.
+- **`?` without context in application code.** "No such file or directory" with no file name helps nobody.
+- **Matching on error message strings.** Use `downcast_ref` or typed errors.
+@keys
+- anyhow is for applications: one error type that accepts any error.
+- `context`/`with_context` build chains from intent to root cause.
+- `bail!`, `ensure!`, `anyhow!` create ad-hoc errors.
+- thiserror for libraries, anyhow for binaries.

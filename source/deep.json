@@ -1,4 +1,1000 @@
 {
+"A1.1": {
+"idea": [
+"Teams choose Rust for a specific combination: **memory safety without a garbage collector**, performance on par with C and C++, **fearless concurrency** (data races are compile errors), and first-class tooling. Use-after-free, double free, null dereferences and buffer overflows, which cause a large share of security vulnerabilities in C and C++ code, are ruled out at compile time in safe Rust. That is why Rust shows up in operating systems, browsers, cloud infrastructure, command-line tools, embedded devices and WebAssembly.",
+"The trade-off is a steeper learning curve and slower compile times: the compiler asks you to make ownership and error handling explicit up front. In exchange, refactoring is safer, and \"if it compiles, it usually works\" becomes a practical experience rather than a slogan.",
+"A professional setup is the same everywhere: **rustup** for toolchains, **cargo** for building and dependencies, **rust-analyzer** in the editor, **rustfmt** for formatting (`cargo fmt`), **Clippy** for lints (`cargo clippy -- -D warnings` in CI), and `cargo test` and `cargo doc`. Add `cargo-watch` or `bacon` to re-check on every save, and `cargo audit` or `cargo deny` to check dependencies for known vulnerabilities and licences."
+],
+"how": [
+"Install with rustup; editor with rust-analyzer.",
+"`cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`, `cargo doc --open` daily.",
+"`cargo check` (or `bacon`/`cargo watch`) for instant feedback.",
+"`cargo audit` / `cargo deny` for dependency vulnerabilities and licences.",
+"CI runs fmt check, clippy and tests on every push."
+],
+"examples": [
+{
+"lang": "bash",
+"title": "Clippy and rustfmt catching real problems",
+"code": "$ cat src/main.rs\nfn total(prices: &Vec<f64>) -> f64 {\n    let mut sum = 0.0;\n    for i in 0..prices.len() { sum = sum + prices[i]; }\n    return sum;\n}\nfn main() { println!(\"{}\", total(&vec![1.5, 2.5])); }\n$ cargo clippy --quiet\nwarning: writing `&Vec` instead of `&[_]` involves a new object where a slice will do\n --> src/main.rs:1:18\n  |\n1 | fn total(prices: &Vec<f64>) -> f64 {\n  |                  ^^^^^^^^^ help: change this to: `&[f64]`\nwarning: the loop variable `i` is only used to index `prices`\n --> src/main.rs:3:14\nwarning: manual implementation of an assign operation\n --> src/main.rs:3:32\n  |\n3 |     for i in 0..prices.len() { sum = sum + prices[i]; }\n  |                                ^^^^^^^^^^^^^^^^^^^^^ help: replace it with: `sum += prices[i]`\nwarning: unneeded `return` statement\n --> src/main.rs:4:5\n$ cargo fmt && cargo clippy --fix --allow-dirty --quiet && cat src/main.rs\nfn total(prices: &[f64]) -> f64 {\n    let mut sum = 0.0;\n    for price in prices {\n        sum += price;\n    }\n    sum\n}\nfn main() {\n    println!(\"{}\", total(&vec![1.5, 2.5]));\n}",
+"note": "Clippy flagged four non-idiomatic patterns, each with a suggested fix, and `cargo clippy --fix` applied them while `cargo fmt` normalised the layout. Running both in CI (with `-D warnings` to fail on any lint) keeps a codebase consistent without arguments in review. Output abridged from a real run.",
+"output": ""
+},
+{
+"lang": "rust",
+"title": "The same function, idiomatic, and why it matters",
+"code": "fn total(prices: &[f64]) -> f64 {\n    prices.iter().sum()\n}\n\nfn main() {\n    let from_vec = vec![1.5, 2.5, 6.0];\n    let from_array = [10.0, 20.0];\n    println!(\"{} {} {}\", total(&from_vec), total(&from_array), total(&from_vec[1..]));\n    println!(\"empty: {}\", total(&[]));\n}",
+"note": "Taking `&[f64]` instead of `&Vec<f64>` lets the function accept vectors, arrays and sub-slices, and `iter().sum()` replaces the manual index loop with no bounds checks to get wrong. The \"-0\" for an empty slice is a floating-point quirk: float sums start from negative zero, so that summing only negative zeros stays negative. These are exactly the changes Clippy suggested, and they make the API more useful as well as more idiomatic.",
+"output": "10 30 8.5\nempty: -0"
+}
+],
+"mistakes": [
+"**Skipping Clippy.** It catches bugs and teaches idioms; run it in CI with `-D warnings`.",
+"**Fighting the borrow checker with clones everywhere.** Learn the ownership patterns instead (module A03).",
+"**Judging Rust by compile errors in week one.** The errors are the safety checks other languages skip."
+],
+"keys": [
+"Rust offers memory safety without GC, C-like speed and compile-time data-race freedom.",
+"The cost is a learning curve and longer compiles.",
+"Daily tools: cargo, rust-analyzer, rustfmt, Clippy, cargo test/doc.",
+"Audit dependencies and enforce fmt and Clippy in CI."
+]
+},
+"A1.2": {
+"idea": [
+"This self-test runs through the core of the language in one program, so you can spot gaps quickly. **Bindings** are immutable unless `mut`; shadowing creates new bindings. **Types** are inferred locally but always explicit in function signatures; integers don't convert implicitly. **Expressions** produce values, including blocks, `if` and `match`; the last expression without a semicolon is a block's value.",
+"**Ownership**: every value has one owner; assigning or passing a heap-owning value moves it; `Copy` types are copied; `.clone()` is explicit. **Borrowing**: `&T` many at once or `&mut T` alone, and references never outlive their data. **Slices** (`&str`, `&[T]`) borrow parts of collections, and idiomatic functions take them as parameters. **Errors**: `Option` for absence, `Result` for failure, `?` to propagate, panics only for bugs.",
+"If any line of the example surprises you, or any of the compile errors below are not immediately clear, revisit the matching chapter of Track 1 before continuing: everything in Track 2 builds on these rules being second nature."
+],
+"how": [
+"Immutable by default; `mut` when needed; shadow to transform.",
+"Signatures are explicit; no implicit numeric conversion.",
+"Moves for heap types, copies for `Copy` types, clones explicit.",
+"Borrow with `&`/`&mut`; take `&str`/`&[T]` parameters.",
+"`Option`/`Result` with `?`; panic only on bugs."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Everything in one small program",
+"code": "use std::collections::HashMap;\n\nfn parse_line(line: &str) -> Result<(&str, u32), String> {\n    let (name, score) = line.split_once(':').ok_or(format!(\"missing ':' in {line:?}\"))?;\n    let score = score.trim().parse::<u32>().map_err(|e| format!(\"{name}: {e}\"))?;\n    Ok((name.trim(), score))\n}\n\nfn best<'a>(scores: &'a HashMap<&str, u32>) -> Option<(&'a str, u32)> {\n    scores.iter().max_by_key(|(_, s)| **s).map(|(n, s)| (*n, *s))\n}\n\nfn main() {\n    let input = String::from(\"ada: 91\\nben: 78\\ncy oops\\nada: 95\\ndee: x\");\n    let mut scores: HashMap<&str, u32> = HashMap::new();\n    let mut errors = Vec::new();\n    for line in input.lines() {\n        match parse_line(line) {\n            Ok((name, score)) => {\n                let entry = scores.entry(name).or_insert(0);\n                *entry = (*entry).max(score);\n            }\n            Err(e) => errors.push(e),\n        }\n    }\n    let label = if errors.is_empty() { \"clean\" } else { \"with problems\" };\n    println!(\"parsed {} people {label}: {errors:?}\", scores.len());\n    if let Some((name, score)) = best(&scores) {\n        println!(\"best: {name} with {score}\");\n    }\n    let total: u32 = scores.values().sum();\n    let average = total as f64 / scores.len() as f64;\n    println!(\"average best score: {average:.1}\");\n}",
+"note": "The program touches every core idea: borrowing slices of `input` as map keys, `?` with `ok_or` and `map_err` for errors, `entry` with a mutable reference, `if` as an expression, a lifetime tying the result of `best` to the map, and an explicit conversion before dividing. Bad lines become errors instead of crashes.",
+"output": "parsed 2 people with problems: [\"missing ':' in \\\"cy oops\\\"\", \"dee: invalid digit found in string\"]\nbest: ada with 95\naverage best score: 86.5"
+},
+{
+"lang": "rust",
+"title": "Three classic mistakes in one function",
+"code": "fn longest_name(names: Vec<String>) -> &str {\n    let mut best = names[0];\n    for n in names {\n        if n.len() > best.len() {\n            best = n;\n        }\n    }\n    &best\n}\n\nfn main() {}",
+"note": "The compiler stops at the first problem: the return type `&str` has no input reference to borrow from, so it asks for a lifetime. Underneath are two more: `names[0]` tries to move a String out of a vector, and returning `&best` would point at a local that dies. The idiomatic version takes `&[String]` and returns `Option<&str>`.",
+"output": "error[E0106]: missing lifetime specifier\n --> main.rs:1:40\n  |\n1 | fn longest_name(names: Vec<String>) -> &str {\n  |                                        ^ expected named lifetime parameter\n  |\n  = help: this function's return type contains a borrowed value, but there is no value for it to be borrowed from\nhelp: consider using the `'static` lifetime, but this is uncommon unless you're returning a borrowed value from a `const` or a `static`\n  |\n1 | fn longest_name(names: Vec<String>) -> &'static str {\n  |                                         +++++++\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Taking `Vec<String>` by value just to read it.** Take `&[String]` or `&[&str]`.",
+"**Moving out of a vector with indexing.** Borrow (`&names[0]`) or clone.",
+"**Returning references to locals.** Return owned values, or borrow from an input."
+],
+"keys": [
+"Immutability, explicit signatures and expression-oriented code.",
+"Ownership and moves; borrowing rules; slices as parameters.",
+"`Option`, `Result` and `?` for absence and failure.",
+"If the self-test surprises you, revisit Track 1 first."
+]
+},
+"A1.3": {
+"idea": [
+"Structs and enums together model a domain precisely. **Structs** group fields that always exist together (\"a product has a name and a price\"). **Enums** model alternatives (\"a payment is cash, card or gift card\"), and each variant carries exactly the data that case needs, so impossible combinations (a card payment without a card number) cannot be represented. Recursive enums (with `Box`) model trees such as expressions, file systems or JSON values.",
+"**`match`** handles every variant, and exhaustiveness checking makes enums safe to extend: add a variant and the compiler lists every `match` that must handle it. Methods in `impl` blocks keep behaviour next to the data, and returning `Result` from operations that can fail (division by zero, unknown variables) keeps the model honest.",
+"The example builds a tiny **expression evaluator**: `Expr` is an enum with number, variable and operation variants; evaluation is a recursive `match`. It is a classic exercise because it combines recursion, Box, pattern matching with nested destructuring, error handling and `Display` in under fifty lines."
+],
+"how": [
+"Struct for \"all of these\"; enum for \"one of these\", with per-variant data.",
+"Recursive enums need `Box` (or `Vec`, `Rc`) for indirection.",
+"`match` exhaustively; avoid `_` on your own enums so new variants are flagged.",
+"Methods return `Result` for failures; implement `Display` for user output.",
+"Make illegal states unrepresentable."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A tiny expression evaluator",
+"code": "use std::collections::HashMap;\nuse std::fmt;\n\n#[derive(Debug, Clone)]\nenum Expr {\n    Num(f64),\n    Var(String),\n    Add(Box<Expr>, Box<Expr>),\n    Mul(Box<Expr>, Box<Expr>),\n    Div(Box<Expr>, Box<Expr>),\n}\n\nuse Expr::*;\n\n#[derive(Debug, PartialEq)]\nenum EvalError {\n    UnknownVariable(String),\n    DivisionByZero,\n}\n\nimpl Expr {\n    fn eval(&self, env: &HashMap<&str, f64>) -> Result<f64, EvalError> {\n        Ok(match self {\n            Num(n) => *n,\n            Var(name) => *env.get(name.as_str()).ok_or_else(|| EvalError::UnknownVariable(name.clone()))?,\n            Add(a, b) => a.eval(env)? + b.eval(env)?,\n            Mul(a, b) => a.eval(env)? * b.eval(env)?,\n            Div(a, b) => {\n                let d = b.eval(env)?;\n                if d == 0.0 {\n                    return Err(EvalError::DivisionByZero);\n                }\n                a.eval(env)? / d\n            }\n        })\n    }\n}\n\nimpl fmt::Display for Expr {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        match self {\n            Num(n) => write!(f, \"{n}\"),\n            Var(v) => write!(f, \"{v}\"),\n            Add(a, b) => write!(f, \"({a} + {b})\"),\n            Mul(a, b) => write!(f, \"{a} * {b}\"),\n            Div(a, b) => write!(f, \"{a} / {b}\"),\n        }\n    }\n}\n\nfn main() {\n    let price_with_tax = Mul(Box::new(Add(Box::new(Var(\"price\".into())), Box::new(Num(2.0)))), Box::new(Num(1.15)));\n    let env = HashMap::from([(\"price\", 18.0), (\"people\", 0.0)]);\n    println!(\"{price_with_tax} = {:?}\", price_with_tax.eval(&env));\n    let split = Div(Box::new(price_with_tax.clone()), Box::new(Var(\"people\".into())));\n    println!(\"{split} = {:?}\", split.eval(&env));\n    println!(\"{} = {:?}\", Var(\"tip\".into()), Var(\"tip\".into()).eval(&env));\n}",
+"note": "Each variant carries exactly what it needs, `Box` makes the recursive type sized, and `eval` is one exhaustive `match` using `?` to propagate errors from sub-expressions. The same structure gives a `Display` implementation for free-form printing. Division by zero and unknown variables become typed errors, not panics.",
+"output": "(price + 2) * 1.15 = Ok(23.0)\n(price + 2) * 1.15 / people = Err(DivisionByZero)\ntip = Err(UnknownVariable(\"tip\"))"
+},
+{
+"lang": "rust",
+"title": "Adding a variant flags every match that must handle it",
+"code": "enum Payment {\n    Cash,\n    Card { last4: String },\n    GiftCard(u32),\n}\n\nfn fee(p: &Payment) -> u32 {\n    match p {\n        Payment::Cash => 0,\n        Payment::Card { .. } => 30,\n    }\n}\n\nfn main() {\n    println!(\"{}\", fee(&Payment::Cash));\n}",
+"note": "`GiftCard` was added to the enum but `fee` was not updated, and the compiler refuses to build until it is handled, naming the missing variant. This is why idiomatic code avoids a `_` catch-all on its own enums: the compiler becomes a checklist of every place a new case matters.",
+"output": "error[E0004]: non-exhaustive patterns: `&Payment::GiftCard(_)` not covered\n  --> main.rs:8:11\n   |\n 8 |     match p {\n   |           ^ pattern `&Payment::GiftCard(_)` not covered\n   |\n  --> main.rs:1:6\n   |\n 1 | enum Payment {\n   |      ^^^^^^^\n 4 |     GiftCard(u32),\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Structs full of optional fields for \"kinds\".** Use an enum with per-variant data.",
+"**`_ =>` on your own enums.** You lose the compiler's help when variants are added.",
+"**Panicking in evaluation code.** Return a typed error."
+],
+"keys": [
+"Structs for \"and\", enums for \"or\"; make illegal states unrepresentable.",
+"Recursive enums use Box.",
+"Exhaustive matches turn new variants into compiler checklists.",
+"Return typed errors; implement Display for output."
+]
+},
+"A2.1": {
+"idea": [
+"`Vec<T>` is the default collection, and knowing how it grows helps you use it well. A vector has a **length** (elements in use) and a **capacity** (allocated space). When a push exceeds the capacity, it allocates a bigger buffer (roughly doubling) and moves the elements, so `push` is **amortised O(1)**. If you know the final size, `Vec::with_capacity(n)` or `reserve(n)` avoids the repeated reallocations; `shrink_to_fit` releases unused space.",
+"A `Vec` is a perfect **stack** (`push`/`pop`/`last`), and `insert(0, x)` or `remove(0)` are O(n) because everything shifts. For a **queue**, use **`VecDeque<T>`**, a ring buffer with O(1) `push_back`, `push_front`, `pop_front` and `pop_back`; it is the right tool for breadth-first search, job queues and sliding windows. Other useful methods: `retain` (filter in place), `dedup` (remove consecutive duplicates), `drain(range)` (remove and iterate), `swap_remove` (O(1) removal that doesn't keep order), `sort_unstable` (faster when stability doesn't matter), `binary_search` on sorted data, and `chunks`/`windows`.",
+"**`LinkedList`** exists but is rarely the right choice: each node is a separate allocation, cache behaviour is poor, and VecDeque does most of its jobs faster."
+],
+"how": [
+"`with_capacity(n)` / `reserve(n)` when the size is known; `len()` vs `capacity()`.",
+"Stack: `push`, `pop`, `last`; avoid `insert(0)` and `remove(0)` on large vectors.",
+"Queue/deque: `VecDeque` with `push_back`, `pop_front`, etc.",
+"In-place tools: `retain`, `dedup`, `drain`, `swap_remove`, `sort_unstable`, `binary_search`.",
+"`chunks(n)`, `windows(n)` for grouped and sliding views."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Capacity, stacks, queues and in-place tools",
+"code": "use std::collections::VecDeque;\n\nfn main() {\n    let mut v = Vec::new();\n    let mut growths = Vec::new();\n    for i in 0..20 {\n        let before = v.capacity();\n        v.push(i);\n        if v.capacity() != before {\n            growths.push(v.capacity());\n        }\n    }\n    println!(\"capacity grew at: {growths:?}\");\n    let prepared: Vec<u32> = Vec::with_capacity(1000);\n    println!(\"with_capacity: len {} capacity {}\", prepared.len(), prepared.capacity());\n\n    let mut undo = vec![\"type a\", \"type b\", \"delete\"];\n    while let Some(action) = undo.pop() {\n        print!(\"undo {action:?}; \");\n    }\n    println!();\n\n    let mut queue: VecDeque<&str> = VecDeque::from([\"job1\", \"job2\"]);\n    queue.push_back(\"job3\");\n    queue.push_front(\"urgent\");\n    println!(\"served first: {:?}, then {:?}, left {:?}\", queue.pop_front(), queue.pop_front(), queue);\n\n    let mut readings = vec![3, 3, 7, -1, 7, 7, 12, -4, 12];\n    readings.retain(|&r| r >= 0);\n    readings.dedup();\n    println!(\"cleaned: {readings:?}\");\n    let maxima: Vec<i32> = readings.windows(2).map(|w| w[0].max(w[1])).collect();\n    println!(\"pairwise max: {maxima:?}, chunks: {:?}\", readings.chunks(2).collect::<Vec<_>>());\n    let mut sorted = readings.clone();\n    sorted.sort_unstable();\n    println!(\"binary_search(7) = {:?}, (8) = {:?}\", sorted.binary_search(&7), sorted.binary_search(&8));\n}",
+"note": "Capacity grew in jumps (4, 8, 16, 32), so 20 pushes needed only four reallocations. The Vec served as an undo stack, and VecDeque served as a queue with a priority job pushed to the front. `retain` and `dedup` cleaned the data in place; `binary_search` returns `Ok(index)` when found and `Err(insertion_point)` when not.",
+"output": "capacity grew at: [4, 8, 16, 32]\nwith_capacity: len 0 capacity 1000\nundo \"delete\"; undo \"type b\"; undo \"type a\"; \nserved first: Some(\"urgent\"), then Some(\"job1\"), left [\"job2\", \"job3\"]\ncleaned: [3, 7, 12]\npairwise max: [7, 12], chunks: [[3, 7], [12]]\nbinary_search(7) = Ok(1), (8) = Err(2)"
+},
+{
+"lang": "rust",
+"title": "Why queues shouldn't use Vec::remove(0)",
+"code": "use std::collections::VecDeque;\nuse std::time::Instant;\n\nfn main() {\n    let n = 60_000;\n    let mut v: Vec<u32> = (0..n).collect();\n    let start = Instant::now();\n    while !v.is_empty() {\n        v.remove(0);                                // shifts every remaining element\n    }\n    let t_vec = start.elapsed();\n\n    let mut d: VecDeque<u32> = (0..n).collect();\n    let start = Instant::now();\n    while d.pop_front().is_some() {}\n    let t_deque = start.elapsed();\n    println!(\"VecDeque at least 20x faster at draining from the front: {}\", t_vec > t_deque * 20);\n}",
+"note": "Removing from the front of a Vec shifts all remaining elements, so draining it is O(n²), while VecDeque's ring buffer pops from the front in O(1). Exact times vary, so only the comparison is printed; the gap grows with the size of the queue.",
+"output": "VecDeque at least 20x faster at draining from the front: true"
+}
+],
+"mistakes": [
+"**`remove(0)` in a loop.** Quadratic time. Use VecDeque.",
+"**Pushing thousands of items without `with_capacity` when the size is known.** Extra reallocations.",
+"**`binary_search` on unsorted data.** Results are meaningless. Sort first."
+],
+"keys": [
+"Vec grows by reallocating; push is amortised O(1); reserve when size is known.",
+"Vec is a stack; VecDeque is the queue/deque.",
+"`retain`, `dedup`, `drain`, `windows`, `chunks` work in place or as views.",
+"LinkedList is rarely the right choice."
+]
+},
+"A2.2": {
+"idea": [
+"`HashMap<K, V>` and `HashSet<T>` are hash tables: average O(1) insert, lookup and removal. Keys must implement **`Eq` and `Hash`**, and they must agree: values that are equal must hash the same. For your own types, `#[derive(PartialEq, Eq, Hash)]` gets this right automatically, hashing every field that equality compares; if you implement `PartialEq` by hand (say, case-insensitive), implement `Hash` consistently too, or lookups will silently fail.",
+"**`HashSet`** stores unique values and supports set algebra: `union`, `intersection`, `difference` and `symmetric_difference` return iterators, and `is_subset`/`is_disjoint` answer relationship questions. Collecting into a HashSet is the idiomatic way to deduplicate.",
+"Two properties matter in practice. **Iteration order is arbitrary** and differs between runs (std uses randomly seeded SipHash to resist hash-flooding attacks), so never depend on it: sort, or use `BTreeMap`/`BTreeSet`, or `IndexMap` (crate) when insertion order matters. And for performance-critical code with trusted keys, a faster non-cryptographic hasher (`rustc-hash`'s FxHashMap, `ahash`) can make maps noticeably quicker. The **entry API** remains the tool for update-or-insert."
+],
+"how": [
+"`#[derive(PartialEq, Eq, Hash)]` for key types; keep manual Eq and Hash consistent.",
+"HashSet: `insert` returns false for duplicates; `union`, `intersection`, `difference`, `is_subset`.",
+"Never rely on iteration order; sort or use BTree collections.",
+"Entry API for counting and grouping.",
+"Faster hashers for trusted keys; default SipHash resists DoS."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Custom keys and set algebra",
+"code": "use std::collections::{HashMap, HashSet};\n\nfn sorted<'a>(items: impl Iterator<Item = &'a &'a str>) -> Vec<&'a str> {\n    let mut v: Vec<&str> = items.copied().collect();\n    v.sort();\n    v\n}\n\n#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]\nstruct Seat {\n    row: char,\n    number: u8,\n}\n\nfn main() {\n    let mut booked: HashMap<Seat, &str> = HashMap::new();\n    booked.insert(Seat { row: 'A', number: 1 }, \"ada\");\n    booked.insert(Seat { row: 'A', number: 2 }, \"ben\");\n    let wanted = Seat { row: 'A', number: 2 };\n    println!(\"A2 booked by {:?}, B1 by {:?}\", booked.get(&wanted), booked.get(&Seat { row: 'B', number: 1 }));\n\n    let python: HashSet<&str> = [\"ada\", \"ben\", \"cy\", \"dee\"].into_iter().collect();\n    let rust: HashSet<&str> = [\"cy\", \"dee\", \"eve\"].into_iter().collect();\n    println!(\"both: {:?}\", sorted(python.intersection(&rust)));\n    println!(\"either: {:?}\", sorted(python.union(&rust)));\n    println!(\"python only: {:?}\", sorted(python.difference(&rust)));\n    println!(\"exactly one: {:?}\", sorted(python.symmetric_difference(&rust)));\n    let core: HashSet<&str> = [\"cy\"].into_iter().collect();\n    println!(\"core is subset of rust: {}\", core.is_subset(&rust));\n\n    let mut seen = HashSet::new();\n    let emails = [\"a@x.com\", \"b@x.com\", \"a@x.com\", \"c@x.com\", \"b@x.com\"];\n    let duplicates: Vec<&str> = emails.iter().filter(|e| !seen.insert(**e)).copied().collect();\n    println!(\"duplicates: {duplicates:?}, unique count {}\", seen.len());\n\n    let mut seats: Vec<&Seat> = booked.keys().collect();\n    seats.sort();\n    println!(\"seats in a stable order: {seats:?}\");\n}",
+"note": "Deriving `Hash` and `Eq` made `Seat` usable as a key, and a freshly built equal Seat finds the booking. Set operations return iterators, collected and sorted here because hash order is arbitrary. `insert` returning false is a one-line duplicate detector. Sorting the keys (thanks to the derived `Ord`) gives stable output.",
+"output": "A2 booked by Some(\"ben\"), B1 by None\nboth: [\"cy\", \"dee\"]\neither: [\"ada\", \"ben\", \"cy\", \"dee\", \"eve\"]\npython only: [\"ada\", \"ben\"]\nexactly one: [\"ada\", \"ben\", \"eve\"]\ncore is subset of rust: true\nduplicates: [\"a@x.com\", \"b@x.com\"], unique count 3\nseats in a stable order: [Seat { row: 'A', number: 1 }, Seat { row: 'A', number: 2 }]"
+},
+{
+"lang": "rust",
+"title": "Inconsistent Eq and Hash break lookups",
+"code": "use std::collections::HashSet;\nuse std::hash::{Hash, Hasher};\n\n#[derive(Debug)]\nstruct Email(String);\n\nimpl PartialEq for Email {\n    fn eq(&self, other: &Self) -> bool {\n        self.0.eq_ignore_ascii_case(&other.0)          // case-insensitive equality...\n    }\n}\nimpl Eq for Email {}\n\nimpl Hash for Email {\n    fn hash<H: Hasher>(&self, state: &mut H) {\n        self.0.hash(state);                            // ...but case-sensitive hashing: a bug\n    }\n}\n\n#[derive(Debug, PartialEq, Eq, Hash)]\nstruct FixedEmail(String);\n\nimpl FixedEmail {\n    fn new(s: &str) -> Self {\n        FixedEmail(s.to_ascii_lowercase())             // normalise once; derive the rest\n    }\n}\n\nfn main() {\n    let a = Email(\"Ada@Example.com\".into());\n    let b = Email(\"ada@example.com\".into());\n    println!(\"equal? {}\", a == b);\n    let mut set = HashSet::new();\n    set.insert(a);\n    println!(\"buggy set contains the equal value? {}\", set.contains(&b));\n\n    let mut fixed = HashSet::new();\n    fixed.insert(FixedEmail::new(\"Ada@Example.com\"));\n    println!(\"fixed set contains it? {}\", fixed.contains(&FixedEmail::new(\"ada@example.com\")));\n}",
+"note": "The two emails compare equal, yet the set cannot find one when given the other, because they hash to different buckets: equal values must have equal hashes. The robust fix is to normalise the data once in a constructor and derive everything, so equality and hashing can never disagree.",
+"output": "equal? true\nbuggy set contains the equal value? false\nfixed set contains it? true"
+}
+],
+"mistakes": [
+"**Depending on HashMap iteration order.** It changes between runs. Sort or use BTreeMap.",
+"**Manual `PartialEq` without a matching `Hash`.** Lookups fail silently. Normalise and derive.",
+"**Mutating a key's fields while it is in a map.** Its hash changes and it gets lost. Keys should be immutable."
+],
+"keys": [
+"Keys need consistent `Eq` and `Hash`; derive them.",
+"HashSet provides deduplication and set algebra.",
+"Iteration order is arbitrary; sort for stable output.",
+"Normalise data before hashing when equality is custom."
+]
+},
+"A2.3": {
+"idea": [
+"The **B-tree** collections keep keys **sorted**. `BTreeMap<K, V>` and `BTreeSet<T>` have O(log n) operations (instead of a hash map's average O(1)), and in return iteration is always in key order, and **range queries** are efficient: `map.range(\"b\"..\"d\")` or `set.range(10..=20)` visit only the keys in that interval. `first_key_value`/`last_key_value` give the minimum and maximum. Keys need `Ord` rather than `Hash`. Choose BTree collections when you need ordered output, ranges, or deterministic iteration (reports, tests, serialised output).",
+"**`BinaryHeap<T>`** is a priority queue: `push` adds in O(log n) and `pop` always removes the **largest** element (it is a max-heap). For a min-heap, wrap values in **`std::cmp::Reverse`**: `heap.push(Reverse(cost))`. Tuples order field by field, so `(priority, name)` or `Reverse((distance, node))` give natural multi-key priorities.",
+"Priority queues power schedulers, \"top k\" queries, merging sorted streams and graph algorithms. **Dijkstra's shortest-path algorithm** is the classic: a min-heap of `(distance, node)` always expands the closest unvisited node next."
+],
+"how": [
+"`BTreeMap`/`BTreeSet`: sorted iteration, `range(a..b)`, `first_key_value`, `last_key_value`; keys need `Ord`.",
+"Use them for ordered or deterministic output and range queries.",
+"`BinaryHeap`: max-heap; `push`, `pop`, `peek`, `into_sorted_vec`.",
+"Min-heap: `Reverse(x)`; tuples order lexicographically.",
+"Top-k: keep a min-heap of size k."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Sorted data, ranges and a priority queue",
+"code": "use std::cmp::Reverse;\nuse std::collections::{BTreeMap, BTreeSet, BinaryHeap};\n\nfn main() {\n    let mut temps: BTreeMap<&str, i32> = BTreeMap::new();\n    for (day, t) in [(\"2026-11-05\", 4), (\"2026-11-01\", 9), (\"2026-11-03\", -2), (\"2026-11-02\", 7), (\"2026-11-04\", 1)] {\n        temps.insert(day, t);\n    }\n    println!(\"in date order: {:?}\", temps.values().collect::<Vec<_>>());\n    println!(\"Nov 2-4: {:?}\", temps.range(\"2026-11-02\"..=\"2026-11-04\").collect::<Vec<_>>());\n    println!(\"first {:?}, last {:?}\", temps.first_key_value(), temps.last_key_value());\n\n    let ids: BTreeSet<u32> = [42, 7, 19, 88, 3, 64].into_iter().collect();\n    println!(\"ids 10..=70: {:?}\", ids.range(10..=70).collect::<Vec<_>>());\n\n    let mut jobs = BinaryHeap::new();\n    for (priority, name) in [(2, \"send newsletter\"), (9, \"fix outage\"), (5, \"review PR\"), (9, \"call customer\")] {\n        jobs.push((priority, name));\n    }\n    while let Some((p, name)) = jobs.pop() {\n        print!(\"[{p}] {name}; \");\n    }\n    println!();\n\n    let prices = [12, 3, 45, 7, 30, 2, 18];\n    let mut top3 = BinaryHeap::new();                       // min-heap of size 3\n    for &p in &prices {\n        top3.push(Reverse(p));\n        if top3.len() > 3 {\n            top3.pop();                                     // drop the smallest\n        }\n    }\n    let mut best: Vec<i32> = top3.into_iter().map(|Reverse(p)| p).collect();\n    best.sort_unstable_by(|a, b| b.cmp(a));\n    println!(\"top 3 prices: {best:?}\");\n}",
+"note": "The BTreeMap iterated in date order regardless of insertion order, and `range` returned just the days requested. The BinaryHeap popped the highest priority first, breaking the tie between the two 9s by name (tuples compare field by field). Wrapping in `Reverse` turned it into a min-heap for an efficient top-3.",
+"output": "in date order: [9, 7, -2, 1, 4]\nNov 2-4: [(\"2026-11-02\", 7), (\"2026-11-03\", -2), (\"2026-11-04\", 1)]\nfirst Some((\"2026-11-01\", 9)), last Some((\"2026-11-05\", 4))\nids 10..=70: [19, 42, 64]\n[9] fix outage; [9] call customer; [5] review PR; [2] send newsletter; \ntop 3 prices: [45, 30, 18]"
+},
+{
+"lang": "rust",
+"title": "Dijkstra's shortest paths with a min-heap",
+"code": "use std::cmp::Reverse;\nuse std::collections::{BTreeMap, BinaryHeap};\n\nfn shortest(graph: &BTreeMap<&str, Vec<(&str, u32)>>, start: &str) -> BTreeMap<String, u32> {\n    let mut dist: BTreeMap<String, u32> = BTreeMap::new();\n    let mut heap = BinaryHeap::from([Reverse((0u32, start.to_string()))]);\n    while let Some(Reverse((d, node))) = heap.pop() {\n        if dist.contains_key(&node) {\n            continue;                                      // already settled with a shorter path\n        }\n        dist.insert(node.clone(), d);\n        for &(next, w) in graph.get(node.as_str()).into_iter().flatten() {\n            if !dist.contains_key(next) {\n                heap.push(Reverse((d + w, next.to_string())));\n            }\n        }\n    }\n    dist\n}\n\nfn main() {\n    let graph = BTreeMap::from([\n        (\"Montréal\", vec![(\"Ottawa\", 200), (\"Québec\", 250), (\"Toronto\", 540)]),\n        (\"Ottawa\", vec![(\"Toronto\", 450), (\"Kingston\", 200)]),\n        (\"Kingston\", vec![(\"Toronto\", 260)]),\n        (\"Québec\", vec![]),\n        (\"Toronto\", vec![]),\n    ]);\n    for (city, km) in shortest(&graph, \"Montréal\") {\n        println!(\"{city:9} {km:>4} km\");\n    }\n}",
+"note": "The min-heap always expands the closest unsettled city, so each city's first appearance is its shortest distance; later, longer entries are skipped. Toronto is reached directly at 540 km rather than via Ottawa (650) or Kingston (660). Using BTreeMap makes the output order deterministic.",
+"output": "Kingston   400 km\nMontréal     0 km\nOttawa     200 km\nQuébec     250 km\nToronto    540 km"
+}
+],
+"mistakes": [
+"**HashMap when output order matters.** Use BTreeMap or sort.",
+"**Expecting BinaryHeap to pop the smallest.** It's a max-heap; use `Reverse`.",
+"**Sorting a whole list to get the top k.** A size-k heap is cheaper for large inputs."
+],
+"keys": [
+"BTreeMap/BTreeSet keep keys sorted, with efficient range queries.",
+"They give deterministic iteration, at O(log n) per operation.",
+"BinaryHeap is a max-heap priority queue; `Reverse` makes a min-heap.",
+"Heaps power schedulers, top-k and Dijkstra."
+]
+},
+"A3.1": {
+"idea": [
+"Knowing where data lives makes ownership feel physical. The **stack** holds each function's local variables in a frame that is pushed on call and popped on return: allocation is just moving a pointer, so it is extremely fast, but sizes must be known at compile time. The **heap** holds data whose size is decided at run time or that must outlive a function call; allocating there means asking the allocator for memory and later freeing it.",
+"Common types have small, fixed **stack** parts. A `String` or `Vec<T>` is three words (pointer, capacity, length: 24 bytes on 64-bit) pointing at a heap buffer; a `&str` or `&[T]` is two words (pointer, length); `Box<T>` and `&T` are one word; `Option<Box<T>>` and `Option<&T>` are also one word thanks to the **niche optimisation** (null means None). `std::mem::size_of` tells you.",
+"A **move** copies only the stack part (those few words) and marks the old variable as unusable; the heap data never moves. That is why moving a huge `Vec` is cheap, and why using the old variable is forbidden: two owners of one buffer would free it twice. **Drop** runs when the owner goes out of scope, freeing heap memory deterministically, without a garbage collector."
+],
+"how": [
+"Stack: fixed-size locals, fast push/pop; heap: run-time-sized or long-lived data.",
+"`size_of::<T>()`: String/Vec = 24, &str/&[T] = 16, Box/& = 8 bytes on 64-bit.",
+"Moves copy the stack part; heap buffers stay put.",
+"`Option<Box<T>>`/`Option<&T>` cost nothing extra (niche optimisation).",
+"Drop frees deterministically at the end of scope."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Measuring types and watching a move",
+"code": "use std::mem::size_of;\n\n#[allow(dead_code)]\nenum Shape {\n    Circle(f64),\n    Rect(f64, f64),\n}\n\nfn main() {\n    println!(\"u8 {}, i32 {}, f64 {}, char {}, bool {}\", size_of::<u8>(), size_of::<i32>(), size_of::<f64>(), size_of::<char>(), size_of::<bool>());\n    println!(\"String {}, Vec<u64> {}, &str {}, &[u8] {}\", size_of::<String>(), size_of::<Vec<u64>>(), size_of::<&str>(), size_of::<&[u8]>());\n    println!(\"Box<u64> {}, &u64 {}, Option<Box<u64>> {}, Option<u64> {}\", size_of::<Box<u64>>(), size_of::<&u64>(), size_of::<Option<Box<u64>>>(), size_of::<Option<u64>>());\n    println!(\"Shape enum {} (largest variant + tag)\", size_of::<Shape>());\n\n    let big: Vec<u64> = (0..1_000_000).collect();\n    let heap_before = big.as_ptr();\n    let moved = big;                                   // copies 24 bytes, not 8 MB\n    println!(\"heap buffer unchanged by the move: {}\", heap_before == moved.as_ptr());\n    let boxed = Box::new(moved);\n    println!(\"boxing moves the 24-byte header to the heap; data still at the same place: {}\", heap_before == boxed.as_ptr());\n}",
+"note": "Owned buffers like String and Vec are three words; slices are two (pointer and length); Box and references are one. `Option<Box<u64>>` is still 8 bytes because a null pointer represents None, while `Option<u64>` needs extra space for its tag. Moving a million-element vector copied only its 24-byte header: the heap buffer did not move.",
+"output": "u8 1, i32 4, f64 8, char 4, bool 1\nString 24, Vec<u64> 24, &str 16, &[u8] 16\nBox<u64> 8, &u64 8, Option<Box<u64>> 8, Option<u64> 16\nShape enum 24 (largest variant + tag)\nheap buffer unchanged by the move: true\nboxing moves the 24-byte header to the heap; data still at the same place: true"
+},
+{
+"lang": "rust",
+"title": "The use-after-move the compiler prevents",
+"code": "fn consume(data: Vec<u8>) -> usize {\n    data.len()                          // `data` is dropped (and freed) here\n}\n\nfn main() {\n    let payload = vec![1, 2, 3];\n    let n = consume(payload);\n    println!(\"{n} bytes; first is {}\", payload[0]);\n}",
+"note": "After the move, `consume` owned the buffer and freed it when it returned. Reading `payload[0]` afterwards would be a use-after-free in C; in Rust it is a compile error explaining where the value moved. The physical picture (one heap buffer, one owner) is exactly what the rule protects.",
+"output": "error[E0382]: borrow of moved value: `payload`\n --> main.rs:8:40\n  |\n6 |     let payload = vec![1, 2, 3];\n  |         ------- move occurs because `payload` has type `Vec<u8>`, which does not implement the `Copy` trait\n7 |     let n = consume(payload);\n  |                     ------- value moved here\n8 |     println!(\"{n} bytes; first is {}\", payload[0]);\n  |                                        ^^^^^^^ value borrowed here after move\n  |\n --> main.rs:1:18\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Assuming moves are expensive.** They copy a few words; the heap stays put.",
+"**Boxing small values for \"performance\".** It adds an allocation and an indirection.",
+"**Large arrays on the stack** (`[u8; 10_000_000]`). They can overflow the stack; use `Vec` or `Box<[T]>`."
+],
+"keys": [
+"Stack frames are fast and fixed-size; the heap holds run-time-sized data.",
+"String/Vec are 24-byte headers pointing at heap buffers.",
+"Moves copy headers; the old variable becomes invalid.",
+"Drop frees deterministically; niche optimisation makes `Option<Box<T>>` free."
+]
+},
+"A3.2": {
+"idea": [
+"Some borrowing situations come up constantly; knowing the patterns avoids most fights with the borrow checker. **Split borrows**: the compiler tracks struct fields separately, so you can borrow `self.items` mutably while reading `self.limit`, as long as you access the fields directly rather than through methods that borrow all of `self`. Destructuring (`let Self { items, limit } = self;`) makes this explicit.",
+"**Getting a value out of a `&mut`**: you cannot move out of a borrowed place, but you can swap something in. `std::mem::take(&mut x)` replaces `x` with its `Default` value (an empty Vec or String) and returns the old one; `mem::replace(&mut x, new)` puts in a value you choose; `mem::swap` exchanges two. `Option::take()` is the same idea for options. These are the standard way to move out of fields, transform state machines, or reuse buffers.",
+"**Avoiding clones**: `Cow<'a, str>` (clone on write) holds either a borrowed `&str` or an owned `String`, and only allocates when a change is actually needed, ideal for functions that usually return their input unchanged (escaping, normalising). **Iterating while modifying**: collect what you need first, use `retain`, or iterate over indices; the borrow checker is right that changing a collection while iterating over it is dangerous."
+],
+"how": [
+"Borrow disjoint fields separately; destructure `self` to make it obvious.",
+"`mem::take(&mut x)` (leaves Default), `mem::replace(&mut x, v)`, `mem::swap(&mut a, &mut b)`, `option.take()`.",
+"`Cow<'a, str>`: `Cow::Borrowed(s)` when unchanged, `Cow::Owned(new)` when changed.",
+"Modify collections with `retain`, `iter_mut`, or a collect-then-apply pass.",
+"Clone only when you truly need two owners."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Split borrows, mem::take and Cow",
+"code": "use std::borrow::Cow;\nuse std::mem;\n\nstruct Inbox {\n    messages: Vec<String>,\n    archived: Vec<String>,\n    max_len: usize,\n}\n\nimpl Inbox {\n    fn truncate_long(&mut self) {\n        let Inbox { messages, max_len, .. } = self;           // disjoint field borrows\n        for m in messages.iter_mut() {\n            if m.len() > *max_len {\n                m.truncate(*max_len);\n                m.push('…');\n            }\n        }\n    }\n\n    fn archive_all(&mut self) -> usize {\n        let taken = mem::take(&mut self.messages);            // leaves an empty Vec behind\n        let n = taken.len();\n        self.archived.extend(taken);\n        n\n    }\n}\n\nfn escape_html(input: &str) -> Cow<'_, str> {\n    if !input.contains(['<', '>', '&']) {\n        return Cow::Borrowed(input);                          // no allocation\n    }\n    Cow::Owned(input.replace('&', \"&amp;\").replace('<', \"&lt;\").replace('>', \"&gt;\"))\n}\n\nfn main() {\n    let mut inbox = Inbox { messages: vec![\"hi\".into(), \"a very long message about Rust\".into()], archived: vec![], max_len: 10 };\n    inbox.truncate_long();\n    println!(\"{:?}\", inbox.messages);\n    println!(\"archived {}, inbox now {:?}, archive {:?}\", inbox.archive_all(), inbox.messages, inbox.archived);\n\n    let mut state = String::from(\"draft\");\n    let old = mem::replace(&mut state, String::from(\"published\"));\n    println!(\"state went from {old} to {state}\");\n\n    for s in [\"plain text\", \"<b>bold</b> & more\"] {\n        let out = escape_html(s);\n        println!(\"{:24} borrowed? {:5} -> {out}\", s, matches!(out, Cow::Borrowed(_)));\n    }\n}",
+"note": "Destructuring `self` let the loop mutate `messages` while reading `max_len`. `mem::take` moved the whole message list out of `&mut self`, leaving an empty Vec, and `mem::replace` swapped in a new state while returning the old. `escape_html` returned the input borrowed when nothing needed escaping and only allocated when it did.",
+"output": "[\"hi\", \"a very lon…\"]\narchived 2, inbox now [], archive [\"hi\", \"a very lon…\"]\nstate went from draft to published\nplain text               borrowed? true  -> plain text\n<b>bold</b> & more       borrowed? false -> &lt;b&gt;bold&lt;/b&gt; &amp; more"
+},
+{
+"lang": "rust",
+"title": "Moving out of a field behind &mut self",
+"code": "struct Job {\n    log: Vec<String>,\n}\n\nimpl Job {\n    fn finish(&mut self) -> Vec<String> {\n        self.log\n    }\n}\n\nfn main() {}",
+"note": "Returning `self.log` would move the vector out of a struct we only borrowed, leaving it in an invalid state, so the compiler refuses (\"cannot move out of `self.log` which is behind a mutable reference\"). `std::mem::take(&mut self.log)` does exactly what was intended: hands back the log and leaves an empty one in its place.",
+"output": "error[E0507]: cannot move out of `self.log` which is behind a mutable reference\n --> main.rs:7:9\n  |\n7 |         self.log\n  |         ^^^^^^^^ move occurs because `self.log` has type `Vec<String>`, which does not implement the `Copy` trait\n  |\nhelp: consider cloning the value if the performance cost is acceptable\n  |\n7 |         self.log.clone()\n  |                 ++++++++",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Calling a `&mut self` method while holding a field borrow.** Access fields directly, or destructure.",
+"**Cloning to get a value out of `&mut`.** Use `mem::take`/`replace` or `Option::take`.",
+"**Always returning `String` from transformation functions.** `Cow` avoids allocating when nothing changes."
+],
+"keys": [
+"The compiler tracks disjoint field borrows; destructure to use them.",
+"`mem::take`, `mem::replace`, `mem::swap` and `Option::take` move values out of `&mut`.",
+"`Cow` borrows when possible and allocates only on change.",
+"Prefer these patterns to reflexive cloning."
+]
+},
+"A3.3": {
+"idea": [
+"Lifetimes become interesting in structs and generic code. A struct holding references needs lifetime parameters, and sometimes **more than one**: a `Parser<'src, 'cfg>` that borrows its input text and a separate configuration lets callers drop the configuration while still using slices of the input, which a single shared lifetime would forbid. Methods in `impl<'a> S<'a>` can return references tied to `'a` (the data the struct borrows), which then outlive the struct itself.",
+"The **elision rules**, applied by hand: (1) each reference parameter gets its own lifetime; (2) if there is exactly one input lifetime, it is assigned to all outputs; (3) if one of the inputs is `&self` or `&mut self`, its lifetime is assigned to the outputs. When none of these determines the output, you must annotate.",
+"**`T: 'static`** is commonly misread. It does not mean \"lives forever\"; it means \"contains no non-static references\", so the value *could* be kept as long as you like. Every owned type (`String`, `Vec<u8>`, your own structs without references) satisfies `'static`. That is why `thread::spawn` requires `'static`: the thread may outlive the caller, so the closure must own its data. `&'static str` is a different thing: a reference valid for the whole program, like a string literal."
+],
+"how": [
+"Several lifetimes (`'a`, `'b`) when borrows are independent.",
+"Methods returning `&'a T` borrow from the struct's data, not from `&self`.",
+"Elision: one input lifetime → output; `&self` → output; otherwise annotate.",
+"`T: 'static` = owns its data (no short-lived references); owned types qualify.",
+"`&'static T` = reference valid for the whole program."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Two lifetimes and a 'static bound",
+"code": "struct Tokenizer<'src, 'cfg> {\n    text: &'src str,\n    separators: &'cfg [char],\n    pos: usize,\n}\n\nimpl<'src, 'cfg> Tokenizer<'src, 'cfg> {\n    fn next_token(&mut self) -> Option<&'src str> {          // tied to the text, not to self or the config\n        let rest = &self.text[self.pos..];\n        let rest_trimmed = rest.trim_start_matches(self.separators);\n        if rest_trimmed.is_empty() {\n            return None;\n        }\n        let start = self.pos + (rest.len() - rest_trimmed.len());\n        let len = rest_trimmed.find(self.separators).unwrap_or(rest_trimmed.len());\n        self.pos = start + len;\n        Some(&self.text[start..start + len])\n    }\n}\n\nfn first_tokens(text: &str) -> Vec<&str> {\n    let seps = vec![' ', ',', ';'];                           // a short-lived configuration\n    let mut t = Tokenizer { text, separators: &seps, pos: 0 };\n    let mut out = Vec::new();\n    while let Some(tok) = t.next_token() {\n        out.push(tok);\n    }\n    out                                                       // tokens outlive `seps` and `t`\n}\n\nfn keep_forever<T: std::fmt::Debug + Send + 'static>(value: T) -> std::thread::JoinHandle<String> {\n    std::thread::spawn(move || format!(\"background thread owns {value:?}\"))\n}\n\nfn main() {\n    let text = String::from(\"tea, cake; scones  jam\");\n    println!(\"{:?}\", first_tokens(&text));\n    println!(\"{}\", keep_forever(String::from(\"an owned String is 'static\")).join().unwrap());\n    println!(\"{}\", keep_forever(vec![1, 2, 3]).join().unwrap());\n    let literal: &'static str = \"lives for the whole program\";\n    println!(\"{}\", keep_forever(literal).join().unwrap());\n}",
+"note": "Because the tokens are tied to `'src` only, `first_tokens` could return them after its local separator list and tokenizer were dropped; with a single lifetime for both borrows, this would not compile. `keep_forever` accepted an owned String and Vec as `'static`, since they contain no borrowed data, and a string literal, which is a `&'static str`.",
+"output": "[\"tea\", \"cake\", \"scones\", \"jam\"]\nbackground thread owns \"an owned String is 'static\"\nbackground thread owns [1, 2, 3]\nbackground thread owns \"lives for the whole program\""
+},
+{
+"lang": "rust",
+"title": "A borrowed value is not 'static",
+"code": "fn keep_forever<T: std::fmt::Debug + Send + 'static>(value: T) -> std::thread::JoinHandle<()> {\n    std::thread::spawn(move || println!(\"{value:?}\"))\n}\n\nfn main() {\n    let name = String::from(\"Ferris\");\n    let borrowed: &str = &name;\n    keep_forever(borrowed).join().unwrap();\n}",
+"note": "`&str` borrowed from a local String is not `'static`: the thread could outlive `name`. The compiler explains that `name` does not live long enough for the `'static` requirement. Passing the String itself (`keep_forever(name)`) satisfies the bound, because an owned String contains no short-lived references.",
+"output": "error[E0597]: `name` does not live long enough\n --> main.rs:7:26\n  |\n6 |     let name = String::from(\"Ferris\");\n  |         ---- binding `name` declared here\n7 |     let borrowed: &str = &name;\n  |                          ^^^^^ borrowed value does not live long enough\n8 |     keep_forever(borrowed).join().unwrap();\n  |     ---------------------- argument requires that `name` is borrowed for `'static`\n9 | }\n  | - `name` dropped here while still borrowed\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**One lifetime for independent borrows.** Callers get needlessly restricted; use separate lifetimes.",
+"**Reading `T: 'static` as \"never freed\".** It means \"owns its data\"; owned values are dropped normally.",
+"**Adding `'static` to references to silence errors.** Usually the fix is to own the data."
+],
+"keys": [
+"Structs can have several lifetimes for independent borrows.",
+"Methods can return references tied to the borrowed data, outliving the struct.",
+"Elision rules: single input, or `&self`, decide the output lifetime.",
+"`T: 'static` means no short-lived references; owned types qualify."
+]
+},
+"A4.1": {
+"idea": [
+"Good error handling starts with a good **error type**. For a library or a module with distinct failure modes, define an **enum with one variant per failure**: `ConfigError::Io(io::Error)`, `ConfigError::Parse { line: usize, message: String }`, `ConfigError::Missing(&'static str)`. Callers can `match` on it and react differently to each case: retry an I/O error, show the line number for a parse error.",
+"To be a proper error, the type implements **`Display`** (the human-readable message, without a trailing period and without repeating the cause) and **`std::error::Error`**, whose **`source()`** method returns the underlying error, so tools can print the whole chain: \"failed to load config: cannot read settings.toml: No such file or directory\". `Debug` is derived.",
+"**`From` implementations** let the `?` operator convert automatically: `impl From<io::Error> for ConfigError` means a `fs::read_to_string(path)?` inside a function returning `Result<_, ConfigError>` wraps the I/O error in the right variant with no extra code. Writing all this by hand once makes clear what the `thiserror` crate (next lesson) generates for you."
+],
+"how": [
+"`#[derive(Debug)] enum MyError { Io(io::Error), Parse { line: usize, msg: String }, ... }`.",
+"`impl Display` with a concise message; don't repeat the source's message.",
+"`impl std::error::Error` with `source()` returning the wrapped error.",
+"`impl From<io::Error> for MyError` so `?` converts automatically.",
+"Walk the chain with `source()` to print full context."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A config loader with its own error type",
+"code": "use std::error::Error;\nuse std::fmt;\nuse std::fs;\nuse std::io;\nuse std::num::ParseIntError;\n\n#[derive(Debug)]\nenum ConfigError {\n    Io(io::Error),\n    BadNumber { line: usize, source: ParseIntError },\n    Missing(&'static str),\n}\n\nimpl fmt::Display for ConfigError {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        match self {\n            ConfigError::Io(_) => write!(f, \"cannot read the config file\"),\n            ConfigError::BadNumber { line, .. } => write!(f, \"line {line}: expected a number\"),\n            ConfigError::Missing(key) => write!(f, \"missing required key {key:?}\"),\n        }\n    }\n}\n\nimpl Error for ConfigError {\n    fn source(&self) -> Option<&(dyn Error + 'static)> {\n        match self {\n            ConfigError::Io(e) => Some(e),\n            ConfigError::BadNumber { source, .. } => Some(source),\n            ConfigError::Missing(_) => None,\n        }\n    }\n}\n\nimpl From<io::Error> for ConfigError {\n    fn from(e: io::Error) -> Self {\n        ConfigError::Io(e)\n    }\n}\n\nfn load_port(path: &str) -> Result<u16, ConfigError> {\n    let text = fs::read_to_string(path)?;                            // io::Error -> ConfigError via From\n    for (i, line) in text.lines().enumerate() {\n        if let Some(value) = line.strip_prefix(\"port=\") {\n            let n: u32 = value.trim().parse().map_err(|source| ConfigError::BadNumber { line: i + 1, source })?;\n            return Ok(n as u16);\n        }\n    }\n    Err(ConfigError::Missing(\"port\"))\n}\n\nfn report(e: &dyn Error) -> String {\n    let mut msg = e.to_string();\n    let mut cur = e.source();\n    while let Some(cause) = cur {\n        msg.push_str(&format!(\": {cause}\"));\n        cur = cause.source();\n    }\n    msg\n}\n\nfn main() {\n    fs::write(\"good.cfg\", \"host=localhost\\nport=8080\\n\").unwrap();\n    fs::write(\"bad.cfg\", \"host=localhost\\nport=80a\\n\").unwrap();\n    fs::write(\"empty.cfg\", \"host=localhost\\n\").unwrap();\n    for path in [\"good.cfg\", \"bad.cfg\", \"empty.cfg\", \"nope.cfg\"] {\n        match load_port(path) {\n            Ok(p) => println!(\"{path}: port {p}\"),\n            Err(e) => {\n                let kind = match &e { ConfigError::Io(_) => \"io\", ConfigError::BadNumber { .. } => \"parse\", ConfigError::Missing(_) => \"missing\" };\n                println!(\"{path}: [{kind}] {}\", report(&e));\n            }\n        }\n    }\n}",
+"note": "Each failure is a distinct variant callers can match on (here to tag the kind). `?` converted the I/O error through `From`, and `map_err` built the parse variant with its line number. `report` walked the `source()` chain, so messages read like \"line 2: expected a number: invalid digit found in string\" without any variant repeating its cause.",
+"output": "good.cfg: port 8080\nbad.cfg: [parse] line 2: expected a number: invalid digit found in string\nempty.cfg: [missing] missing required key \"port\"\nnope.cfg: [io] cannot read the config file: No such file or directory (os error 2)"
+},
+{
+"lang": "rust",
+"title": "? needs a From conversion",
+"code": "use std::fs;\n\n#[derive(Debug)]\nenum AppError {\n    NotFound,\n}\n\nfn load(path: &str) -> Result<String, AppError> {\n    let text = fs::read_to_string(path)?;\n    Ok(text)\n}\n\nfn main() {}",
+"note": "`?` tries to convert the `io::Error` into `AppError` with `From`, and no such implementation exists, so the compiler reports that `?` couldn't convert the error and suggests implementing `From<std::io::Error>`. Adding the `From` impl (or a `map_err`) is what makes `?` work across error types.",
+"output": "error[E0277]: `?` couldn't convert the error to `AppError`\n --> main.rs:9:40\n  |\n8 | fn load(path: &str) -> Result<String, AppError> {\n  |                        ------------------------ expected `AppError` because of this\n9 |     let text = fs::read_to_string(path)?;\n  |                ------------------------^ the trait `From<std::io::Error>` is not implemented for `AppError`\n  |                |\n  |                this can't be annotated with `?` because it has type `Result<_, std::io::Error>`\n  |\n --> main.rs:4:1\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**One string error for everything.** Callers can't react to specific failures. Use an enum.",
+"**Display messages that repeat the cause.** Chains then print it twice; let `source()` carry it.",
+"**`map_err` everywhere.** Implement `From` for common conversions so `?` does it."
+],
+"keys": [
+"An error enum with a variant per failure lets callers match.",
+"Implement Display (message) and Error (with `source()`).",
+"`From` impls let `?` convert automatically.",
+"Walk `source()` to print the full error chain."
+]
+},
+"A4.2": {
+"idea": [
+"Writing `Display`, `Error` and `From` by hand is repetitive, and **thiserror** generates exactly that code from attributes, with no run-time cost and no trace in your public API. `#[derive(Debug, thiserror::Error)]` on the enum, then on each variant: `#[error(\"line {line}: expected a number\")]` provides the Display message (fields can be interpolated), `#[source]` marks the underlying error for `source()`, and **`#[from]`** additionally generates the `From` impl so `?` converts automatically. `#[error(transparent)]` forwards both message and source to a wrapped error, useful for \"other\" variants.",
+"thiserror is meant for **libraries** (and for modules inside applications that want typed errors). Libraries should expose **typed errors** because their callers need to make decisions: is the failure retryable? did the user give bad input? A library that returns `Box<dyn Error>` or a string forces callers to parse messages, which breaks every time the wording changes.",
+"A common refinement is `#[non_exhaustive]` on public error enums, so the library can add variants later without a breaking change (callers must then include a catch-all arm). Keep variants meaningful to the caller, not a mirror of every internal function."
+],
+"how": [
+"`#[derive(Debug, thiserror::Error)] pub enum MyError { ... }`.",
+"`#[error(\"message {field}\")]` for Display; `{0}` for tuple fields; `{source}` to include the cause (usually avoid).",
+"`#[from]` generates From (and implies `#[source]`); `#[source]` alone for source without From.",
+"`#[error(transparent)]` to wrap another error entirely.",
+"Libraries expose typed errors; consider `#[non_exhaustive]`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The config error, rewritten with thiserror",
+"code": "use std::fs;\nuse std::num::ParseIntError;\n\n#[derive(Debug, thiserror::Error)]\n#[non_exhaustive]\npub enum ConfigError {\n    #[error(\"cannot read the config file\")]\n    Io(#[from] std::io::Error),\n    #[error(\"line {line}: expected a number\")]\n    BadNumber {\n        line: usize,\n        #[source]\n        source: ParseIntError,\n    },\n    #[error(\"missing required key {0:?}\")]\n    Missing(&'static str),\n}\n\npub fn load_port(path: &str) -> Result<u16, ConfigError> {\n    let text = fs::read_to_string(path)?;\n    for (i, line) in text.lines().enumerate() {\n        if let Some(v) = line.strip_prefix(\"port=\") {\n            return v.trim().parse::<u16>().map_err(|source| ConfigError::BadNumber { line: i + 1, source });\n        }\n    }\n    Err(ConfigError::Missing(\"port\"))\n}\n\nfn chain(e: &dyn std::error::Error) -> String {\n    let mut s = e.to_string();\n    let mut cur = e.source();\n    while let Some(c) = cur {\n        s += &format!(\": {c}\");\n        cur = c.source();\n    }\n    s\n}\n\nfn main() {\n    fs::write(\"bad.cfg\", \"port=80a\\n\").unwrap();\n    fs::write(\"empty.cfg\", \"host=x\\n\").unwrap();\n    for path in [\"bad.cfg\", \"empty.cfg\", \"nope.cfg\"] {\n        let e = load_port(path).unwrap_err();\n        let retryable = matches!(e, ConfigError::Io(_));\n        println!(\"{path}: {} (retryable: {retryable})\", chain(&e));\n    }\n}",
+"note": "The derive produced the same Display, Error and From implementations as the hand-written version in the previous lesson, from a few attributes. `#[from]` made `?` convert `io::Error`, and `#[source]` linked the parse error into the chain. Callers still match on variants, here to decide whether a failure is retryable.",
+"output": "bad.cfg: line 1: expected a number: invalid digit found in string (retryable: false)\nempty.cfg: missing required key \"port\" (retryable: false)\nnope.cfg: cannot read the config file: No such file or directory (os error 2) (retryable: true)"
+},
+{
+"lang": "rust",
+"title": "Why callers need typed errors",
+"code": "#[derive(Debug, thiserror::Error)]\npub enum FetchError {\n    #[error(\"server busy, try again in {retry_after}s\")]\n    RateLimited { retry_after: u64 },\n    #[error(\"resource {0} not found\")]\n    NotFound(String),\n    #[error(transparent)]\n    Other(#[from] std::io::Error),\n}\n\nfn fetch(id: &str) -> Result<String, FetchError> {\n    match id {\n        \"busy\" => Err(FetchError::RateLimited { retry_after: 2 }),\n        \"gone\" => Err(FetchError::NotFound(id.into())),\n        \"disk\" => Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, \"cache file locked\").into()),\n        _ => Ok(format!(\"data for {id}\")),\n    }\n}\n\nfn main() {\n    for id in [\"ok\", \"busy\", \"gone\", \"disk\"] {\n        match fetch(id) {\n            Ok(data) => println!(\"{id}: {data}\"),\n            Err(FetchError::RateLimited { retry_after }) => println!(\"{id}: will retry after {retry_after}s\"),\n            Err(FetchError::NotFound(what)) => println!(\"{id}: skipping missing {what}\"),\n            Err(e) => println!(\"{id}: giving up: {e}\"),\n        }\n    }\n}",
+"note": "Because the error is typed, the caller makes real decisions: wait and retry on rate limiting, skip missing resources, give up on anything else, without parsing message strings. The transparent variant passed the I/O error's own message straight through.",
+"output": "ok: data for ok\nbusy: will retry after 2s\ngone: skipping missing gone\ndisk: giving up: cache file locked"
+}
+],
+"mistakes": [
+"**Returning `Box<dyn Error>` or strings from library APIs.** Callers can't react to specific failures.",
+"**Including `{source}` in messages.** The chain then repeats it. Let `source()` carry the cause.",
+"**A variant for every internal function.** Model what the caller needs to distinguish."
+],
+"keys": [
+"thiserror derives Display, Error and From from attributes, at no run-time cost.",
+"`#[error]`, `#[source]`, `#[from]` and `transparent` cover most needs.",
+"Libraries expose typed errors so callers can decide what to do.",
+"`#[non_exhaustive]` leaves room to add variants."
+]
+},
+"A4.3": {
+"idea": [
+"Applications have different needs from libraries. The binary is the final caller: it rarely matches on specific error variants; it mostly wants to stop, report clearly what went wrong and why, and exit with an error code. **anyhow** is built for that. **`anyhow::Result<T>`** (an alias for `Result<T, anyhow::Error>`) accepts any error type through `?`, so functions that call several libraries don't need a combined error enum.",
+"The key feature is **context**. `.context(\"reading settings.toml\")` or `.with_context(|| format!(\"parsing line {n}\"))` wraps an error with a message describing what the program was doing, building a chain from high-level intent down to the root cause. Printing with `{:#}` shows the chain on one line; returning the error from `main` prints \"Error: ...\" with a \"Caused by:\" list. Context works on `Option` too, turning `None` into a descriptive error.",
+"`anyhow!(\"...\")` creates an ad-hoc error, `bail!(\"...\")` returns one early, and `ensure!(condition, \"...\")` checks a condition. When a caller does need to inspect a specific error, `err.downcast_ref::<io::Error>()` recovers the original type. The usual split: **thiserror in libraries, anyhow in binaries**."
+],
+"how": [
+"`fn main() -> anyhow::Result<()>`; `?` accepts any error type.",
+"`.context(\"doing X\")?`, `.with_context(|| format!(...))?` on Result and Option.",
+"`bail!(\"...\")`, `ensure!(cond, \"...\")`, `anyhow!(\"...\")` for ad-hoc errors.",
+"`{:#}` prints the chain on one line; returning from main prints \"Caused by\".",
+"`downcast_ref::<T>()` to inspect the root cause when needed."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "An application main with context",
+"code": "use anyhow::{bail, ensure, Context, Result};\nuse std::fs;\n\n#[derive(Debug)]\nstruct Settings {\n    workers: u32,\n    output: String,\n}\n\nfn parse_settings(text: &str) -> Result<Settings> {\n    let mut workers = None;\n    let mut output = None;\n    for (n, line) in text.lines().enumerate() {\n        let (key, value) = line.split_once('=').with_context(|| format!(\"line {}: expected key=value\", n + 1))?;\n        match key.trim() {\n            \"workers\" => workers = Some(value.trim().parse::<u32>().with_context(|| format!(\"line {}: workers must be a number\", n + 1))?),\n            \"output\" => output = Some(value.trim().to_string()),\n            other => bail!(\"line {}: unknown setting {other:?}\", n + 1),\n        }\n    }\n    let workers = workers.context(\"workers is required\")?;\n    ensure!((1..=64).contains(&workers), \"workers must be between 1 and 64, got {workers}\");\n    Ok(Settings { workers, output: output.unwrap_or_else(|| \"out\".into()) })\n}\n\nfn load(path: &str) -> Result<Settings> {\n    let text = fs::read_to_string(path).with_context(|| format!(\"reading {path}\"))?;\n    parse_settings(&text).with_context(|| format!(\"invalid settings in {path}\"))\n}\n\nfn main() {\n    let files = [(\"ok.ini\", \"workers=4\\noutput=report\"), (\"typo.ini\", \"workers=four\"), (\"range.ini\", \"workers=500\"),\n                 (\"unknown.ini\", \"workers=2\\ncolour=blue\"), (\"blank.ini\", \"output=x\")];\n    for (name, text) in files {\n        fs::write(name, text).unwrap();\n    }\n    for path in [\"ok.ini\", \"typo.ini\", \"range.ini\", \"unknown.ini\", \"blank.ini\", \"missing.ini\"] {\n        match load(path) {\n            Ok(s) => println!(\"{path}: {s:?}\"),\n            Err(e) => {\n                let io = e.root_cause().downcast_ref::<std::io::Error>().is_some();\n                println!(\"{path}: {e:#}{}\", if io { \"  [an I/O problem]\" } else { \"\" });\n            }\n        }\n    }\n}",
+"note": "Each layer added context, so a failure reads from intent to root cause: \"invalid settings in typo.ini: line 1: workers must be a number: invalid digit found in string\". `context` turned the missing `workers` Option into an error, `bail!` and `ensure!` created ad-hoc errors, and `downcast_ref` on the root cause identified the missing file as an I/O problem.",
+"output": "ok.ini: Settings { workers: 4, output: \"report\" }\ntypo.ini: invalid settings in typo.ini: line 1: workers must be a number: invalid digit found in string\nrange.ini: invalid settings in range.ini: workers must be between 1 and 64, got 500\nunknown.ini: invalid settings in unknown.ini: line 2: unknown setting \"colour\"\nblank.ini: invalid settings in blank.ini: workers is required\nmissing.ini: reading missing.ini: No such file or directory (os error 2)  [an I/O problem]"
+},
+{
+"lang": "rust",
+"title": "What returning the error from main looks like",
+"code": "use anyhow::{Context, Result};\n\nfn read_port() -> Result<u16> {\n    let raw = std::env::var(\"APP_PORT\").context(\"APP_PORT is not set\")?;\n    raw.parse().with_context(|| format!(\"APP_PORT={raw:?} is not a valid port\"))\n}\n\nfn main() -> Result<()> {\n    let port = read_port().context(\"could not start the server\")?;\n    println!(\"listening on {port}\");\n    Ok(())\n}",
+"note": "Because `main` returns `anyhow::Result`, the error was printed automatically as \"Error:\" followed by the top-level context and a \"Caused by:\" list down to the environment variable problem, and the process exited with a non-zero code. No manual formatting was needed.",
+"output": "Error: could not start the server\n\nCaused by:\n    0: APP_PORT is not set\n    1: environment variable not found"
+}
+],
+"mistakes": [
+"**anyhow in a library's public API.** Callers lose the ability to match on errors. Use thiserror there.",
+"**`?` without context in application code.** \"No such file or directory\" with no file name helps nobody.",
+"**Matching on error message strings.** Use `downcast_ref` or typed errors."
+],
+"keys": [
+"anyhow is for applications: one error type that accepts any error.",
+"`context`/`with_context` build chains from intent to root cause.",
+"`bail!`, `ensure!`, `anyhow!` create ad-hoc errors.",
+"thiserror for libraries, anyhow for binaries."
+]
+},
+"A5.1": {
+"idea": [
+"Flexible generic APIs come from choosing the right bounds. To accept \"anything I can iterate over\", bound on **`IntoIterator`** rather than `Iterator` or a concrete collection: `fn total<I: IntoIterator<Item = u32>>(items: I)` accepts a `Vec`, an array, a range, a `HashSet` or an iterator chain. Bounds can constrain **associated types**: `I: IntoIterator, I::Item: Display` says \"the items must be displayable\", and `Item = &'a str` pins them exactly.",
+"**`where` clauses** keep complex bounds readable and can express things inline bounds can't, such as bounds on associated types or on types that aren't parameters (`where Vec<T>: Debug`). `impl Trait` in argument position is shorthand for an anonymous type parameter; in return position it hides a concrete type (essential for returning iterator chains and closures).",
+"**Conditional `impl` blocks** add methods only when type parameters meet extra bounds: `impl<T: Display + PartialOrd> Pair<T> { fn largest(&self) ... }`. **Blanket implementations** implement a trait for every type that satisfies a bound (`impl<T: Display> ToString for T` is how every displayable type gets `to_string()`). Together these let a small amount of generic code serve many types precisely."
+],
+"how": [
+"Accept iterables with `I: IntoIterator<Item = T>`; constrain `I::Item` in `where`.",
+"Return iterator chains with `impl Iterator<Item = T> + '_` when borrowing.",
+"`where` for long or associated-type bounds.",
+"Conditional impls: `impl<T: Bound> Type<T> { ... }`.",
+"Blanket impls: `impl<T: Bound> MyTrait for T { ... }`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Generic over anything iterable, with a conditional impl and a blanket impl",
+"code": "use std::collections::{BTreeSet, HashMap};\nuse std::fmt::Display;\n\nfn total<I: IntoIterator<Item = u32>>(items: I) -> u32 {\n    items.into_iter().sum()\n}\n\nfn join_all<I>(items: I, sep: &str) -> String\nwhere\n    I: IntoIterator,\n    I::Item: Display,\n{\n    items.into_iter().map(|x| x.to_string()).collect::<Vec<_>>().join(sep)\n}\n\nfn long_words<'a>(text: &'a str, min: usize) -> impl Iterator<Item = &'a str> + 'a {\n    text.split_whitespace().filter(move |w| w.len() >= min)\n}\n\nstruct Pair<T> {\n    a: T,\n    b: T,\n}\n\nimpl<T: PartialOrd + Display> Pair<T> {\n    fn largest(&self) -> String {\n        format!(\"largest is {}\", if self.a >= self.b { &self.a } else { &self.b })\n    }\n}\n\ntrait Shout {\n    fn shout(&self) -> String;\n}\n\nimpl<T: Display> Shout for T {\n    fn shout(&self) -> String {\n        self.to_string().to_uppercase() + \"!\"\n    }\n}\n\nfn main() {\n    println!(\"{} {} {} {}\", total(vec![1, 2, 3]), total([10, 20]), total(1..=100), total(BTreeSet::from([5, 5, 6])));\n    let ages = HashMap::from([(\"ada\", 36)]);\n    println!(\"{} | {} | {}\", join_all([1.5, 2.25], \", \"), join_all(vec![\"tea\", \"cake\"], \" + \"), join_all(ages.values(), \"\"));\n    println!(\"{:?}\", long_words(\"generic code serves many types precisely\", 6).collect::<Vec<_>>());\n    println!(\"{} / {}\", Pair { a: 3, b: 9 }.largest(), Pair { a: \"pear\", b: \"apple\" }.largest());\n    println!(\"{} {}\", \"hello\".shout(), 42.shout());\n}",
+"note": "`total` accepted a Vec, an array, a range and a set because all implement `IntoIterator<Item = u32>`. `join_all` needed only displayable items, expressed through the associated type in a `where` clause. `largest` exists only for comparable, displayable pairs, and the blanket impl gave `shout` to every type that implements Display, including `&str` and integers.",
+"output": "6 30 5050 11\n1.5, 2.25 | tea + cake | 36\n[\"generic\", \"serves\", \"precisely\"]\nlargest is 9 / largest is pear\nHELLO! 42!"
+},
+{
+"lang": "rust",
+"title": "Too narrow a bound forces conversions on callers",
+"code": "fn total(items: &Vec<u32>) -> u32 {\n    items.iter().sum()\n}\n\nfn main() {\n    println!(\"{}\", total(&[1, 2, 3]));\n    println!(\"{}\", total(&(1..=10).collect()));\n}",
+"note": "`&Vec<u32>` rejects an array reference (the compiler says it expected `&Vec<u32>` and found an array), so callers must allocate a Vec just to call the function. Taking `impl IntoIterator<Item = u32>` (or at least `&[u32]`) accepts arrays, vectors, ranges and iterator chains directly.",
+"output": "error[E0308]: mismatched types\n --> main.rs:6:26\n  |\n6 |     println!(\"{}\", total(&[1, 2, 3]));\n  |                    ----- ^^^^^^^^^^ expected `&Vec<u32>`, found `&[{integer}; 3]`\n  |                    |\n  |                    arguments to this function are incorrect\n  |\n  = note: expected reference `&Vec<u32>`\n --> main.rs:1:4\n  |\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Concrete collection parameters** (`&Vec<T>`, `HashSet<T>`). Accept `IntoIterator` or slices.",
+"**Forgetting `+ 'a` on returned iterators that borrow.** The compiler asks for the lifetime.",
+"**Bounds that are stricter than needed.** Every extra bound excludes callers."
+],
+"keys": [
+"`IntoIterator<Item = T>` accepts any iterable.",
+"Constrain associated types in `where` clauses.",
+"Conditional impls add methods only when bounds hold.",
+"Blanket impls give a trait to every type meeting a bound."
+]
+},
+"A5.2": {
+"idea": [
+"A handful of standard traits make your types feel native. **`From`/`Into`** express infallible conversions: implement `From<A> for B` and you get `Into<B> for A` for free, plus `?` conversions for errors. **`TryFrom`/`TryInto`** are the fallible versions, returning a `Result` (`u8::try_from(300)` fails). **`FromStr`** powers `\"1.2.3\".parse::<Version>()`. **`Display`** gives `{}` and `to_string()`. **`Default`** provides a sensible starting value (derivable), used by `..Default::default()` in struct literals and by `unwrap_or_default`.",
+"**`AsRef<T>`** makes parameters flexible: `fn open(path: impl AsRef<Path>)` accepts `&str`, `String`, `PathBuf` and `&Path`, which is how std's file functions work. **`Borrow`** is similar but promises equal hashing and ordering, which is why a `HashMap<String, V>` can be looked up with a `&str`.",
+"For comparisons: **`PartialEq`/`Eq`** (equality; Eq means it is reflexive, which floats are not because NaN ≠ NaN), **`PartialOrd`/`Ord`** (ordering; Ord is total and required by sort and BTreeMap). Derived comparisons go field by field in declaration order, so ordering fields from most to least significant (major, minor, patch) gives correct semantics for free."
+],
+"how": [
+"`impl From<A> for B` (gives `Into`); `TryFrom` for fallible conversions.",
+"`impl FromStr` for `.parse()`; `impl Display` for `{}`.",
+"`#[derive(Default)]` or impl it; `..Default::default()`.",
+"Parameters: `impl AsRef<str>`, `impl AsRef<Path>`, `impl Into<String>`.",
+"Derive `PartialEq, Eq, PartialOrd, Ord, Hash`; field order decides ordering."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A Version type that plays well with std",
+"code": "use std::fmt;\nuse std::str::FromStr;\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]\nstruct Version {\n    major: u32,\n    minor: u32,\n    patch: u32,\n}\n\nimpl fmt::Display for Version {\n    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {\n        write!(f, \"{}.{}.{}\", self.major, self.minor, self.patch)\n    }\n}\n\nimpl FromStr for Version {\n    type Err = String;\n    fn from_str(s: &str) -> Result<Self, Self::Err> {\n        let parts: Vec<&str> = s.trim_start_matches('v').split('.').collect();\n        let [a, b, c] = parts.as_slice() else {\n            return Err(format!(\"{s:?}: expected MAJOR.MINOR.PATCH\"));\n        };\n        let num = |p: &str| p.parse::<u32>().map_err(|e| format!(\"{s:?}: {e}\"));\n        Ok(Version { major: num(a)?, minor: num(b)?, patch: num(c)? })\n    }\n}\n\nimpl From<(u32, u32, u32)> for Version {\n    fn from((major, minor, patch): (u32, u32, u32)) -> Self {\n        Version { major, minor, patch }\n    }\n}\n\nimpl TryFrom<&[u32]> for Version {\n    type Error = String;\n    fn try_from(parts: &[u32]) -> Result<Self, Self::Error> {\n        match parts {\n            [a, b, c] => Ok((*a, *b, *c).into()),\n            _ => Err(format!(\"need 3 numbers, got {}\", parts.len())),\n        }\n    }\n}\n\nfn describe(label: impl AsRef<str>, v: impl Into<Version>) -> String {\n    format!(\"{}: {}\", label.as_ref(), v.into())\n}\n\nfn main() {\n    let mut versions: Vec<Version> = [\"1.10.0\", \"v1.2.3\", \"1.2.10\", \"0.9.9\"].iter().map(|s| s.parse().unwrap()).collect();\n    versions.sort();\n    println!(\"{}\", versions.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(\" < \"));\n    println!(\"{:?}\", \"1.2\".parse::<Version>());\n    println!(\"{:?} {:?}\", Version::try_from(&[2, 0, 1][..]), Version::try_from(&[2, 0][..]));\n    println!(\"{} | {}\", describe(\"from a tuple\", (3, 1, 4)), describe(String::from(\"owned label\"), Version::default()));\n    println!(\"max: {}\", versions.iter().max().unwrap());\n}",
+"note": "Deriving the comparison traits with fields ordered major, minor, patch sorted versions numerically (1.2.3 < 1.2.10 < 1.10.0, unlike string sorting). `FromStr` enabled `.parse()`, `From` a tuple conversion that also made `.into()` work, `TryFrom` a checked conversion from a slice, and `AsRef`/`Into` let `describe` accept several argument types.",
+"output": "0.9.9 < 1.2.3 < 1.2.10 < 1.10.0\nErr(\"\\\"1.2\\\": expected MAJOR.MINOR.PATCH\")\nOk(Version { major: 2, minor: 0, patch: 1 }) Err(\"need 3 numbers, got 2\")\nfrom a tuple: 3.1.4 | owned label: 0.0.0\nmax: 1.10.0"
+},
+{
+"lang": "rust",
+"title": "AsRef and Borrow in std's own APIs",
+"code": "use std::collections::HashMap;\nuse std::path::{Path, PathBuf};\n\nfn extension(path: impl AsRef<Path>) -> Option<String> {\n    path.as_ref().extension().map(|e| e.to_string_lossy().into_owned())\n}\n\nfn main() {\n    let owned = String::from(\"report.pdf\");\n    let buf = PathBuf::from(\"/tmp/data.csv\");\n    println!(\"{:?} {:?} {:?} {:?}\", extension(\"notes.txt\"), extension(&owned), extension(&buf), extension(Path::new(\"README\")));\n\n    let mut stock: HashMap<String, u32> = HashMap::new();\n    stock.insert(\"tea\".to_string(), 12);\n    println!(\"lookup with &str thanks to Borrow: {:?}\", stock.get(\"tea\"));\n    let n: f64 = f64::NAN;\n    println!(\"NaN == NaN? {} (so f64 is PartialEq but not Eq)\", n == n);\n}",
+"note": "`impl AsRef<Path>` let one function accept a literal, a String, a PathBuf and a Path, the same technique `std::fs` uses. The map's keys are `String`, yet `get(\"tea\")` works because String implements `Borrow<str>`. NaN not equalling itself is exactly why floats implement only `PartialEq` and `PartialOrd`.",
+"output": "Some(\"txt\") Some(\"pdf\") Some(\"csv\") None\nlookup with &str thanks to Borrow: Some(12)\nNaN == NaN? false (so f64 is PartialEq but not Eq)"
+}
+],
+"mistakes": [
+"**Inherent `from_string` methods instead of `FromStr`.** Implement the trait so `.parse()` works.",
+"**Implementing `Into` directly.** Implement `From`; you get `Into` for free.",
+"**Deriving `Ord` with fields in the wrong order.** Comparison follows declaration order."
+],
+"keys": [
+"`From`/`Into` and `TryFrom` for conversions; `FromStr` for parsing.",
+"`Display` and `Default` make types friendly to std.",
+"`AsRef`/`Into` parameters accept many argument types.",
+"Derived comparisons follow field order; floats are only Partial."
+]
+},
+"A5.3": {
+"idea": [
+"Rust's type system can carry information that never exists at run time. A **zero-sized type** (ZST), such as a unit struct `struct Meters;`, takes no memory, and **`PhantomData<T>`** lets a struct mention a type parameter it doesn't store, purely to make the compiler track it. Together they encode **units** (`Length<Meters>` vs `Length<Feet>` cannot be added by mistake), **ownership markers** and **states**, all at zero run-time cost.",
+"The **typestate pattern** encodes an object's state in its type: `Connection<Disconnected>`, `Connection<Connected>`, `Connection<Authenticated>`. Each state has only the methods valid in it, and transitions consume `self` and return the next state's type. Calling `send` before `login` is then a compile error, not a run-time check, and the states vanish from the compiled code.",
+"**Const generics** parameterise types by **values**: `struct Matrix<const R: usize, const C: usize>` makes dimensions part of the type, so multiplying a 2×3 by a 2×3 matrix is a compile error while 2×3 by 3×2 type-checks and yields a 2×2. Arrays use this (`[T; N]`), and `fn sum<const N: usize>(a: [i32; N])` works for every array length."
+],
+"how": [
+"`PhantomData<T>` to tag a struct with a type it doesn't store.",
+"Unit structs as markers: `struct Meters; struct Feet;`.",
+"Typestate: `struct Conn<S> { ..., _state: PhantomData<S> }`; methods in `impl Conn<StateA>`.",
+"Transitions take `self` and return `Conn<NextState>`.",
+"Const generics: `struct M<const N: usize>`, `fn f<const N: usize>(a: [T; N])`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Units, typestate and const generics",
+"code": "use std::marker::PhantomData;\nuse std::ops::Add;\n\n#[derive(Debug, Clone, Copy)]\nstruct Meters;\n#[derive(Debug, Clone, Copy)]\nstruct Feet;\n\n#[derive(Debug, Clone, Copy)]\nstruct Length<U> {\n    value: f64,\n    _unit: PhantomData<U>,\n}\n\nimpl<U> Length<U> {\n    fn new(value: f64) -> Self { Length { value, _unit: PhantomData } }\n}\n\nimpl<U> Add for Length<U> {                                // only same units add\n    type Output = Length<U>;\n    fn add(self, o: Self) -> Self { Length::new(self.value + o.value) }\n}\n\nimpl Length<Feet> {\n    fn to_meters(self) -> Length<Meters> { Length::new(self.value * 0.3048) }\n}\n\nstruct Idle;\nstruct Running { started_ms: u64 }\n\nstruct Timer<S> {\n    label: &'static str,\n    state: S,\n}\n\nimpl Timer<Idle> {\n    fn new(label: &'static str) -> Self { Timer { label, state: Idle } }\n    fn start(self, now_ms: u64) -> Timer<Running> { Timer { label: self.label, state: Running { started_ms: now_ms } } }\n}\n\nimpl Timer<Running> {\n    fn stop(self, now_ms: u64) -> (Timer<Idle>, u64) {\n        (Timer { label: self.label, state: Idle }, now_ms - self.state.started_ms)\n    }\n}\n\n#[derive(Debug)]\nstruct Matrix<const R: usize, const C: usize>([[i32; C]; R]);\n\nimpl<const R: usize, const K: usize> Matrix<R, K> {\n    fn mul<const C: usize>(&self, other: &Matrix<K, C>) -> Matrix<R, C> {\n        let mut out = [[0; C]; R];\n        for r in 0..R { for c in 0..C { for k in 0..K { out[r][c] += self.0[r][k] * other.0[k][c]; } } }\n        Matrix(out)\n    }\n}\n\nfn main() {\n    let run = Length::<Meters>::new(1000.0) + Length::<Feet>::new(500.0).to_meters();\n    println!(\"total run: {:.1} m; size of Length: {} bytes\", run.value, std::mem::size_of::<Length<Meters>>());\n\n    let timer = Timer::new(\"brew\").start(1_000);\n    let (timer, elapsed) = timer.stop(241_000);\n    println!(\"{} took {} s; back to idle: {}\", timer.label, elapsed / 1000, std::mem::size_of_val(&timer.state) == 0);\n\n    let a = Matrix([[1, 2, 3], [4, 5, 6]]);              // 2x3\n    let b = Matrix([[1, 0], [0, 1], [2, 2]]);            // 3x2\n    println!(\"2x3 * 3x2 = {:?}\", a.mul(&b));\n}",
+"note": "`Length<Meters>` and `Length<Feet>` are different types, so feet had to be converted before adding, yet a Length is just 8 bytes: the unit costs nothing at run time. The timer's state lives in its type (`start` only exists when idle, `stop` only when running), and `Idle` is zero-sized. The matrix dimensions are checked by the compiler.",
+"output": "total run: 1152.4 m; size of Length: 8 bytes\nbrew took 240 s; back to idle: true\n2x3 * 3x2 = Matrix([[7, 8], [16, 17]])"
+},
+{
+"lang": "rust",
+"title": "Mismatched matrix dimensions don't compile",
+"code": "#[derive(Debug)]\nstruct Matrix<const R: usize, const C: usize>([[i32; C]; R]);\n\nimpl<const R: usize, const K: usize> Matrix<R, K> {\n    fn mul<const C: usize>(&self, other: &Matrix<K, C>) -> Matrix<R, C> {\n        Matrix([[0; C]; R])\n    }\n}\n\nfn main() {\n    let a = Matrix([[1, 2, 3], [4, 5, 6]]);      // 2x3\n    let b = Matrix([[1, 2, 3], [4, 5, 6]]);      // 2x3: inner dimensions 3 and 2 don't match\n    println!(\"{:?}\", a.mul(&b));\n}",
+"note": "Multiplying a 2×3 matrix by another 2×3 matrix is mathematically invalid, and because the dimensions are const generic parameters, the compiler rejects it: it expected a matrix with 3 rows and found one with 2. In most languages this is a run-time panic or a wrong answer.",
+"output": "error[E0308]: mismatched types\n  --> main.rs:13:28\n   |\n13 |     println!(\"{:?}\", a.mul(&b));\n   |                        --- ^^ expected `3`, found `2`\n   |                        |\n   |                        arguments to this method are incorrect\n   |\n   = note: expected reference `&Matrix<3, _>`\n  --> main.rs:5:8\n   |\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Run-time state flags where order is fixed.** Typestates make misuse a compile error.",
+"**Over-engineering with type-level tricks.** Use them where mistakes are costly; plain enums are often enough.",
+"**Forgetting PhantomData.** An unused type parameter is a compile error without it."
+],
+"keys": [
+"Zero-sized types and PhantomData carry type information for free.",
+"Unit markers prevent mixing incompatible values.",
+"Typestate encodes states as types; invalid calls don't compile.",
+"Const generics put values like dimensions into types."
+]
+},
+"A6.1": {
+"idea": [
+"Visibility in Rust is more fine-grained than public versus private. **`pub`** exposes an item to everyone who can reach its module. **`pub(crate)`** exposes it anywhere in the current crate but not to users of the library, perfect for helpers shared between modules. **`pub(super)`** exposes it to the parent module only, and `pub(in path)` to a chosen ancestor. Private (the default) means the current module and its descendants.",
+"Getting visibility right keeps a library's **public API** small and stable: everything `pub` (and reachable) is a promise you can't change without a major version bump, while `pub(crate)` items can be refactored freely. Many crates add a **prelude** module that re-exports the most common items (`pub use crate::{Client, Config, Error};`), so users write `use mylib::prelude::*;`.",
+"**Organise by feature**, not by kind. A `orders/` module containing the order types, validation, storage and tests for orders beats separate `models/`, `services/` and `utils/` folders, because most changes touch one feature and the module boundary becomes a natural encapsulation boundary. Tools: `cargo doc` shows exactly what is public; Clippy's `unreachable_pub` lint flags `pub` items that aren't actually exported."
+],
+"how": [
+"`pub` (everyone), `pub(crate)` (this crate), `pub(super)` (parent), private (this module).",
+"Keep the public API minimal; use `pub(crate)` for internal sharing.",
+"A `prelude` module re-exports common items.",
+"Organise modules by feature; each feature module hides its internals.",
+"Check the public surface with `cargo doc`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Visibility levels in one crate",
+"code": "mod shop {\n    pub mod orders {\n        #[derive(Debug)]\n        pub struct Order {\n            pub id: u32,\n            pub(crate) total_cents: u32,          // the crate can read it; library users can't\n            notes: Vec<String>,                   // private to `orders`\n        }\n\n        impl Order {\n            pub fn new(id: u32) -> Self {\n                Order { id, total_cents: 0, notes: vec![] }\n            }\n            pub fn add_item(&mut self, cents: u32) {\n                self.total_cents += cents;\n                self.notes.push(format!(\"+{cents}\"));\n                super::audit::record(self.id);\n            }\n            pub fn history(&self) -> &[String] {\n                &self.notes\n            }\n        }\n\n        pub(super) fn reset_counters() -> &'static str {    // only the parent module may call this\n            \"counters reset\"\n        }\n    }\n\n    mod audit {\n        pub(super) fn record(order_id: u32) {               // sibling modules under `shop` may call this\n            let _ = order_id;\n        }\n    }\n\n    pub(crate) fn admin_reset() -> &'static str {\n        orders::reset_counters()                             // allowed: `shop` is the parent of `orders`\n    }\n\n    pub mod prelude {\n        pub use super::orders::Order;\n    }\n}\n\nuse shop::prelude::*;\n\nfn main() {\n    let mut order = Order::new(7);\n    order.add_item(450);\n    order.add_item(325);\n    println!(\"order {} total {} history {:?}\", order.id, order.total_cents, order.history());\n    println!(\"{}\", shop::admin_reset());\n}",
+"note": "`id` is public, `total_cents` is `pub(crate)` (readable here in the same crate, hidden from library users), and `notes` is private to `orders`, so outside code reads it only through `history()`. `reset_counters` is `pub(super)`, callable from `shop` but not from `main`, and the prelude re-exports `Order` for a one-line import.",
+"output": "order 7 total 775 history [\"+450\", \"+325\"]\ncounters reset"
+},
+{
+"lang": "rust",
+"title": "pub(super) stops at the parent",
+"code": "mod app {\n    pub mod db {\n        pub(super) fn wipe() -> &'static str {\n            \"wiped\"\n        }\n    }\n}\n\nfn main() {\n    println!(\"{}\", app::db::wipe());\n}",
+"note": "`wipe` is visible to `app` (the parent of `db`) but not to the crate root, so `main` cannot call it and the compiler says the function is private. Restricted visibility lets dangerous helpers be shared exactly as widely as needed and no further.",
+"output": "error[E0603]: function `wipe` is private\n  --> main.rs:10:29\n   |\n10 |     println!(\"{}\", app::db::wipe());\n   |                             ^^^^ private function\n   |\n  --> main.rs:3:9\n   |\n 3 |         pub(super) fn wipe() -> &'static str {\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**`pub` on everything.** Each public item is an API promise. Default to private, then `pub(crate)`.",
+"**Modules organised by layer** (`models`, `utils`). Organise by feature so changes stay local.",
+"**Users needing ten imports.** Offer a prelude or re-export key types at the root."
+],
+"keys": [
+"`pub`, `pub(crate)`, `pub(super)` and private control exactly who sees what.",
+"Keep the public API minimal and stable.",
+"Preludes and re-exports make the API convenient.",
+"Organise by feature; module boundaries encapsulate."
+]
+},
+"A6.2": {
+"idea": [
+"Dependencies are declared with **semantic version requirements**. `serde = \"1.0\"` (the same as `^1.0`) means \"any compatible version\": at least 1.0.0 and below 2.0.0; for 0.x crates the minor number is the breaking one, so `\"0.4\"` means below 0.5.0. Other forms: `\"~1.2\"` (patch updates only), `\"=1.2.3\"` (exactly), `\">=1.2, <1.5\"`. Cargo picks the newest matching versions and records them in `Cargo.lock`; **`cargo update`** moves to newer compatible versions on purpose, `cargo update -p serde` for one crate. **`cargo tree`** shows the dependency graph, and `cargo tree -d` finds crates compiled in two versions (a common source of bloat).",
+"Dependency kinds: **`[dev-dependencies]`** are used only by tests, examples and benchmarks (proptest, criterion); **`[build-dependencies]`** by build scripts. **Optional dependencies** (`optional = true`) are compiled only when a feature enables them.",
+"**Features** are named switches for conditional compilation. `[features] default = [\"json\"]` and `json = [\"dep:serde_json\"]` define them; code uses `#[cfg(feature = \"json\")]`. Features must be **additive**: enabling one must never break code that worked without it, because Cargo unifies features across the whole dependency graph. Users opt out with `default-features = false` and pick what they need."
+],
+"how": [
+"`\"1.2\"` = compatible (≥1.2.0, <2.0.0); `\"0.4\"` = ≥0.4.0, <0.5.0; `\"=1.2.3\"` exact.",
+"`cargo update` (all) / `cargo update -p name`; `cargo tree`, `cargo tree -d`.",
+"`[dev-dependencies]` for tests and benches; `[build-dependencies]` for build.rs.",
+"`optional = true` + `[features] x = [\"dep:name\"]`; `#[cfg(feature = \"x\")]` in code.",
+"Features are additive; `default-features = false` to slim down."
+],
+"examples": [
+{
+"lang": "toml",
+"title": "A Cargo.toml with features and dependency kinds",
+"code": "[package]\nname = \"reportgen\"\nversion = \"0.3.0\"\nedition = \"2024\"\n\n[dependencies]\nanyhow = \"1\"                                   # >= 1.0.0, < 2.0.0\nchrono = { version = \"0.4\", default-features = false, features = [\"clock\"] }\nserde = { version = \"1\", features = [\"derive\"], optional = true }\nserde_json = { version = \"1\", optional = true }\ncsv = { version = \"1.3\", optional = true }\n\n[features]\ndefault = [\"json\"]\njson = [\"dep:serde\", \"dep:serde_json\"]         # enabling \"json\" pulls in two optional crates\ncsv = [\"dep:csv\", \"dep:serde\"]\nall-formats = [\"json\", \"csv\"]\n\n[dev-dependencies]\nproptest = \"1\"                                  # only for tests\ncriterion = \"0.5\"                               # only for benchmarks\n\n# cargo build                                   -> default features (json)\n# cargo build --no-default-features --features csv\n# cargo build --all-features\n# cargo tree -e features                        -> which feature enabled what",
+"note": "`chrono` is used with its default features turned off and only `clock` enabled, a common way to slim a dependency. `serde`, `serde_json` and `csv` are optional and appear only when a feature asks for them, and both `json` and `csv` can be on at once because features are additive. Dev-dependencies never reach users of the crate.",
+"output": ""
+},
+{
+"lang": "rust",
+"title": "Code that compiles differently per feature",
+"code": "#[cfg(feature = \"json\")]\nfn render(rows: &[(&str, u32)]) -> String {\n    let items: Vec<String> = rows.iter().map(|(k, v)| format!(\"{{\\\"name\\\":\\\"{k}\\\",\\\"qty\\\":{v}}}\")).collect();\n    format!(\"[{}]\", items.join(\",\"))\n}\n\n#[cfg(not(feature = \"json\"))]\nfn render(rows: &[(&str, u32)]) -> String {\n    rows.iter().map(|(k, v)| format!(\"{k}: {v}\")).collect::<Vec<_>>().join(\"\\n\")\n}\n\nfn main() {\n    let rows = [(\"tea\", 12), (\"cake\", 3)];\n    println!(\"json feature enabled? {}\", cfg!(feature = \"json\"));\n    println!(\"{}\", render(&rows));\n}",
+"note": "Built without features (as here), the plain-text `render` was compiled and the JSON version did not exist in the binary at all. With `--features json`, the other function would be compiled instead. `cfg!(...)` gives the same information as a boolean for ordinary `if` logic.",
+"output": "json feature enabled? false\ntea: 12\ncake: 3"
+}
+],
+"mistakes": [
+"**Pinning exact versions (`=1.2.3`) by default.** It blocks compatible fixes and causes conflicts. Use ranges; the lock file pins.",
+"**Non-additive features** (\"feature A disables B\"). Cargo unifies features; something will break.",
+"**Test-only crates in `[dependencies]`.** Move them to `[dev-dependencies]`."
+],
+"keys": [
+"SemVer ranges in Cargo.toml; exact versions in Cargo.lock.",
+"`cargo update` and `cargo tree` manage and inspect dependencies.",
+"Dev, build and optional dependencies have distinct roles.",
+"Features toggle optional code and dependencies; keep them additive."
+]
+},
+"A6.3": {
+"idea": [
+"**rustdoc** turns doc comments into documentation, and good docs are part of a professional crate. Beyond the basics (`///` for items, `//!` for modules and the crate, Markdown, sections like `# Examples`, `# Errors`, `# Panics`, `# Safety`), a few features make docs much better.",
+"**Intra-doc links** reference other items by path: `[`Config`]`, `[`Client::send`]` or `[`std::io::Error`]` become links checked at build time, so they never go stale. **Doc tests** run every code block as a test; to keep examples realistic, use the `?` operator (end the block with `Ok::<(), Box<dyn std::error::Error>>(())`), and hide setup lines from the rendered page by starting them with `# ` (they still run). Code-block annotations change behaviour: `no_run` (compile but don't run, for network examples), `should_panic`, `compile_fail` (demonstrate a mistake), `ignore`.",
+"At the crate root, **`#![warn(missing_docs)]`** makes every undocumented public item a warning, a cheap way to keep coverage complete. `cargo doc --open` builds the site locally; publishing to crates.io builds it automatically on **docs.rs**. A crate-level `//!` comment with a short overview and a quick-start example is the most-read page of any library."
+],
+"how": [
+"Intra-doc links: `[`Type`]`, `[`Type::method`]`, `[`crate::module`]`.",
+"Doc tests with `?`: end with `Ok::<(), Box<dyn std::error::Error>>(())`.",
+"Hide setup lines with a leading `# `.",
+"Annotations: `no_run`, `should_panic`, `compile_fail`, `ignore`.",
+"`#![warn(missing_docs)]`; crate overview in `//!` at the top of lib.rs."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Doc tests with ?, hidden lines and intra-doc links, run by cargo test",
+"code": "//! Parse temperature readings like `\"21.5C\"` or `\"70F\"`.\n//!\n//! Start with [`Reading::parse`]; convert with [`Reading::to_celsius`].\n\n/// A temperature reading in its original unit.\n#[derive(Debug, PartialEq)]\npub enum Reading {\n    /// Degrees Celsius.\n    Celsius(f64),\n    /// Degrees Fahrenheit.\n    Fahrenheit(f64),\n}\n\nimpl Reading {\n    /// Parses `\"21.5C\"` or `\"70F\"`.\n    ///\n    /// # Errors\n    ///\n    /// Returns an error if the unit is missing or the number is invalid.\n    ///\n    /// # Examples\n    ///\n    /// ```\n    /// # use temps::Reading;            // hidden from the rendered docs, still compiled\n    /// let r = Reading::parse(\"70F\")?;\n    /// assert_eq!(r, Reading::Fahrenheit(70.0));\n    /// # Ok::<(), String>(())\n    /// ```\n    pub fn parse(text: &str) -> Result<Reading, String> {\n        let (number, unit) = text.split_at(text.len().saturating_sub(1));\n        let value: f64 = number.trim().parse().map_err(|e| format!(\"{text:?}: {e}\"))?;\n        match unit {\n            \"C\" | \"c\" => Ok(Reading::Celsius(value)),\n            \"F\" | \"f\" => Ok(Reading::Fahrenheit(value)),\n            _ => Err(format!(\"{text:?}: unit must be C or F\")),\n        }\n    }\n\n    /// Converts to Celsius. See also [`Reading::parse`].\n    pub fn to_celsius(&self) -> f64 {\n        match self {\n            Reading::Celsius(c) => *c,\n            Reading::Fahrenheit(f) => (f - 32.0) * 5.0 / 9.0,\n        }\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn documented_behaviour_holds() -> Result<(), String> {\n        assert_eq!(Reading::parse(\"70F\")?, Reading::Fahrenheit(70.0));\n        assert!((Reading::parse(\"212F\")?.to_celsius() - 100.0).abs() < 1e-9);\n        assert!(Reading::parse(\"21.5K\").is_err());\n        Ok(())\n    }\n}",
+"note": "The doc comment's example uses `?` and ends with a hidden `Ok::<(), String>(())` line; readers see three clean lines, while `cargo test` compiles and runs the full block as a doc test in a real crate named `temps`. The intra-doc links become clickable, checked links in the generated HTML. Here, the unit test exercises the same behaviour.",
+"output": "running 1 test\ntest tests::documented_behaviour_holds ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+},
+{
+"lang": "bash",
+"title": "What rustdoc and doc tests report",
+"code": "$ cargo test --doc\n   Doc-tests temps\nrunning 1 test\ntest src/lib.rs - Reading::parse (line 26) ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n\n$ cargo doc --no-deps 2>&1 | grep -A3 warning   # with #![warn(missing_docs)] and a new undocumented fn\nwarning: missing documentation for a method\n  --> src/lib.rs:48:5\n   |\n48 |     pub fn to_kelvin(&self) -> f64 {\n\n$ cargo doc --open                                # builds target/doc and opens it in a browser",
+"note": "Each code block in a doc comment becomes a named test with its file and line, so a broken example fails CI. With `#![warn(missing_docs)]`, adding a public method without a doc comment produces a warning pointing at it, keeping documentation coverage complete over time.",
+"output": ""
+}
+],
+"mistakes": [
+"**Examples that are never tested.** Code blocks run as doc tests; keep them compiling.",
+"**Plain-text item names in docs.** Use intra-doc links so they stay correct.",
+"**Noisy setup in examples.** Hide it with `# ` lines."
+],
+"keys": [
+"Intra-doc links are checked references to other items.",
+"Doc tests run every example; use `?` with a hidden `Ok(())` line.",
+"`no_run`, `should_panic`, `compile_fail` annotate special examples.",
+"`#![warn(missing_docs)]` and a crate overview keep docs complete."
+]
+},
+"A7.1": {
+"idea": [
+"Beyond `Mutex`, std offers synchronisation tools for specific patterns. **`RwLock<T>`** allows **many readers or one writer**: `read()` returns a shared guard and several threads can hold one at once, while `write()` waits for exclusive access. It suits read-heavy data such as configuration or caches. For short critical sections a Mutex is often just as fast, so measure before switching.",
+"**`Condvar`** (condition variable) lets threads **wait for a condition** without busy-looping: a thread locks a Mutex, checks a condition, and calls `condvar.wait(guard)` (or `wait_while`), which releases the lock and sleeps until another thread calls `notify_one`/`notify_all`. It is the building block of bounded queues, barriers and \"wait until ready\" logic; always re-check the condition after waking, because wakeups can be spurious.",
+"**One-time initialisation**: **`OnceLock<T>`** holds a value set at most once, safely from any thread (`get_or_init(|| ...)`), and **`LazyLock<T>`** wraps that in a static that initialises on first access: `static TABLE: LazyLock<HashMap<..>> = LazyLock::new(|| build())`. They replace the `lazy_static` and `once_cell` crates for global caches, compiled regexes and configuration loaded once."
+],
+"how": [
+"`RwLock`: `read()` for shared access, `write()` for exclusive; best for read-heavy data.",
+"`Condvar` with a `Mutex`: `wait_while(guard, |state| condition)`, `notify_one`/`notify_all`.",
+"Re-check conditions after waking (spurious wakeups); `wait_while` does it for you.",
+"`OnceLock::get_or_init` for set-once values; `static X: LazyLock<T> = LazyLock::new(...)` for lazy globals.",
+"Avoid holding guards across slow work."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A read-mostly cache, a ready signal and a lazily built table",
+"code": "use std::collections::HashMap;\nuse std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, RwLock};\nuse std::thread;\n\nstatic PRIMES: LazyLock<Vec<u32>> = LazyLock::new(|| {\n    println!(\"  (building the prime table once)\");\n    (2..60).filter(|n| (2..*n).all(|d| n % d != 0)).collect()\n});\n\nstatic CONFIG: OnceLock<String> = OnceLock::new();\n\nfn main() {\n    let rates = Arc::new(RwLock::new(HashMap::from([(\"USD\", 0.71), (\"EUR\", 0.66)])));\n    let readers: Vec<_> = (0..4).map(|i| {\n        let rates = Arc::clone(&rates);\n        thread::spawn(move || {\n            let r = rates.read().unwrap();              // many readers at once\n            r.get(if i % 2 == 0 { \"USD\" } else { \"EUR\" }).copied().unwrap()\n        })\n    }).collect();\n    let mut seen: Vec<f64> = readers.into_iter().map(|h| h.join().unwrap()).collect();\n    seen.sort_by(f64::total_cmp);\n    rates.write().unwrap().insert(\"GBP\", 0.57);         // one writer, exclusive\n    println!(\"readers saw {seen:?}; now {} currencies\", rates.read().unwrap().len());\n\n    let ready = Arc::new((Mutex::new(false), Condvar::new()));\n    let r2 = Arc::clone(&ready);\n    let loader = thread::spawn(move || {\n        let (lock, cvar) = &*r2;\n        *lock.lock().unwrap() = true;                    // pretend we loaded something\n        cvar.notify_all();\n    });\n    let (lock, cvar) = &*ready;\n    let guard = cvar.wait_while(lock.lock().unwrap(), |done| !*done).unwrap();\n    println!(\"main woke up, ready = {}\", *guard);\n    drop(guard);\n    loader.join().unwrap();\n\n    println!(\"first access: {} primes below 60\", PRIMES.len());\n    println!(\"second access: largest is {}\", PRIMES.last().unwrap());\n    let cfg = CONFIG.get_or_init(|| \"loaded from env\".to_string());\n    let again = CONFIG.get_or_init(|| \"never used\".to_string());\n    println!(\"config: {cfg} / {again}\");\n}",
+"note": "Four threads read the rates at the same time through `read()`, then one `write()` added a currency. The main thread waited on the condition variable without spinning until the loader set the flag and notified it. The prime table was built exactly once, on first access, and `OnceLock` ignored the second initialiser.",
+"output": "readers saw [0.66, 0.66, 0.71, 0.71]; now 3 currencies\nmain woke up, ready = true\n  (building the prime table once)\nfirst access: 17 primes below 60\nsecond access: largest is 59\nconfig: loaded from env / loaded from env"
+},
+{
+"lang": "rust",
+"title": "A bounded queue built from Mutex and Condvar",
+"code": "use std::collections::VecDeque;\nuse std::sync::{Arc, Condvar, Mutex};\nuse std::thread;\n\nstruct Bounded<T> {\n    items: Mutex<VecDeque<T>>,\n    not_empty: Condvar,\n    not_full: Condvar,\n    cap: usize,\n}\n\nimpl<T> Bounded<T> {\n    fn push(&self, item: T) {\n        let mut q = self.not_full.wait_while(self.items.lock().unwrap(), |q| q.len() >= self.cap).unwrap();\n        q.push_back(item);\n        self.not_empty.notify_one();\n    }\n    fn pop(&self) -> T {\n        let mut q = self.not_empty.wait_while(self.items.lock().unwrap(), |q| q.is_empty()).unwrap();\n        let item = q.pop_front().unwrap();\n        self.not_full.notify_one();\n        item\n    }\n}\n\nfn main() {\n    let q = Arc::new(Bounded { items: Mutex::new(VecDeque::new()), not_empty: Condvar::new(), not_full: Condvar::new(), cap: 2 });\n    let producer = {\n        let q = Arc::clone(&q);\n        thread::spawn(move || {\n            for i in 1..=6 {\n                q.push(i);                       // blocks whenever 2 items are waiting\n            }\n        })\n    };\n    let received: Vec<i32> = (0..6).map(|_| q.pop()).collect();\n    producer.join().unwrap();\n    println!(\"received in order: {received:?} with at most 2 queued at a time\");\n}",
+"note": "The producer blocked whenever two items were waiting and the consumer blocked when the queue was empty; each side woke the other with `notify_one`. `wait_while` re-checks its condition after every wakeup, which handles spurious wakeups correctly. This is essentially what `mpsc::sync_channel(2)` provides ready-made.",
+"output": "received in order: [1, 2, 3, 4, 5, 6] with at most 2 queued at a time"
+}
+],
+"mistakes": [
+"**RwLock by default.** It has overhead; Mutex is often as fast for short sections. Measure.",
+"**Waiting on a Condvar without re-checking the condition.** Use `wait_while`.",
+"**Global mutable state everywhere.** LazyLock/OnceLock are for set-once data; pass state explicitly otherwise."
+],
+"keys": [
+"RwLock allows many readers or one writer.",
+"Condvar lets threads sleep until a condition changes.",
+"`wait_while` handles spurious wakeups.",
+"OnceLock and LazyLock initialise values exactly once, safely."
+]
+},
+"A7.2": {
+"idea": [
+"**Atomic types** (`AtomicBool`, `AtomicUsize`, `AtomicI64`, `AtomicPtr`...) can be shared between threads and updated **without a lock**, using special CPU instructions. Operations include `load`, `store`, `fetch_add`/`fetch_sub` (add and return the old value), `swap`, and **`compare_exchange(expected, new)`**, which updates only if the current value is still `expected` and reports whether it succeeded; it is the foundation of lock-free algorithms (retry in a loop until it succeeds). Share atomics with `Arc` or as `static`s.",
+"Each operation takes a **memory ordering**, which controls how it is ordered relative to *other* memory operations. **`Relaxed`** guarantees only that the atomic itself is updated correctly: fine for counters and statistics where nothing else depends on the value. **`Release`** (on a store) and **`Acquire`** (on a load) form a pair: everything a thread wrote before a Release store is visible to a thread that Acquire-loads the new value. That is how a \"data ready\" flag safely publishes data. **`SeqCst`** adds a single global order of all SeqCst operations; it is the safest default when unsure.",
+"Atomics are fast for simple shared counters and flags (a stop signal, request counts, IDs). For anything involving several related values, a Mutex is simpler and much less error-prone: correctness reasoning about orderings is genuinely hard."
+],
+"how": [
+"`AtomicUsize::new(0)`; `fetch_add(1, Ordering::Relaxed)` for counters.",
+"`store(true, Release)` / `load(Acquire)` to publish data with a flag.",
+"`compare_exchange(old, new, AcqRel, Acquire)` in a retry loop for lock-free updates.",
+"`SeqCst` when unsure; Relaxed only for independent counters.",
+"Several related values: use a Mutex."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Counters, a stop flag and compare_exchange",
+"code": "use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};\nuse std::sync::Arc;\nuse std::thread;\n\nstatic NEXT_ID: AtomicU64 = AtomicU64::new(1);\n\nfn new_id() -> u64 {\n    NEXT_ID.fetch_add(1, Ordering::Relaxed)                // unique ids, no lock\n}\n\nfn main() {\n    let hits = Arc::new(AtomicUsize::new(0));\n    let handles: Vec<_> = (0..8).map(|_| {\n        let hits = Arc::clone(&hits);\n        thread::spawn(move || {\n            for _ in 0..10_000 {\n                hits.fetch_add(1, Ordering::Relaxed);\n            }\n        })\n    }).collect();\n    for h in handles {\n        h.join().unwrap();\n    }\n    println!(\"hits: {} (expected 80000)\", hits.load(Ordering::Relaxed));\n\n    let stop = Arc::new(AtomicBool::new(false));\n    let worked = Arc::new(AtomicUsize::new(0));\n    let worker = {\n        let (stop, worked) = (Arc::clone(&stop), Arc::clone(&worked));\n        thread::spawn(move || {\n            while !stop.load(Ordering::Acquire) {\n                worked.fetch_add(1, Ordering::Relaxed);\n                thread::yield_now();\n            }\n        })\n    };\n    thread::sleep(std::time::Duration::from_millis(20));\n    stop.store(true, Ordering::Release);\n    worker.join().unwrap();\n    println!(\"worker stopped cleanly after doing some work: {}\", worked.load(Ordering::Relaxed) > 0);\n\n    let max_seen = AtomicU64::new(0);\n    for reading in [17, 42, 8, 99, 63] {\n        let mut current = max_seen.load(Ordering::Relaxed);\n        while reading > current {\n            match max_seen.compare_exchange(current, reading, Ordering::AcqRel, Ordering::Relaxed) {\n                Ok(_) => break,\n                Err(actual) => current = actual,          // someone else changed it: retry\n            }\n        }\n    }\n    println!(\"max reading: {}\", max_seen.load(Ordering::Relaxed));\n    let ids: Vec<u64> = (0..3).map(|_| new_id()).collect();\n    println!(\"ids: {ids:?}\");\n}",
+"note": "Eight threads incremented one atomic 80,000 times in total without a lock, and every increment counted. The stop flag used a Release store paired with an Acquire load, the standard way to signal another thread. The maximum was maintained with a `compare_exchange` retry loop, and a static atomic handed out unique IDs.",
+"output": "hits: 80000 (expected 80000)\nworker stopped cleanly after doing some work: true\nmax reading: 99\nids: [1, 2, 3]"
+},
+{
+"lang": "rust",
+"title": "Release/Acquire publish data safely",
+"code": "use std::sync::atomic::{AtomicBool, Ordering};\nuse std::sync::Arc;\nuse std::thread;\n\nstruct Shared {\n    ready: AtomicBool,\n    data: std::sync::Mutex<Vec<u32>>,\n}\n\nfn main() {\n    let shared = Arc::new(Shared { ready: AtomicBool::new(false), data: std::sync::Mutex::new(vec![]) });\n    let producer = {\n        let s = Arc::clone(&shared);\n        thread::spawn(move || {\n            s.data.lock().unwrap().extend([3, 1, 4, 1, 5]);\n            s.ready.store(true, Ordering::Release);        // everything above is published\n        })\n    };\n    while !shared.ready.load(Ordering::Acquire) {          // sees everything before the Release\n        std::hint::spin_loop();\n    }\n    println!(\"consumer sees {:?}\", shared.data.lock().unwrap());\n    producer.join().unwrap();\n}",
+"note": "The producer filled the data and then stored the flag with Release; the consumer's Acquire load that saw `true` is guaranteed to see all writes made before that store. (The Mutex here makes access safe on its own; with raw data instead, the Release/Acquire pair is exactly what would make it correct.) Spinning is only acceptable for very short waits; prefer Condvar or channels otherwise.",
+"output": "consumer sees [3, 1, 4, 1, 5]"
+}
+],
+"mistakes": [
+"**Relaxed for flags that publish data.** Use Release on the store and Acquire on the load.",
+"**Several atomics that must change together.** They can be seen half-updated. Use a Mutex.",
+"**Busy-waiting for long periods.** It burns CPU; use Condvar, channels or parking."
+],
+"keys": [
+"Atomics update shared integers and flags without locks.",
+"`fetch_add`, `swap` and `compare_exchange` are the core operations.",
+"Relaxed for independent counters; Release/Acquire to publish; SeqCst when unsure.",
+"Prefer a Mutex for anything involving several values."
+]
+},
+"A7.3": {
+"idea": [
+"**rayon** makes data parallelism almost effortless. Replace `.iter()` with **`.par_iter()`** (or `into_par_iter()`, `par_iter_mut()`) and the iterator chain runs on a pool of worker threads, one per core, with work stealing to balance load. The rest of the chain looks the same: `map`, `filter`, `sum`, `collect`, `for_each`. Rayon also offers `par_sort` and `par_sort_unstable`, `par_chunks`, and **`rayon::join(a, b)`** to run two closures in parallel (handy for divide-and-conquer like parallel quicksort).",
+"It is safe for the same reason threads are: closures must be `Send + Sync`, so the compiler rejects chains that would share mutable state without synchronisation. Reductions are expressed with `sum`, `reduce` or `fold`, never by mutating an outer variable.",
+"Parallelism helps when there is **enough CPU work per item** and many items: image processing, parsing many files, simulations, heavy maps over large collections. It does **not** help, and can hurt, for tiny workloads (thread coordination costs more than the work), for I/O-bound work (use async), or when the chain is dominated by a sequential step. Measure in release mode before and after."
+],
+"how": [
+"`use rayon::prelude::*;` then `.par_iter()`, `.into_par_iter()`, `.par_iter_mut()`.",
+"Same adaptors: `map`, `filter`, `sum`, `reduce`, `collect`, `for_each`.",
+"`par_sort_unstable`, `par_chunks`; `rayon::join(a, b)` for two tasks.",
+"Closures must be `Send + Sync`; reduce instead of mutating shared variables.",
+"Worth it for CPU-heavy items; measure in release mode."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "par_iter in one line, with the same answer",
+"code": "use rayon::prelude::*;\nuse std::time::Instant;\n\nfn collatz_len(mut n: u64) -> u32 {\n    let mut steps = 0;\n    while n != 1 {\n        n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };\n        steps += 1;\n    }\n    steps\n}\n\nfn main() {\n    let limit = 300_000u64;\n\n    let start = Instant::now();\n    let serial = (1..limit).map(|n| (collatz_len(n), n)).max().unwrap();\n    let t_serial = start.elapsed();\n\n    let start = Instant::now();\n    let parallel = (1..limit).into_par_iter().map(|n| (collatz_len(n), n)).max().unwrap();\n    let t_parallel = start.elapsed();\n\n    println!(\"longest chain below {limit}: {} steps, starting at {}\", serial.0, serial.1);\n    println!(\"same answer in parallel: {}\", serial == parallel);\n    let cores = rayon::current_num_threads();\n    println!(\"worker threads: {}; parallel faster: {}\", if cores > 1 { \"several\" } else { \"one\" }, cores == 1 || t_parallel < t_serial);\n\n    let mut words: Vec<String> = (0..50_000).map(|i| format!(\"w{}\", (i * 7919) % 50_000)).collect();\n    words.par_sort_unstable();\n    let total_len: usize = words.par_iter().map(|w| w.len()).sum();\n    println!(\"sorted {} words, first {:?}, total length {}\", words.len(), &words[..3], total_len);\n}",
+"note": "Changing `(1..limit)` to `(1..limit).into_par_iter()` spread the work over all cores and produced exactly the same result. Timings vary by machine (and this build is unoptimised), so only the conclusions are printed. `par_sort_unstable` and a parallel `sum` show that most iterator vocabulary carries over unchanged.",
+"output": "longest chain below 300000: 442 steps, starting at 230631\nsame answer in parallel: true\nworker threads: several; parallel faster: true\nsorted 50000 words, first [\"w0\", \"w1\", \"w10\"], total length 288890"
+},
+{
+"lang": "rust",
+"title": "Mutating shared state from a parallel closure",
+"code": "use rayon::prelude::*;\n\nfn main() {\n    let mut total = 0u64;\n    (1..1000u64).into_par_iter().for_each(|n| {\n        total += n;\n    });\n    println!(\"{total}\");\n}",
+"note": "Rayon's closures run on several threads at once, so they must be `Fn`, and mutating the captured `total` is rejected (cannot assign to a captured variable in an `Fn` closure). This is a data race the compiler stops at build time. The idiomatic version is a reduction: `(1..1000u64).into_par_iter().sum::<u64>()`.",
+"output": "error[E0594]: cannot assign to `total`, as it is a captured variable in a `Fn` closure\n --> main.rs:6:9\n  |\n4 |       let mut total = 0u64;\n  |           --------- `total` declared here, outside the closure\n5 |       (1..1000u64).into_par_iter().for_each(|n| {\n  |                                    -        --- in this closure\n  |  __________________________________|\n  | |\n6 | |         total += n;\n  | |         ^^^^^^^^^^ cannot assign\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Parallelising tiny workloads.** Coordination costs more than the work. Measure.",
+"**par_iter for I/O-bound work.** Threads block; use async instead.",
+"**Accumulating into outer variables.** Use `sum`, `reduce`, `fold`, or collect."
+],
+"keys": [
+"`par_iter` turns iterator chains into parallel ones with work stealing.",
+"Same adaptors, plus `par_sort` and `rayon::join`.",
+"The compiler enforces thread safety; reduce instead of mutating.",
+"Parallelism pays off for CPU-heavy items; measure first."
+]
+},
+"A8.1": {
+"idea": [
+"In Tokio, a **task** is a lightweight unit of concurrent work, created with `tokio::spawn` and scheduled by the runtime. The default **multi-threaded runtime** (from `#[tokio::main]`) runs tasks on a pool of worker threads with work stealing; `#[tokio::main(flavor = \"current_thread\")]` runs everything on one thread (simpler, and fine for many I/O-bound programs). Spawned tasks must be `Send + 'static` on the multi-threaded runtime.",
+"**`JoinSet`** manages a dynamic group of tasks: spawn into it, then `join_next().await` returns results in **completion order**; dropping the set **aborts** any tasks still running, which makes cleanup automatic. Use it for \"fetch these N things concurrently and handle each as it finishes\".",
+"The cardinal rule of async is: **never block the runtime**. Each worker thread runs many tasks by switching at `.await` points; a blocking call (`std::thread::sleep`, synchronous file or database I/O, a long CPU loop) freezes every task on that thread. Move such work to **`tokio::task::spawn_blocking(|| ...)`**, which runs it on a separate pool of threads meant for blocking and returns a future of the result; for heavy CPU parallelism, rayon inside `spawn_blocking` is a common combination."
+],
+"how": [
+"`tokio::spawn(async move { ... })` returns a `JoinHandle<T>`; await it for the result.",
+"`JoinSet`: `set.spawn(fut)`, `while let Some(res) = set.join_next().await`; dropping aborts.",
+"Multi-thread (default) vs `flavor = \"current_thread\"` runtimes.",
+"`spawn_blocking(|| heavy())` for blocking or CPU-heavy work.",
+"Never call blocking functions directly in async code."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A JoinSet of fetches and a blocking hash",
+"code": "use std::time::Duration;\nuse tokio::task::{self, JoinSet};\nuse tokio::time::sleep;\n\nasync fn fetch(url: &'static str) -> Result<(String, usize), String> {\n    let ms = url.len() as u64 * 5;\n    sleep(Duration::from_millis(ms)).await;\n    if url.contains(\"bad\") {\n        return Err(format!(\"{url}: connection refused\"));\n    }\n    Ok((url.to_string(), url.len() * 100))\n}\n\nfn expensive_checksum(data: &[u8], rounds: u32) -> u64 {\n    let mut h: u64 = 1469598103934665603;\n    for _ in 0..rounds {\n        for b in data {\n            h = (h ^ *b as u64).wrapping_mul(1099511628211);\n        }\n    }\n    h\n}\n\n#[tokio::main]\nasync fn main() {\n    let mut set = JoinSet::new();\n    for url in [\"a.io\", \"bad.example\", \"longer-site.example\", \"b.io\"] {\n        set.spawn(fetch(url));\n    }\n    let mut ok = Vec::new();\n    while let Some(joined) = set.join_next().await {\n        match joined.expect(\"task panicked\") {\n            Ok((url, bytes)) => ok.push(format!(\"{url} ({bytes} B)\")),\n            Err(e) => println!(\"error: {e}\"),\n        }\n    }\n    println!(\"finished, in completion order: {ok:?}\");\n\n    let data = vec![7u8; 100_000];\n    let ticker = tokio::spawn(async {\n        let mut ticks = 0;\n        for _ in 0..5 {\n            sleep(Duration::from_millis(2)).await;\n            ticks += 1;\n        }\n        ticks\n    });\n    let checksum = task::spawn_blocking(move || expensive_checksum(&data, 30)).await.unwrap();\n    println!(\"checksum {checksum:x}; the runtime kept ticking meanwhile: {} ticks\", ticker.await.unwrap());\n}",
+"note": "Results came out of the JoinSet as each fetch finished (shortest URLs first, since delay depends on length), and the failing one was handled without disturbing the others. The CPU-heavy checksum ran on the blocking pool through `spawn_blocking`, so the ticker task kept running on the async workers in the meantime.",
+"output": "error: bad.example: connection refused\nfinished, in completion order: [\"a.io (400 B)\", \"b.io (400 B)\", \"longer-site.example (1900 B)\"]\nchecksum d50991610ee15543; the runtime kept ticking meanwhile: 5 ticks"
+},
+{
+"lang": "rust",
+"title": "What a blocking call does to other tasks",
+"code": "use std::time::{Duration, Instant};\n\n#[tokio::main(flavor = \"current_thread\")]\nasync fn main() {\n    let start = Instant::now();\n    let heartbeat = tokio::spawn(async move {\n        tokio::time::sleep(Duration::from_millis(10)).await;\n        start.elapsed().as_millis()\n    });\n    std::thread::sleep(Duration::from_millis(200));          // BLOCKS the only runtime thread\n    let late = heartbeat.await.unwrap();\n    println!(\"a 10 ms timer fired after at least 200 ms: {}\", late >= 200);\n}",
+"note": "On a single-threaded runtime, `std::thread::sleep` froze the only worker thread, so the heartbeat task, due after 10 ms, could not run until the blocking call ended 200 ms later. On a multi-threaded runtime the damage is smaller but real. Use `tokio::time::sleep` or `spawn_blocking` instead.",
+"output": "a 10 ms timer fired after at least 200 ms: true"
+}
+],
+"mistakes": [
+"**Blocking calls in async code.** Every task on the thread stalls. Use async APIs or `spawn_blocking`.",
+"**Forgetting that dropping a JoinSet aborts its tasks.** Keep it alive until the work is done.",
+"**Spawning non-`Send` futures on the multi-thread runtime.** Holding an `Rc` or a std MutexGuard across `.await` makes the future non-Send."
+],
+"keys": [
+"Tasks are cheap; `tokio::spawn` runs them on the runtime's workers.",
+"JoinSet collects results as tasks finish and aborts on drop.",
+"Never block the runtime; `spawn_blocking` for blocking or heavy CPU work.",
+"Choose multi-thread or current-thread runtimes deliberately."
+]
+},
+"A8.2": {
+"idea": [
+"Async shines for network services. **`tokio::net::TcpListener::bind(addr).await`** opens a listening socket, and `listener.accept().await` waits for the next connection, returning a `TcpStream` and the client's address. The idiomatic server **spawns one task per connection**, so thousands of mostly idle connections cost little memory.",
+"Reading and writing use the `AsyncReadExt`/`AsyncWriteExt` traits (`read`, `write_all`, `read_to_end`). For line-based protocols, wrap the read half in **`BufReader`** and use `.lines()` (`next_line().await` returns `Ok(Some(line))`, or `Ok(None)` when the client disconnects). **`stream.into_split()`** (or `split` for borrowed halves) separates the read and write halves so a task can read while another writes.",
+"Clients use **`TcpStream::connect(addr).await`**. Real protocols need **framing**: TCP is a byte stream with no message boundaries, so messages are delimited by newlines, length prefixes or a format's own structure. For anything beyond simple line protocols, `tokio_util::codec` provides framing (`LinesCodec`, `LengthDelimitedCodec`), and higher-level crates (hyper, axum, tonic) build HTTP and gRPC on top."
+],
+"how": [
+"`let listener = TcpListener::bind(\"127.0.0.1:0\").await?;` `let (socket, addr) = listener.accept().await?;`",
+"One task per connection: `tokio::spawn(handle(socket))`.",
+"`let (r, mut w) = socket.into_split();` `BufReader::new(r).lines()`.",
+"`next_line().await` → `Ok(None)` when the peer disconnects.",
+"Frame messages: newline, length prefix, or `tokio_util::codec`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A line-based echo server and two clients in one program",
+"code": "use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};\nuse tokio::net::{TcpListener, TcpStream};\n\nasync fn handle(socket: TcpStream, id: usize) {\n    let (reader, mut writer) = socket.into_split();\n    let mut lines = BufReader::new(reader).lines();\n    while let Ok(Some(line)) = lines.next_line().await {\n        let reply = match line.as_str() {\n            \"PING\" => \"PONG\".to_string(),\n            l if l.starts_with(\"ECHO \") => l[5..].to_uppercase(),\n            _ => format!(\"ERR unknown command {line:?}\"),\n        };\n        if writer.write_all(format!(\"[conn {id}] {reply}\\n\").as_bytes()).await.is_err() {\n            break;\n        }\n    }\n}\n\nasync fn client(addr: std::net::SocketAddr, commands: &[&str]) -> Vec<String> {\n    let stream = TcpStream::connect(addr).await.unwrap();\n    let (reader, mut writer) = stream.into_split();\n    let mut lines = BufReader::new(reader).lines();\n    let mut replies = Vec::new();\n    for cmd in commands {\n        writer.write_all(format!(\"{cmd}\\n\").as_bytes()).await.unwrap();\n        replies.push(lines.next_line().await.unwrap().unwrap());\n    }\n    replies\n}\n\n#[tokio::main]\nasync fn main() {\n    let listener = TcpListener::bind(\"127.0.0.1:0\").await.unwrap();\n    let addr = listener.local_addr().unwrap();\n    tokio::spawn(async move {\n        for id in 1.. {\n            let (socket, _) = listener.accept().await.unwrap();\n            tokio::spawn(handle(socket, id));           // one task per connection\n        }\n    });\n    let (a, b) = tokio::join!(client(addr, &[\"PING\", \"ECHO hello\"]), client(addr, &[\"ECHO tokio\", \"DANCE\"]));\n    let mut all = a.into_iter().chain(b).collect::<Vec<_>>();\n    all.sort_by_key(|s| s.split(\"] \").nth(1).unwrap_or(\"\").to_string());\n    for line in all {\n        println!(\"{}\", line.split(\"] \").nth(1).unwrap());\n    }\n}",
+"note": "The accept loop spawned a task per connection, and two clients talked to the server concurrently through `join!`. Each connection split its stream to read lines and write replies, and `next_line` returning `None` would end the handler when a client disconnects. Connection numbers depend on timing, so they are stripped and the replies sorted for stable output.",
+"output": "ERR unknown command \"DANCE\"\nHELLO\nPONG\nTOKIO"
+},
+{
+"lang": "rust",
+"title": "TCP has no message boundaries",
+"code": "use tokio::io::{AsyncReadExt, AsyncWriteExt};\nuse tokio::net::{TcpListener, TcpStream};\n\n#[tokio::main]\nasync fn main() {\n    let listener = TcpListener::bind(\"127.0.0.1:0\").await.unwrap();\n    let addr = listener.local_addr().unwrap();\n    let server = tokio::spawn(async move {\n        let (mut s, _) = listener.accept().await.unwrap();\n        let mut all = Vec::new();\n        s.read_to_end(&mut all).await.unwrap();\n        String::from_utf8(all).unwrap()\n    });\n    let mut c = TcpStream::connect(addr).await.unwrap();\n    for msg in [\"hello\", \"world\", \"again\"] {\n        c.write_all(msg.as_bytes()).await.unwrap();       // three writes...\n    }\n    drop(c);\n    let received = server.await.unwrap();\n    println!(\"server received one undelimited stream: {received:?}\");\n    println!(\"framed with newlines it could be split: {:?}\", \"hello\\nworld\\nagain\\n\".lines().collect::<Vec<_>>());\n}",
+"note": "Three separate writes arrived as one run of bytes, \"helloworldagain\", with nothing marking where each message ended: TCP delivers a byte stream, not messages. Protocols therefore frame their messages, with delimiters like newlines or with length prefixes, which is what codecs automate.",
+"output": "server received one undelimited stream: \"helloworldagain\"\nframed with newlines it could be split: [\"hello\", \"world\", \"again\"]"
+}
+],
+"mistakes": [
+"**Handling connections sequentially in the accept loop.** One slow client blocks all others. Spawn a task each.",
+"**Assuming one `read` equals one message.** TCP has no boundaries; frame your protocol.",
+"**Ignoring write errors.** The client may have gone; stop the handler cleanly."
+],
+"keys": [
+"`TcpListener::accept` in a loop, one spawned task per connection.",
+"Split streams into read and write halves; BufReader for lines.",
+"`next_line` returning `None` means the peer disconnected.",
+"Frame messages explicitly; TCP is a byte stream."
+]
+},
+"A8.3": {
+"idea": [
+"Async code needs async-aware synchronisation. **`tokio::sync::Mutex`** can be held across `.await` points (its `lock()` is itself async), while **`std::sync::Mutex`** must not be held across an await: its guard isn't `Send`, and holding it while the task sleeps blocks other tasks. The common advice: use std's Mutex for short, synchronous critical sections (it is faster), and Tokio's when you truly must hold the lock across an await. `tokio::sync::RwLock` is the async read-write lock.",
+"**`Semaphore`** limits concurrency: create one with N permits, and each task `acquire()`s a permit before doing limited work (calling an API, opening a file); the permit is released when dropped. It is the standard tool for rate limiting and for capping parallel connections.",
+"Tokio's channels cover the common patterns: **`mpsc`** (many producers, one consumer, bounded for back-pressure), **`oneshot`** (a single reply, for request/response between tasks), **`broadcast`** (every receiver gets every message: events, chat), and **`watch`** (receivers see the latest value only: configuration, status, shutdown). **Graceful shutdown** combines them: listen for Ctrl+C with `tokio::signal::ctrl_c()`, send a shutdown signal on a `watch` or `broadcast` channel (or a `CancellationToken`), have tasks `select!` on it, and wait for them to finish before exiting."
+],
+"how": [
+"std `Mutex` for short sync sections; `tokio::sync::Mutex` when held across `.await`.",
+"`Semaphore::new(n)`; `let _permit = sem.acquire().await?;` limits concurrency.",
+"Channels: `mpsc` (queue), `oneshot` (one reply), `broadcast` (fan-out), `watch` (latest value).",
+"Shutdown: `ctrl_c()` → signal via `watch`/`broadcast` → tasks `select!` → await them.",
+"Keep critical sections short; never block inside them."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A semaphore, a oneshot reply and a graceful shutdown",
+"code": "use std::sync::Arc;\nuse std::sync::atomic::{AtomicUsize, Ordering};\nuse std::time::Duration;\nuse tokio::sync::{oneshot, watch, Semaphore};\nuse tokio::time::sleep;\n\n#[tokio::main]\nasync fn main() {\n    let limit = Arc::new(Semaphore::new(2));\n    let active = Arc::new(AtomicUsize::new(0));\n    let peak = Arc::new(AtomicUsize::new(0));\n    let mut handles = Vec::new();\n    for _ in 0..6 {\n        let (limit, active, peak) = (limit.clone(), active.clone(), peak.clone());\n        handles.push(tokio::spawn(async move {\n            let _permit = limit.acquire().await.unwrap();\n            let now = active.fetch_add(1, Ordering::SeqCst) + 1;\n            peak.fetch_max(now, Ordering::SeqCst);\n            sleep(Duration::from_millis(20)).await;          // \"call the API\"\n            active.fetch_sub(1, Ordering::SeqCst);\n        }));\n    }\n    for h in handles {\n        h.await.unwrap();\n    }\n    println!(\"6 calls, never more than {} at once\", peak.load(Ordering::SeqCst));\n\n    let (reply_tx, reply_rx) = oneshot::channel();\n    tokio::spawn(async move {\n        let _ = reply_tx.send(format!(\"price for teapot: {}\", 2499));\n    });\n    println!(\"oneshot reply: {}\", reply_rx.await.unwrap());\n\n    let (shutdown_tx, shutdown_rx) = watch::channel(false);\n    let mut workers = Vec::new();\n    for id in 1..=3 {\n        let mut rx = shutdown_rx.clone();\n        workers.push(tokio::spawn(async move {\n            let mut jobs = 0;\n            loop {\n                tokio::select! {\n                    _ = rx.changed() => break,                 // shutdown requested\n                    _ = sleep(Duration::from_millis(5)) => jobs += 1,\n                }\n            }\n            format!(\"worker {id} stopped cleanly\")\n        }));\n    }\n    sleep(Duration::from_millis(30)).await;\n    shutdown_tx.send(true).unwrap();                          // real servers: after tokio::signal::ctrl_c()\n    for w in workers {\n        println!(\"{}\", w.await.unwrap());\n    }\n}",
+"note": "The semaphore capped concurrent \"API calls\" at two even though six tasks were spawned. The oneshot channel carried a single reply from one task to another. For shutdown, a `watch` channel told every worker to stop; each was in a `select!` between its work and the signal, finished its loop, and was awaited before the program ended.",
+"output": "6 calls, never more than 2 at once\noneshot reply: price for teapot: 2499\nworker 1 stopped cleanly\nworker 2 stopped cleanly\nworker 3 stopped cleanly"
+},
+{
+"lang": "rust",
+"title": "Holding a std MutexGuard across an await",
+"code": "use std::sync::{Arc, Mutex};\n\nasync fn save(_v: u32) {}\n\n#[tokio::main]\nasync fn main() {\n    let state = Arc::new(Mutex::new(0u32));\n    let s = state.clone();\n    tokio::spawn(async move {\n        let mut guard = s.lock().unwrap();\n        *guard += 1;\n        save(*guard).await;               // the guard is still alive here\n    })\n    .await\n    .unwrap();\n}",
+"note": "`std::sync::MutexGuard` is not `Send`, and keeping it alive across `.await` makes the whole future non-Send, so `tokio::spawn` rejects it (\"future cannot be sent between threads safely\"). Copy the value out and drop the guard before awaiting, or use `tokio::sync::Mutex` if the lock really must be held across the await.",
+"output": "error: future cannot be sent between threads safely\n   --> main.rs:9:5\n    |\n  9 | /     tokio::spawn(async move {\n 10 | |         let mut guard = s.lock().unwrap();\n 11 | |         *guard += 1;\n 12 | |         save(*guard).await;               // the guard is still alive here\n 13 | |     })\n    | |______^ future created by async block is not `Send`\n    |\n    = help: within `{async block@src/main.rs:9:18: 9:28}`, the trait `Send` is not implemented for `std::sync::MutexGuard<'_, u32>`\n  ...",
+"label": "Compiler output"
+}
+],
+"mistakes": [
+"**Holding std locks across `.await`.** Non-Send futures and stalled tasks. Drop the guard first.",
+"**Unlimited concurrency against external services.** Use a Semaphore.",
+"**Exiting without waiting for tasks.** Signal shutdown, then await them."
+],
+"keys": [
+"std Mutex for short sync sections; Tokio's Mutex across awaits.",
+"Semaphores cap concurrency for rate limiting.",
+"mpsc, oneshot, broadcast and watch channels fit different patterns.",
+"Graceful shutdown: signal, select, then await every task."
+]
+},
 "1.1": {
 "idea": [
 "Rust is installed and managed with **rustup**, the official toolchain installer. One command installs three things: `rustc`, the compiler that turns `.rs` source files into native programs; `cargo`, the build tool and package manager you will use every day; and the standard library with its documentation. rustup also keeps several **toolchains** side by side (stable, beta, nightly, or a pinned version for one project) and updates them with `rustup update`.",

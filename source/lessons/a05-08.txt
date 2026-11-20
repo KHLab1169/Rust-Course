@@ -1,0 +1,1152 @@
+=== A5.1
+@idea
+Flexible generic APIs come from choosing the right bounds. To accept "anything I can iterate over", bound on **`IntoIterator`** rather than `Iterator` or a concrete collection: `fn total<I: IntoIterator<Item = u32>>(items: I)` accepts a `Vec`, an array, a range, a `HashSet` or an iterator chain. Bounds can constrain **associated types**: `I: IntoIterator, I::Item: Display` says "the items must be displayable", and `Item = &'a str` pins them exactly.
+
+**`where` clauses** keep complex bounds readable and can express things inline bounds can't, such as bounds on associated types or on types that aren't parameters (`where Vec<T>: Debug`). `impl Trait` in argument position is shorthand for an anonymous type parameter; in return position it hides a concrete type (essential for returning iterator chains and closures).
+
+**Conditional `impl` blocks** add methods only when type parameters meet extra bounds: `impl<T: Display + PartialOrd> Pair<T> { fn largest(&self) ... }`. **Blanket implementations** implement a trait for every type that satisfies a bound (`impl<T: Display> ToString for T` is how every displayable type gets `to_string()`). Together these let a small amount of generic code serve many types precisely.
+@how
+- Accept iterables with `I: IntoIterator<Item = T>`; constrain `I::Item` in `where`.
+- Return iterator chains with `impl Iterator<Item = T> + '_` when borrowing.
+- `where` for long or associated-type bounds.
+- Conditional impls: `impl<T: Bound> Type<T> { ... }`.
+- Blanket impls: `impl<T: Bound> MyTrait for T { ... }`.
+@example rust: Generic over anything iterable, with a conditional impl and a blanket impl
+use std::collections::{BTreeSet, HashMap};
+use std::fmt::Display;
+
+fn total<I: IntoIterator<Item = u32>>(items: I) -> u32 {
+    items.into_iter().sum()
+}
+
+fn join_all<I>(items: I, sep: &str) -> String
+where
+    I: IntoIterator,
+    I::Item: Display,
+{
+    items.into_iter().map(|x| x.to_string()).collect::<Vec<_>>().join(sep)
+}
+
+fn long_words<'a>(text: &'a str, min: usize) -> impl Iterator<Item = &'a str> + 'a {
+    text.split_whitespace().filter(move |w| w.len() >= min)
+}
+
+struct Pair<T> {
+    a: T,
+    b: T,
+}
+
+impl<T: PartialOrd + Display> Pair<T> {
+    fn largest(&self) -> String {
+        format!("largest is {}", if self.a >= self.b { &self.a } else { &self.b })
+    }
+}
+
+trait Shout {
+    fn shout(&self) -> String;
+}
+
+impl<T: Display> Shout for T {
+    fn shout(&self) -> String {
+        self.to_string().to_uppercase() + "!"
+    }
+}
+
+fn main() {
+    println!("{} {} {} {}", total(vec![1, 2, 3]), total([10, 20]), total(1..=100), total(BTreeSet::from([5, 5, 6])));
+    let ages = HashMap::from([("ada", 36)]);
+    println!("{} | {} | {}", join_all([1.5, 2.25], ", "), join_all(vec!["tea", "cake"], " + "), join_all(ages.values(), ""));
+    println!("{:?}", long_words("generic code serves many types precisely", 6).collect::<Vec<_>>());
+    println!("{} / {}", Pair { a: 3, b: 9 }.largest(), Pair { a: "pear", b: "apple" }.largest());
+    println!("{} {}", "hello".shout(), 42.shout());
+}
+@note
+`total` accepted a Vec, an array, a range and a set because all implement `IntoIterator<Item = u32>`. `join_all` needed only displayable items, expressed through the associated type in a `where` clause. `largest` exists only for comparable, displayable pairs, and the blanket impl gave `shout` to every type that implements Display, including `&str` and integers.
+@example rust fail: Too narrow a bound forces conversions on callers
+fn total(items: &Vec<u32>) -> u32 {
+    items.iter().sum()
+}
+
+fn main() {
+    println!("{}", total(&[1, 2, 3]));
+    println!("{}", total(&(1..=10).collect()));
+}
+@note
+`&Vec<u32>` rejects an array reference (the compiler says it expected `&Vec<u32>` and found an array), so callers must allocate a Vec just to call the function. Taking `impl IntoIterator<Item = u32>` (or at least `&[u32]`) accepts arrays, vectors, ranges and iterator chains directly.
+@mistakes
+- **Concrete collection parameters** (`&Vec<T>`, `HashSet<T>`). Accept `IntoIterator` or slices.
+- **Forgetting `+ 'a` on returned iterators that borrow.** The compiler asks for the lifetime.
+- **Bounds that are stricter than needed.** Every extra bound excludes callers.
+@keys
+- `IntoIterator<Item = T>` accepts any iterable.
+- Constrain associated types in `where` clauses.
+- Conditional impls add methods only when bounds hold.
+- Blanket impls give a trait to every type meeting a bound.
+
+=== A5.2
+@idea
+A handful of standard traits make your types feel native. **`From`/`Into`** express infallible conversions: implement `From<A> for B` and you get `Into<B> for A` for free, plus `?` conversions for errors. **`TryFrom`/`TryInto`** are the fallible versions, returning a `Result` (`u8::try_from(300)` fails). **`FromStr`** powers `"1.2.3".parse::<Version>()`. **`Display`** gives `{}` and `to_string()`. **`Default`** provides a sensible starting value (derivable), used by `..Default::default()` in struct literals and by `unwrap_or_default`.
+
+**`AsRef<T>`** makes parameters flexible: `fn open(path: impl AsRef<Path>)` accepts `&str`, `String`, `PathBuf` and `&Path`, which is how std's file functions work. **`Borrow`** is similar but promises equal hashing and ordering, which is why a `HashMap<String, V>` can be looked up with a `&str`.
+
+For comparisons: **`PartialEq`/`Eq`** (equality; Eq means it is reflexive, which floats are not because NaN ≠ NaN), **`PartialOrd`/`Ord`** (ordering; Ord is total and required by sort and BTreeMap). Derived comparisons go field by field in declaration order, so ordering fields from most to least significant (major, minor, patch) gives correct semantics for free.
+@how
+- `impl From<A> for B` (gives `Into`); `TryFrom` for fallible conversions.
+- `impl FromStr` for `.parse()`; `impl Display` for `{}`.
+- `#[derive(Default)]` or impl it; `..Default::default()`.
+- Parameters: `impl AsRef<str>`, `impl AsRef<Path>`, `impl Into<String>`.
+- Derive `PartialEq, Eq, PartialOrd, Ord, Hash`; field order decides ordering.
+@example rust: A Version type that plays well with std
+use std::fmt;
+use std::str::FromStr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+struct Version {
+    major: u32,
+    minor: u32,
+    patch: u32,
+}
+
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl FromStr for Version {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.trim_start_matches('v').split('.').collect();
+        let [a, b, c] = parts.as_slice() else {
+            return Err(format!("{s:?}: expected MAJOR.MINOR.PATCH"));
+        };
+        let num = |p: &str| p.parse::<u32>().map_err(|e| format!("{s:?}: {e}"));
+        Ok(Version { major: num(a)?, minor: num(b)?, patch: num(c)? })
+    }
+}
+
+impl From<(u32, u32, u32)> for Version {
+    fn from((major, minor, patch): (u32, u32, u32)) -> Self {
+        Version { major, minor, patch }
+    }
+}
+
+impl TryFrom<&[u32]> for Version {
+    type Error = String;
+    fn try_from(parts: &[u32]) -> Result<Self, Self::Error> {
+        match parts {
+            [a, b, c] => Ok((*a, *b, *c).into()),
+            _ => Err(format!("need 3 numbers, got {}", parts.len())),
+        }
+    }
+}
+
+fn describe(label: impl AsRef<str>, v: impl Into<Version>) -> String {
+    format!("{}: {}", label.as_ref(), v.into())
+}
+
+fn main() {
+    let mut versions: Vec<Version> = ["1.10.0", "v1.2.3", "1.2.10", "0.9.9"].iter().map(|s| s.parse().unwrap()).collect();
+    versions.sort();
+    println!("{}", versions.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" < "));
+    println!("{:?}", "1.2".parse::<Version>());
+    println!("{:?} {:?}", Version::try_from(&[2, 0, 1][..]), Version::try_from(&[2, 0][..]));
+    println!("{} | {}", describe("from a tuple", (3, 1, 4)), describe(String::from("owned label"), Version::default()));
+    println!("max: {}", versions.iter().max().unwrap());
+}
+@note
+Deriving the comparison traits with fields ordered major, minor, patch sorted versions numerically (1.2.3 < 1.2.10 < 1.10.0, unlike string sorting). `FromStr` enabled `.parse()`, `From` a tuple conversion that also made `.into()` work, `TryFrom` a checked conversion from a slice, and `AsRef`/`Into` let `describe` accept several argument types.
+@example rust: AsRef and Borrow in std's own APIs
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+fn extension(path: impl AsRef<Path>) -> Option<String> {
+    path.as_ref().extension().map(|e| e.to_string_lossy().into_owned())
+}
+
+fn main() {
+    let owned = String::from("report.pdf");
+    let buf = PathBuf::from("/tmp/data.csv");
+    println!("{:?} {:?} {:?} {:?}", extension("notes.txt"), extension(&owned), extension(&buf), extension(Path::new("README")));
+
+    let mut stock: HashMap<String, u32> = HashMap::new();
+    stock.insert("tea".to_string(), 12);
+    println!("lookup with &str thanks to Borrow: {:?}", stock.get("tea"));
+    let n: f64 = f64::NAN;
+    println!("NaN == NaN? {} (so f64 is PartialEq but not Eq)", n == n);
+}
+@note
+`impl AsRef<Path>` let one function accept a literal, a String, a PathBuf and a Path, the same technique `std::fs` uses. The map's keys are `String`, yet `get("tea")` works because String implements `Borrow<str>`. NaN not equalling itself is exactly why floats implement only `PartialEq` and `PartialOrd`.
+@mistakes
+- **Inherent `from_string` methods instead of `FromStr`.** Implement the trait so `.parse()` works.
+- **Implementing `Into` directly.** Implement `From`; you get `Into` for free.
+- **Deriving `Ord` with fields in the wrong order.** Comparison follows declaration order.
+@keys
+- `From`/`Into` and `TryFrom` for conversions; `FromStr` for parsing.
+- `Display` and `Default` make types friendly to std.
+- `AsRef`/`Into` parameters accept many argument types.
+- Derived comparisons follow field order; floats are only Partial.
+
+=== A5.3
+@idea
+Rust's type system can carry information that never exists at run time. A **zero-sized type** (ZST), such as a unit struct `struct Meters;`, takes no memory, and **`PhantomData<T>`** lets a struct mention a type parameter it doesn't store, purely to make the compiler track it. Together they encode **units** (`Length<Meters>` vs `Length<Feet>` cannot be added by mistake), **ownership markers** and **states**, all at zero run-time cost.
+
+The **typestate pattern** encodes an object's state in its type: `Connection<Disconnected>`, `Connection<Connected>`, `Connection<Authenticated>`. Each state has only the methods valid in it, and transitions consume `self` and return the next state's type. Calling `send` before `login` is then a compile error, not a run-time check, and the states vanish from the compiled code.
+
+**Const generics** parameterise types by **values**: `struct Matrix<const R: usize, const C: usize>` makes dimensions part of the type, so multiplying a 2×3 by a 2×3 matrix is a compile error while 2×3 by 3×2 type-checks and yields a 2×2. Arrays use this (`[T; N]`), and `fn sum<const N: usize>(a: [i32; N])` works for every array length.
+@how
+- `PhantomData<T>` to tag a struct with a type it doesn't store.
+- Unit structs as markers: `struct Meters; struct Feet;`.
+- Typestate: `struct Conn<S> { ..., _state: PhantomData<S> }`; methods in `impl Conn<StateA>`.
+- Transitions take `self` and return `Conn<NextState>`.
+- Const generics: `struct M<const N: usize>`, `fn f<const N: usize>(a: [T; N])`.
+@example rust: Units, typestate and const generics
+use std::marker::PhantomData;
+use std::ops::Add;
+
+#[derive(Debug, Clone, Copy)]
+struct Meters;
+#[derive(Debug, Clone, Copy)]
+struct Feet;
+
+#[derive(Debug, Clone, Copy)]
+struct Length<U> {
+    value: f64,
+    _unit: PhantomData<U>,
+}
+
+impl<U> Length<U> {
+    fn new(value: f64) -> Self { Length { value, _unit: PhantomData } }
+}
+
+impl<U> Add for Length<U> {                                // only same units add
+    type Output = Length<U>;
+    fn add(self, o: Self) -> Self { Length::new(self.value + o.value) }
+}
+
+impl Length<Feet> {
+    fn to_meters(self) -> Length<Meters> { Length::new(self.value * 0.3048) }
+}
+
+struct Idle;
+struct Running { started_ms: u64 }
+
+struct Timer<S> {
+    label: &'static str,
+    state: S,
+}
+
+impl Timer<Idle> {
+    fn new(label: &'static str) -> Self { Timer { label, state: Idle } }
+    fn start(self, now_ms: u64) -> Timer<Running> { Timer { label: self.label, state: Running { started_ms: now_ms } } }
+}
+
+impl Timer<Running> {
+    fn stop(self, now_ms: u64) -> (Timer<Idle>, u64) {
+        (Timer { label: self.label, state: Idle }, now_ms - self.state.started_ms)
+    }
+}
+
+#[derive(Debug)]
+struct Matrix<const R: usize, const C: usize>([[i32; C]; R]);
+
+impl<const R: usize, const K: usize> Matrix<R, K> {
+    fn mul<const C: usize>(&self, other: &Matrix<K, C>) -> Matrix<R, C> {
+        let mut out = [[0; C]; R];
+        for r in 0..R { for c in 0..C { for k in 0..K { out[r][c] += self.0[r][k] * other.0[k][c]; } } }
+        Matrix(out)
+    }
+}
+
+fn main() {
+    let run = Length::<Meters>::new(1000.0) + Length::<Feet>::new(500.0).to_meters();
+    println!("total run: {:.1} m; size of Length: {} bytes", run.value, std::mem::size_of::<Length<Meters>>());
+
+    let timer = Timer::new("brew").start(1_000);
+    let (timer, elapsed) = timer.stop(241_000);
+    println!("{} took {} s; back to idle: {}", timer.label, elapsed / 1000, std::mem::size_of_val(&timer.state) == 0);
+
+    let a = Matrix([[1, 2, 3], [4, 5, 6]]);              // 2x3
+    let b = Matrix([[1, 0], [0, 1], [2, 2]]);            // 3x2
+    println!("2x3 * 3x2 = {:?}", a.mul(&b));
+}
+@note
+`Length<Meters>` and `Length<Feet>` are different types, so feet had to be converted before adding, yet a Length is just 8 bytes: the unit costs nothing at run time. The timer's state lives in its type (`start` only exists when idle, `stop` only when running), and `Idle` is zero-sized. The matrix dimensions are checked by the compiler.
+@example rust fail: Mismatched matrix dimensions don't compile
+#[derive(Debug)]
+struct Matrix<const R: usize, const C: usize>([[i32; C]; R]);
+
+impl<const R: usize, const K: usize> Matrix<R, K> {
+    fn mul<const C: usize>(&self, other: &Matrix<K, C>) -> Matrix<R, C> {
+        Matrix([[0; C]; R])
+    }
+}
+
+fn main() {
+    let a = Matrix([[1, 2, 3], [4, 5, 6]]);      // 2x3
+    let b = Matrix([[1, 2, 3], [4, 5, 6]]);      // 2x3: inner dimensions 3 and 2 don't match
+    println!("{:?}", a.mul(&b));
+}
+@note
+Multiplying a 2×3 matrix by another 2×3 matrix is mathematically invalid, and because the dimensions are const generic parameters, the compiler rejects it: it expected a matrix with 3 rows and found one with 2. In most languages this is a run-time panic or a wrong answer.
+@mistakes
+- **Run-time state flags where order is fixed.** Typestates make misuse a compile error.
+- **Over-engineering with type-level tricks.** Use them where mistakes are costly; plain enums are often enough.
+- **Forgetting PhantomData.** An unused type parameter is a compile error without it.
+@keys
+- Zero-sized types and PhantomData carry type information for free.
+- Unit markers prevent mixing incompatible values.
+- Typestate encodes states as types; invalid calls don't compile.
+- Const generics put values like dimensions into types.
+
+=== A6.1
+@idea
+Visibility in Rust is more fine-grained than public versus private. **`pub`** exposes an item to everyone who can reach its module. **`pub(crate)`** exposes it anywhere in the current crate but not to users of the library, perfect for helpers shared between modules. **`pub(super)`** exposes it to the parent module only, and `pub(in path)` to a chosen ancestor. Private (the default) means the current module and its descendants.
+
+Getting visibility right keeps a library's **public API** small and stable: everything `pub` (and reachable) is a promise you can't change without a major version bump, while `pub(crate)` items can be refactored freely. Many crates add a **prelude** module that re-exports the most common items (`pub use crate::{Client, Config, Error};`), so users write `use mylib::prelude::*;`.
+
+**Organise by feature**, not by kind. A `orders/` module containing the order types, validation, storage and tests for orders beats separate `models/`, `services/` and `utils/` folders, because most changes touch one feature and the module boundary becomes a natural encapsulation boundary. Tools: `cargo doc` shows exactly what is public; Clippy's `unreachable_pub` lint flags `pub` items that aren't actually exported.
+@how
+- `pub` (everyone), `pub(crate)` (this crate), `pub(super)` (parent), private (this module).
+- Keep the public API minimal; use `pub(crate)` for internal sharing.
+- A `prelude` module re-exports common items.
+- Organise modules by feature; each feature module hides its internals.
+- Check the public surface with `cargo doc`.
+@example rust: Visibility levels in one crate
+mod shop {
+    pub mod orders {
+        #[derive(Debug)]
+        pub struct Order {
+            pub id: u32,
+            pub(crate) total_cents: u32,          // the crate can read it; library users can't
+            notes: Vec<String>,                   // private to `orders`
+        }
+
+        impl Order {
+            pub fn new(id: u32) -> Self {
+                Order { id, total_cents: 0, notes: vec![] }
+            }
+            pub fn add_item(&mut self, cents: u32) {
+                self.total_cents += cents;
+                self.notes.push(format!("+{cents}"));
+                super::audit::record(self.id);
+            }
+            pub fn history(&self) -> &[String] {
+                &self.notes
+            }
+        }
+
+        pub(super) fn reset_counters() -> &'static str {    // only the parent module may call this
+            "counters reset"
+        }
+    }
+
+    mod audit {
+        pub(super) fn record(order_id: u32) {               // sibling modules under `shop` may call this
+            let _ = order_id;
+        }
+    }
+
+    pub(crate) fn admin_reset() -> &'static str {
+        orders::reset_counters()                             // allowed: `shop` is the parent of `orders`
+    }
+
+    pub mod prelude {
+        pub use super::orders::Order;
+    }
+}
+
+use shop::prelude::*;
+
+fn main() {
+    let mut order = Order::new(7);
+    order.add_item(450);
+    order.add_item(325);
+    println!("order {} total {} history {:?}", order.id, order.total_cents, order.history());
+    println!("{}", shop::admin_reset());
+}
+@note
+`id` is public, `total_cents` is `pub(crate)` (readable here in the same crate, hidden from library users), and `notes` is private to `orders`, so outside code reads it only through `history()`. `reset_counters` is `pub(super)`, callable from `shop` but not from `main`, and the prelude re-exports `Order` for a one-line import.
+@example rust fail: pub(super) stops at the parent
+mod app {
+    pub mod db {
+        pub(super) fn wipe() -> &'static str {
+            "wiped"
+        }
+    }
+}
+
+fn main() {
+    println!("{}", app::db::wipe());
+}
+@note
+`wipe` is visible to `app` (the parent of `db`) but not to the crate root, so `main` cannot call it and the compiler says the function is private. Restricted visibility lets dangerous helpers be shared exactly as widely as needed and no further.
+@mistakes
+- **`pub` on everything.** Each public item is an API promise. Default to private, then `pub(crate)`.
+- **Modules organised by layer** (`models`, `utils`). Organise by feature so changes stay local.
+- **Users needing ten imports.** Offer a prelude or re-export key types at the root.
+@keys
+- `pub`, `pub(crate)`, `pub(super)` and private control exactly who sees what.
+- Keep the public API minimal and stable.
+- Preludes and re-exports make the API convenient.
+- Organise by feature; module boundaries encapsulate.
+
+=== A6.2
+@idea
+Dependencies are declared with **semantic version requirements**. `serde = "1.0"` (the same as `^1.0`) means "any compatible version": at least 1.0.0 and below 2.0.0; for 0.x crates the minor number is the breaking one, so `"0.4"` means below 0.5.0. Other forms: `"~1.2"` (patch updates only), `"=1.2.3"` (exactly), `">=1.2, <1.5"`. Cargo picks the newest matching versions and records them in `Cargo.lock`; **`cargo update`** moves to newer compatible versions on purpose, `cargo update -p serde` for one crate. **`cargo tree`** shows the dependency graph, and `cargo tree -d` finds crates compiled in two versions (a common source of bloat).
+
+Dependency kinds: **`[dev-dependencies]`** are used only by tests, examples and benchmarks (proptest, criterion); **`[build-dependencies]`** by build scripts. **Optional dependencies** (`optional = true`) are compiled only when a feature enables them.
+
+**Features** are named switches for conditional compilation. `[features] default = ["json"]` and `json = ["dep:serde_json"]` define them; code uses `#[cfg(feature = "json")]`. Features must be **additive**: enabling one must never break code that worked without it, because Cargo unifies features across the whole dependency graph. Users opt out with `default-features = false` and pick what they need.
+@how
+- `"1.2"` = compatible (≥1.2.0, <2.0.0); `"0.4"` = ≥0.4.0, <0.5.0; `"=1.2.3"` exact.
+- `cargo update` (all) / `cargo update -p name`; `cargo tree`, `cargo tree -d`.
+- `[dev-dependencies]` for tests and benches; `[build-dependencies]` for build.rs.
+- `optional = true` + `[features] x = ["dep:name"]`; `#[cfg(feature = "x")]` in code.
+- Features are additive; `default-features = false` to slim down.
+@example toml: A Cargo.toml with features and dependency kinds
+[package]
+name = "reportgen"
+version = "0.3.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"                                   # >= 1.0.0, < 2.0.0
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+csv = { version = "1.3", optional = true }
+
+[features]
+default = ["json"]
+json = ["dep:serde", "dep:serde_json"]         # enabling "json" pulls in two optional crates
+csv = ["dep:csv", "dep:serde"]
+all-formats = ["json", "csv"]
+
+[dev-dependencies]
+proptest = "1"                                  # only for tests
+criterion = "0.5"                               # only for benchmarks
+
+# cargo build                                   -> default features (json)
+# cargo build --no-default-features --features csv
+# cargo build --all-features
+# cargo tree -e features                        -> which feature enabled what
+@note
+`chrono` is used with its default features turned off and only `clock` enabled, a common way to slim a dependency. `serde`, `serde_json` and `csv` are optional and appear only when a feature asks for them, and both `json` and `csv` can be on at once because features are additive. Dev-dependencies never reach users of the crate.
+@example rust: Code that compiles differently per feature
+#[cfg(feature = "json")]
+fn render(rows: &[(&str, u32)]) -> String {
+    let items: Vec<String> = rows.iter().map(|(k, v)| format!("{{\"name\":\"{k}\",\"qty\":{v}}}")).collect();
+    format!("[{}]", items.join(","))
+}
+
+#[cfg(not(feature = "json"))]
+fn render(rows: &[(&str, u32)]) -> String {
+    rows.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n")
+}
+
+fn main() {
+    let rows = [("tea", 12), ("cake", 3)];
+    println!("json feature enabled? {}", cfg!(feature = "json"));
+    println!("{}", render(&rows));
+}
+@note
+Built without features (as here), the plain-text `render` was compiled and the JSON version did not exist in the binary at all. With `--features json`, the other function would be compiled instead. `cfg!(...)` gives the same information as a boolean for ordinary `if` logic.
+@mistakes
+- **Pinning exact versions (`=1.2.3`) by default.** It blocks compatible fixes and causes conflicts. Use ranges; the lock file pins.
+- **Non-additive features** ("feature A disables B"). Cargo unifies features; something will break.
+- **Test-only crates in `[dependencies]`.** Move them to `[dev-dependencies]`.
+@keys
+- SemVer ranges in Cargo.toml; exact versions in Cargo.lock.
+- `cargo update` and `cargo tree` manage and inspect dependencies.
+- Dev, build and optional dependencies have distinct roles.
+- Features toggle optional code and dependencies; keep them additive.
+
+=== A6.3
+@idea
+**rustdoc** turns doc comments into documentation, and good docs are part of a professional crate. Beyond the basics (`///` for items, `//!` for modules and the crate, Markdown, sections like `# Examples`, `# Errors`, `# Panics`, `# Safety`), a few features make docs much better.
+
+**Intra-doc links** reference other items by path: `[`Config`]`, `[`Client::send`]` or `[`std::io::Error`]` become links checked at build time, so they never go stale. **Doc tests** run every code block as a test; to keep examples realistic, use the `?` operator (end the block with `Ok::<(), Box<dyn std::error::Error>>(())`), and hide setup lines from the rendered page by starting them with `# ` (they still run). Code-block annotations change behaviour: `no_run` (compile but don't run, for network examples), `should_panic`, `compile_fail` (demonstrate a mistake), `ignore`.
+
+At the crate root, **`#![warn(missing_docs)]`** makes every undocumented public item a warning, a cheap way to keep coverage complete. `cargo doc --open` builds the site locally; publishing to crates.io builds it automatically on **docs.rs**. A crate-level `//!` comment with a short overview and a quick-start example is the most-read page of any library.
+@how
+- Intra-doc links: `[`Type`]`, `[`Type::method`]`, `[`crate::module`]`.
+- Doc tests with `?`: end with `Ok::<(), Box<dyn std::error::Error>>(())`.
+- Hide setup lines with a leading `# `.
+- Annotations: `no_run`, `should_panic`, `compile_fail`, `ignore`.
+- `#![warn(missing_docs)]`; crate overview in `//!` at the top of lib.rs.
+@example rust test: Doc tests with ?, hidden lines and intra-doc links, run by cargo test
+//! Parse temperature readings like `"21.5C"` or `"70F"`.
+//!
+//! Start with [`Reading::parse`]; convert with [`Reading::to_celsius`].
+
+/// A temperature reading in its original unit.
+#[derive(Debug, PartialEq)]
+pub enum Reading {
+    /// Degrees Celsius.
+    Celsius(f64),
+    /// Degrees Fahrenheit.
+    Fahrenheit(f64),
+}
+
+impl Reading {
+    /// Parses `"21.5C"` or `"70F"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unit is missing or the number is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use temps::Reading;            // hidden from the rendered docs, still compiled
+    /// let r = Reading::parse("70F")?;
+    /// assert_eq!(r, Reading::Fahrenheit(70.0));
+    /// # Ok::<(), String>(())
+    /// ```
+    pub fn parse(text: &str) -> Result<Reading, String> {
+        let (number, unit) = text.split_at(text.len().saturating_sub(1));
+        let value: f64 = number.trim().parse().map_err(|e| format!("{text:?}: {e}"))?;
+        match unit {
+            "C" | "c" => Ok(Reading::Celsius(value)),
+            "F" | "f" => Ok(Reading::Fahrenheit(value)),
+            _ => Err(format!("{text:?}: unit must be C or F")),
+        }
+    }
+
+    /// Converts to Celsius. See also [`Reading::parse`].
+    pub fn to_celsius(&self) -> f64 {
+        match self {
+            Reading::Celsius(c) => *c,
+            Reading::Fahrenheit(f) => (f - 32.0) * 5.0 / 9.0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn documented_behaviour_holds() -> Result<(), String> {
+        assert_eq!(Reading::parse("70F")?, Reading::Fahrenheit(70.0));
+        assert!((Reading::parse("212F")?.to_celsius() - 100.0).abs() < 1e-9);
+        assert!(Reading::parse("21.5K").is_err());
+        Ok(())
+    }
+}
+@note
+The doc comment's example uses `?` and ends with a hidden `Ok::<(), String>(())` line; readers see three clean lines, while `cargo test` compiles and runs the full block as a doc test in a real crate named `temps`. The intra-doc links become clickable, checked links in the generated HTML. Here, the unit test exercises the same behaviour.
+@example bash: What rustdoc and doc tests report
+$ cargo test --doc
+   Doc-tests temps
+running 1 test
+test src/lib.rs - Reading::parse (line 26) ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo doc --no-deps 2>&1 | grep -A3 warning   # with #![warn(missing_docs)] and a new undocumented fn
+warning: missing documentation for a method
+  --> src/lib.rs:48:5
+   |
+48 |     pub fn to_kelvin(&self) -> f64 {
+
+$ cargo doc --open                                # builds target/doc and opens it in a browser
+@note
+Each code block in a doc comment becomes a named test with its file and line, so a broken example fails CI. With `#![warn(missing_docs)]`, adding a public method without a doc comment produces a warning pointing at it, keeping documentation coverage complete over time.
+@mistakes
+- **Examples that are never tested.** Code blocks run as doc tests; keep them compiling.
+- **Plain-text item names in docs.** Use intra-doc links so they stay correct.
+- **Noisy setup in examples.** Hide it with `# ` lines.
+@keys
+- Intra-doc links are checked references to other items.
+- Doc tests run every example; use `?` with a hidden `Ok(())` line.
+- `no_run`, `should_panic`, `compile_fail` annotate special examples.
+- `#![warn(missing_docs)]` and a crate overview keep docs complete.
+
+=== A7.1
+@idea
+Beyond `Mutex`, std offers synchronisation tools for specific patterns. **`RwLock<T>`** allows **many readers or one writer**: `read()` returns a shared guard and several threads can hold one at once, while `write()` waits for exclusive access. It suits read-heavy data such as configuration or caches. For short critical sections a Mutex is often just as fast, so measure before switching.
+
+**`Condvar`** (condition variable) lets threads **wait for a condition** without busy-looping: a thread locks a Mutex, checks a condition, and calls `condvar.wait(guard)` (or `wait_while`), which releases the lock and sleeps until another thread calls `notify_one`/`notify_all`. It is the building block of bounded queues, barriers and "wait until ready" logic; always re-check the condition after waking, because wakeups can be spurious.
+
+**One-time initialisation**: **`OnceLock<T>`** holds a value set at most once, safely from any thread (`get_or_init(|| ...)`), and **`LazyLock<T>`** wraps that in a static that initialises on first access: `static TABLE: LazyLock<HashMap<..>> = LazyLock::new(|| build())`. They replace the `lazy_static` and `once_cell` crates for global caches, compiled regexes and configuration loaded once.
+@how
+- `RwLock`: `read()` for shared access, `write()` for exclusive; best for read-heavy data.
+- `Condvar` with a `Mutex`: `wait_while(guard, |state| condition)`, `notify_one`/`notify_all`.
+- Re-check conditions after waking (spurious wakeups); `wait_while` does it for you.
+- `OnceLock::get_or_init` for set-once values; `static X: LazyLock<T> = LazyLock::new(...)` for lazy globals.
+- Avoid holding guards across slow work.
+@example rust: A read-mostly cache, a ready signal and a lazily built table
+use std::collections::HashMap;
+use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, RwLock};
+use std::thread;
+
+static PRIMES: LazyLock<Vec<u32>> = LazyLock::new(|| {
+    println!("  (building the prime table once)");
+    (2..60).filter(|n| (2..*n).all(|d| n % d != 0)).collect()
+});
+
+static CONFIG: OnceLock<String> = OnceLock::new();
+
+fn main() {
+    let rates = Arc::new(RwLock::new(HashMap::from([("USD", 0.71), ("EUR", 0.66)])));
+    let readers: Vec<_> = (0..4).map(|i| {
+        let rates = Arc::clone(&rates);
+        thread::spawn(move || {
+            let r = rates.read().unwrap();              // many readers at once
+            r.get(if i % 2 == 0 { "USD" } else { "EUR" }).copied().unwrap()
+        })
+    }).collect();
+    let mut seen: Vec<f64> = readers.into_iter().map(|h| h.join().unwrap()).collect();
+    seen.sort_by(f64::total_cmp);
+    rates.write().unwrap().insert("GBP", 0.57);         // one writer, exclusive
+    println!("readers saw {seen:?}; now {} currencies", rates.read().unwrap().len());
+
+    let ready = Arc::new((Mutex::new(false), Condvar::new()));
+    let r2 = Arc::clone(&ready);
+    let loader = thread::spawn(move || {
+        let (lock, cvar) = &*r2;
+        *lock.lock().unwrap() = true;                    // pretend we loaded something
+        cvar.notify_all();
+    });
+    let (lock, cvar) = &*ready;
+    let guard = cvar.wait_while(lock.lock().unwrap(), |done| !*done).unwrap();
+    println!("main woke up, ready = {}", *guard);
+    drop(guard);
+    loader.join().unwrap();
+
+    println!("first access: {} primes below 60", PRIMES.len());
+    println!("second access: largest is {}", PRIMES.last().unwrap());
+    let cfg = CONFIG.get_or_init(|| "loaded from env".to_string());
+    let again = CONFIG.get_or_init(|| "never used".to_string());
+    println!("config: {cfg} / {again}");
+}
+@note
+Four threads read the rates at the same time through `read()`, then one `write()` added a currency. The main thread waited on the condition variable without spinning until the loader set the flag and notified it. The prime table was built exactly once, on first access, and `OnceLock` ignored the second initialiser.
+@example rust: A bounded queue built from Mutex and Condvar
+use std::collections::VecDeque;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+
+struct Bounded<T> {
+    items: Mutex<VecDeque<T>>,
+    not_empty: Condvar,
+    not_full: Condvar,
+    cap: usize,
+}
+
+impl<T> Bounded<T> {
+    fn push(&self, item: T) {
+        let mut q = self.not_full.wait_while(self.items.lock().unwrap(), |q| q.len() >= self.cap).unwrap();
+        q.push_back(item);
+        self.not_empty.notify_one();
+    }
+    fn pop(&self) -> T {
+        let mut q = self.not_empty.wait_while(self.items.lock().unwrap(), |q| q.is_empty()).unwrap();
+        let item = q.pop_front().unwrap();
+        self.not_full.notify_one();
+        item
+    }
+}
+
+fn main() {
+    let q = Arc::new(Bounded { items: Mutex::new(VecDeque::new()), not_empty: Condvar::new(), not_full: Condvar::new(), cap: 2 });
+    let producer = {
+        let q = Arc::clone(&q);
+        thread::spawn(move || {
+            for i in 1..=6 {
+                q.push(i);                       // blocks whenever 2 items are waiting
+            }
+        })
+    };
+    let received: Vec<i32> = (0..6).map(|_| q.pop()).collect();
+    producer.join().unwrap();
+    println!("received in order: {received:?} with at most 2 queued at a time");
+}
+@note
+The producer blocked whenever two items were waiting and the consumer blocked when the queue was empty; each side woke the other with `notify_one`. `wait_while` re-checks its condition after every wakeup, which handles spurious wakeups correctly. This is essentially what `mpsc::sync_channel(2)` provides ready-made.
+@mistakes
+- **RwLock by default.** It has overhead; Mutex is often as fast for short sections. Measure.
+- **Waiting on a Condvar without re-checking the condition.** Use `wait_while`.
+- **Global mutable state everywhere.** LazyLock/OnceLock are for set-once data; pass state explicitly otherwise.
+@keys
+- RwLock allows many readers or one writer.
+- Condvar lets threads sleep until a condition changes.
+- `wait_while` handles spurious wakeups.
+- OnceLock and LazyLock initialise values exactly once, safely.
+
+=== A7.2
+@idea
+**Atomic types** (`AtomicBool`, `AtomicUsize`, `AtomicI64`, `AtomicPtr`...) can be shared between threads and updated **without a lock**, using special CPU instructions. Operations include `load`, `store`, `fetch_add`/`fetch_sub` (add and return the old value), `swap`, and **`compare_exchange(expected, new)`**, which updates only if the current value is still `expected` and reports whether it succeeded; it is the foundation of lock-free algorithms (retry in a loop until it succeeds). Share atomics with `Arc` or as `static`s.
+
+Each operation takes a **memory ordering**, which controls how it is ordered relative to *other* memory operations. **`Relaxed`** guarantees only that the atomic itself is updated correctly: fine for counters and statistics where nothing else depends on the value. **`Release`** (on a store) and **`Acquire`** (on a load) form a pair: everything a thread wrote before a Release store is visible to a thread that Acquire-loads the new value. That is how a "data ready" flag safely publishes data. **`SeqCst`** adds a single global order of all SeqCst operations; it is the safest default when unsure.
+
+Atomics are fast for simple shared counters and flags (a stop signal, request counts, IDs). For anything involving several related values, a Mutex is simpler and much less error-prone: correctness reasoning about orderings is genuinely hard.
+@how
+- `AtomicUsize::new(0)`; `fetch_add(1, Ordering::Relaxed)` for counters.
+- `store(true, Release)` / `load(Acquire)` to publish data with a flag.
+- `compare_exchange(old, new, AcqRel, Acquire)` in a retry loop for lock-free updates.
+- `SeqCst` when unsure; Relaxed only for independent counters.
+- Several related values: use a Mutex.
+@example rust: Counters, a stop flag and compare_exchange
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn new_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)                // unique ids, no lock
+}
+
+fn main() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let handles: Vec<_> = (0..8).map(|_| {
+        let hits = Arc::clone(&hits);
+        thread::spawn(move || {
+            for _ in 0..10_000 {
+                hits.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+    }).collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    println!("hits: {} (expected 80000)", hits.load(Ordering::Relaxed));
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let worked = Arc::new(AtomicUsize::new(0));
+    let worker = {
+        let (stop, worked) = (Arc::clone(&stop), Arc::clone(&worked));
+        thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                worked.fetch_add(1, Ordering::Relaxed);
+                thread::yield_now();
+            }
+        })
+    };
+    thread::sleep(std::time::Duration::from_millis(20));
+    stop.store(true, Ordering::Release);
+    worker.join().unwrap();
+    println!("worker stopped cleanly after doing some work: {}", worked.load(Ordering::Relaxed) > 0);
+
+    let max_seen = AtomicU64::new(0);
+    for reading in [17, 42, 8, 99, 63] {
+        let mut current = max_seen.load(Ordering::Relaxed);
+        while reading > current {
+            match max_seen.compare_exchange(current, reading, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(actual) => current = actual,          // someone else changed it: retry
+            }
+        }
+    }
+    println!("max reading: {}", max_seen.load(Ordering::Relaxed));
+    let ids: Vec<u64> = (0..3).map(|_| new_id()).collect();
+    println!("ids: {ids:?}");
+}
+@note
+Eight threads incremented one atomic 80,000 times in total without a lock, and every increment counted. The stop flag used a Release store paired with an Acquire load, the standard way to signal another thread. The maximum was maintained with a `compare_exchange` retry loop, and a static atomic handed out unique IDs.
+@example rust: Release/Acquire publish data safely
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+
+struct Shared {
+    ready: AtomicBool,
+    data: std::sync::Mutex<Vec<u32>>,
+}
+
+fn main() {
+    let shared = Arc::new(Shared { ready: AtomicBool::new(false), data: std::sync::Mutex::new(vec![]) });
+    let producer = {
+        let s = Arc::clone(&shared);
+        thread::spawn(move || {
+            s.data.lock().unwrap().extend([3, 1, 4, 1, 5]);
+            s.ready.store(true, Ordering::Release);        // everything above is published
+        })
+    };
+    while !shared.ready.load(Ordering::Acquire) {          // sees everything before the Release
+        std::hint::spin_loop();
+    }
+    println!("consumer sees {:?}", shared.data.lock().unwrap());
+    producer.join().unwrap();
+}
+@note
+The producer filled the data and then stored the flag with Release; the consumer's Acquire load that saw `true` is guaranteed to see all writes made before that store. (The Mutex here makes access safe on its own; with raw data instead, the Release/Acquire pair is exactly what would make it correct.) Spinning is only acceptable for very short waits; prefer Condvar or channels otherwise.
+@mistakes
+- **Relaxed for flags that publish data.** Use Release on the store and Acquire on the load.
+- **Several atomics that must change together.** They can be seen half-updated. Use a Mutex.
+- **Busy-waiting for long periods.** It burns CPU; use Condvar, channels or parking.
+@keys
+- Atomics update shared integers and flags without locks.
+- `fetch_add`, `swap` and `compare_exchange` are the core operations.
+- Relaxed for independent counters; Release/Acquire to publish; SeqCst when unsure.
+- Prefer a Mutex for anything involving several values.
+
+=== A7.3
+@idea
+**rayon** makes data parallelism almost effortless. Replace `.iter()` with **`.par_iter()`** (or `into_par_iter()`, `par_iter_mut()`) and the iterator chain runs on a pool of worker threads, one per core, with work stealing to balance load. The rest of the chain looks the same: `map`, `filter`, `sum`, `collect`, `for_each`. Rayon also offers `par_sort` and `par_sort_unstable`, `par_chunks`, and **`rayon::join(a, b)`** to run two closures in parallel (handy for divide-and-conquer like parallel quicksort).
+
+It is safe for the same reason threads are: closures must be `Send + Sync`, so the compiler rejects chains that would share mutable state without synchronisation. Reductions are expressed with `sum`, `reduce` or `fold`, never by mutating an outer variable.
+
+Parallelism helps when there is **enough CPU work per item** and many items: image processing, parsing many files, simulations, heavy maps over large collections. It does **not** help, and can hurt, for tiny workloads (thread coordination costs more than the work), for I/O-bound work (use async), or when the chain is dominated by a sequential step. Measure in release mode before and after.
+@how
+- `use rayon::prelude::*;` then `.par_iter()`, `.into_par_iter()`, `.par_iter_mut()`.
+- Same adaptors: `map`, `filter`, `sum`, `reduce`, `collect`, `for_each`.
+- `par_sort_unstable`, `par_chunks`; `rayon::join(a, b)` for two tasks.
+- Closures must be `Send + Sync`; reduce instead of mutating shared variables.
+- Worth it for CPU-heavy items; measure in release mode.
+@example rust: par_iter in one line, with the same answer
+use rayon::prelude::*;
+use std::time::Instant;
+
+fn collatz_len(mut n: u64) -> u32 {
+    let mut steps = 0;
+    while n != 1 {
+        n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };
+        steps += 1;
+    }
+    steps
+}
+
+fn main() {
+    let limit = 300_000u64;
+
+    let start = Instant::now();
+    let serial = (1..limit).map(|n| (collatz_len(n), n)).max().unwrap();
+    let t_serial = start.elapsed();
+
+    let start = Instant::now();
+    let parallel = (1..limit).into_par_iter().map(|n| (collatz_len(n), n)).max().unwrap();
+    let t_parallel = start.elapsed();
+
+    println!("longest chain below {limit}: {} steps, starting at {}", serial.0, serial.1);
+    println!("same answer in parallel: {}", serial == parallel);
+    let cores = rayon::current_num_threads();
+    println!("worker threads: {}; parallel faster: {}", if cores > 1 { "several" } else { "one" }, cores == 1 || t_parallel < t_serial);
+
+    let mut words: Vec<String> = (0..50_000).map(|i| format!("w{}", (i * 7919) % 50_000)).collect();
+    words.par_sort_unstable();
+    let total_len: usize = words.par_iter().map(|w| w.len()).sum();
+    println!("sorted {} words, first {:?}, total length {}", words.len(), &words[..3], total_len);
+}
+@deps rayon@1
+@note
+Changing `(1..limit)` to `(1..limit).into_par_iter()` spread the work over all cores and produced exactly the same result. Timings vary by machine (and this build is unoptimised), so only the conclusions are printed. `par_sort_unstable` and a parallel `sum` show that most iterator vocabulary carries over unchanged.
+@example rust fail: Mutating shared state from a parallel closure
+use rayon::prelude::*;
+
+fn main() {
+    let mut total = 0u64;
+    (1..1000u64).into_par_iter().for_each(|n| {
+        total += n;
+    });
+    println!("{total}");
+}
+@deps rayon@1
+@note
+Rayon's closures run on several threads at once, so they must be `Fn`, and mutating the captured `total` is rejected (cannot assign to a captured variable in an `Fn` closure). This is a data race the compiler stops at build time. The idiomatic version is a reduction: `(1..1000u64).into_par_iter().sum::<u64>()`.
+@mistakes
+- **Parallelising tiny workloads.** Coordination costs more than the work. Measure.
+- **par_iter for I/O-bound work.** Threads block; use async instead.
+- **Accumulating into outer variables.** Use `sum`, `reduce`, `fold`, or collect.
+@keys
+- `par_iter` turns iterator chains into parallel ones with work stealing.
+- Same adaptors, plus `par_sort` and `rayon::join`.
+- The compiler enforces thread safety; reduce instead of mutating.
+- Parallelism pays off for CPU-heavy items; measure first.
+
+=== A8.1
+@idea
+In Tokio, a **task** is a lightweight unit of concurrent work, created with `tokio::spawn` and scheduled by the runtime. The default **multi-threaded runtime** (from `#[tokio::main]`) runs tasks on a pool of worker threads with work stealing; `#[tokio::main(flavor = "current_thread")]` runs everything on one thread (simpler, and fine for many I/O-bound programs). Spawned tasks must be `Send + 'static` on the multi-threaded runtime.
+
+**`JoinSet`** manages a dynamic group of tasks: spawn into it, then `join_next().await` returns results in **completion order**; dropping the set **aborts** any tasks still running, which makes cleanup automatic. Use it for "fetch these N things concurrently and handle each as it finishes".
+
+The cardinal rule of async is: **never block the runtime**. Each worker thread runs many tasks by switching at `.await` points; a blocking call (`std::thread::sleep`, synchronous file or database I/O, a long CPU loop) freezes every task on that thread. Move such work to **`tokio::task::spawn_blocking(|| ...)`**, which runs it on a separate pool of threads meant for blocking and returns a future of the result; for heavy CPU parallelism, rayon inside `spawn_blocking` is a common combination.
+@how
+- `tokio::spawn(async move { ... })` returns a `JoinHandle<T>`; await it for the result.
+- `JoinSet`: `set.spawn(fut)`, `while let Some(res) = set.join_next().await`; dropping aborts.
+- Multi-thread (default) vs `flavor = "current_thread"` runtimes.
+- `spawn_blocking(|| heavy())` for blocking or CPU-heavy work.
+- Never call blocking functions directly in async code.
+@example rust: A JoinSet of fetches and a blocking hash
+use std::time::Duration;
+use tokio::task::{self, JoinSet};
+use tokio::time::sleep;
+
+async fn fetch(url: &'static str) -> Result<(String, usize), String> {
+    let ms = url.len() as u64 * 5;
+    sleep(Duration::from_millis(ms)).await;
+    if url.contains("bad") {
+        return Err(format!("{url}: connection refused"));
+    }
+    Ok((url.to_string(), url.len() * 100))
+}
+
+fn expensive_checksum(data: &[u8], rounds: u32) -> u64 {
+    let mut h: u64 = 1469598103934665603;
+    for _ in 0..rounds {
+        for b in data {
+            h = (h ^ *b as u64).wrapping_mul(1099511628211);
+        }
+    }
+    h
+}
+
+#[tokio::main]
+async fn main() {
+    let mut set = JoinSet::new();
+    for url in ["a.io", "bad.example", "longer-site.example", "b.io"] {
+        set.spawn(fetch(url));
+    }
+    let mut ok = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        match joined.expect("task panicked") {
+            Ok((url, bytes)) => ok.push(format!("{url} ({bytes} B)")),
+            Err(e) => println!("error: {e}"),
+        }
+    }
+    println!("finished, in completion order: {ok:?}");
+
+    let data = vec![7u8; 100_000];
+    let ticker = tokio::spawn(async {
+        let mut ticks = 0;
+        for _ in 0..5 {
+            sleep(Duration::from_millis(2)).await;
+            ticks += 1;
+        }
+        ticks
+    });
+    let checksum = task::spawn_blocking(move || expensive_checksum(&data, 30)).await.unwrap();
+    println!("checksum {checksum:x}; the runtime kept ticking meanwhile: {} ticks", ticker.await.unwrap());
+}
+@deps tokio@1+full
+@note
+Results came out of the JoinSet as each fetch finished (shortest URLs first, since delay depends on length), and the failing one was handled without disturbing the others. The CPU-heavy checksum ran on the blocking pool through `spawn_blocking`, so the ticker task kept running on the async workers in the meantime.
+@example rust: What a blocking call does to other tasks
+use std::time::{Duration, Instant};
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let start = Instant::now();
+    let heartbeat = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        start.elapsed().as_millis()
+    });
+    std::thread::sleep(Duration::from_millis(200));          // BLOCKS the only runtime thread
+    let late = heartbeat.await.unwrap();
+    println!("a 10 ms timer fired after at least 200 ms: {}", late >= 200);
+}
+@deps tokio@1+full
+@note
+On a single-threaded runtime, `std::thread::sleep` froze the only worker thread, so the heartbeat task, due after 10 ms, could not run until the blocking call ended 200 ms later. On a multi-threaded runtime the damage is smaller but real. Use `tokio::time::sleep` or `spawn_blocking` instead.
+@mistakes
+- **Blocking calls in async code.** Every task on the thread stalls. Use async APIs or `spawn_blocking`.
+- **Forgetting that dropping a JoinSet aborts its tasks.** Keep it alive until the work is done.
+- **Spawning non-`Send` futures on the multi-thread runtime.** Holding an `Rc` or a std MutexGuard across `.await` makes the future non-Send.
+@keys
+- Tasks are cheap; `tokio::spawn` runs them on the runtime's workers.
+- JoinSet collects results as tasks finish and aborts on drop.
+- Never block the runtime; `spawn_blocking` for blocking or heavy CPU work.
+- Choose multi-thread or current-thread runtimes deliberately.
+
+=== A8.2
+@idea
+Async shines for network services. **`tokio::net::TcpListener::bind(addr).await`** opens a listening socket, and `listener.accept().await` waits for the next connection, returning a `TcpStream` and the client's address. The idiomatic server **spawns one task per connection**, so thousands of mostly idle connections cost little memory.
+
+Reading and writing use the `AsyncReadExt`/`AsyncWriteExt` traits (`read`, `write_all`, `read_to_end`). For line-based protocols, wrap the read half in **`BufReader`** and use `.lines()` (`next_line().await` returns `Ok(Some(line))`, or `Ok(None)` when the client disconnects). **`stream.into_split()`** (or `split` for borrowed halves) separates the read and write halves so a task can read while another writes.
+
+Clients use **`TcpStream::connect(addr).await`**. Real protocols need **framing**: TCP is a byte stream with no message boundaries, so messages are delimited by newlines, length prefixes or a format's own structure. For anything beyond simple line protocols, `tokio_util::codec` provides framing (`LinesCodec`, `LengthDelimitedCodec`), and higher-level crates (hyper, axum, tonic) build HTTP and gRPC on top.
+@how
+- `let listener = TcpListener::bind("127.0.0.1:0").await?;` `let (socket, addr) = listener.accept().await?;`
+- One task per connection: `tokio::spawn(handle(socket))`.
+- `let (r, mut w) = socket.into_split();` `BufReader::new(r).lines()`.
+- `next_line().await` → `Ok(None)` when the peer disconnects.
+- Frame messages: newline, length prefix, or `tokio_util::codec`.
+@example rust: A line-based echo server and two clients in one program
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
+
+async fn handle(socket: TcpStream, id: usize) {
+    let (reader, mut writer) = socket.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let reply = match line.as_str() {
+            "PING" => "PONG".to_string(),
+            l if l.starts_with("ECHO ") => l[5..].to_uppercase(),
+            _ => format!("ERR unknown command {line:?}"),
+        };
+        if writer.write_all(format!("[conn {id}] {reply}\n").as_bytes()).await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn client(addr: std::net::SocketAddr, commands: &[&str]) -> Vec<String> {
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let mut replies = Vec::new();
+    for cmd in commands {
+        writer.write_all(format!("{cmd}\n").as_bytes()).await.unwrap();
+        replies.push(lines.next_line().await.unwrap().unwrap());
+    }
+    replies
+}
+
+#[tokio::main]
+async fn main() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for id in 1.. {
+            let (socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(handle(socket, id));           // one task per connection
+        }
+    });
+    let (a, b) = tokio::join!(client(addr, &["PING", "ECHO hello"]), client(addr, &["ECHO tokio", "DANCE"]));
+    let mut all = a.into_iter().chain(b).collect::<Vec<_>>();
+    all.sort_by_key(|s| s.split("] ").nth(1).unwrap_or("").to_string());
+    for line in all {
+        println!("{}", line.split("] ").nth(1).unwrap());
+    }
+}
+@deps tokio@1+full
+@note
+The accept loop spawned a task per connection, and two clients talked to the server concurrently through `join!`. Each connection split its stream to read lines and write replies, and `next_line` returning `None` would end the handler when a client disconnects. Connection numbers depend on timing, so they are stripped and the replies sorted for stable output.
+@example rust: TCP has no message boundaries
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+#[tokio::main]
+async fn main() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut all = Vec::new();
+        s.read_to_end(&mut all).await.unwrap();
+        String::from_utf8(all).unwrap()
+    });
+    let mut c = TcpStream::connect(addr).await.unwrap();
+    for msg in ["hello", "world", "again"] {
+        c.write_all(msg.as_bytes()).await.unwrap();       // three writes...
+    }
+    drop(c);
+    let received = server.await.unwrap();
+    println!("server received one undelimited stream: {received:?}");
+    println!("framed with newlines it could be split: {:?}", "hello\nworld\nagain\n".lines().collect::<Vec<_>>());
+}
+@deps tokio@1+full
+@note
+Three separate writes arrived as one run of bytes, "helloworldagain", with nothing marking where each message ended: TCP delivers a byte stream, not messages. Protocols therefore frame their messages, with delimiters like newlines or with length prefixes, which is what codecs automate.
+@mistakes
+- **Handling connections sequentially in the accept loop.** One slow client blocks all others. Spawn a task each.
+- **Assuming one `read` equals one message.** TCP has no boundaries; frame your protocol.
+- **Ignoring write errors.** The client may have gone; stop the handler cleanly.
+@keys
+- `TcpListener::accept` in a loop, one spawned task per connection.
+- Split streams into read and write halves; BufReader for lines.
+- `next_line` returning `None` means the peer disconnected.
+- Frame messages explicitly; TCP is a byte stream.
+
+=== A8.3
+@idea
+Async code needs async-aware synchronisation. **`tokio::sync::Mutex`** can be held across `.await` points (its `lock()` is itself async), while **`std::sync::Mutex`** must not be held across an await: its guard isn't `Send`, and holding it while the task sleeps blocks other tasks. The common advice: use std's Mutex for short, synchronous critical sections (it is faster), and Tokio's when you truly must hold the lock across an await. `tokio::sync::RwLock` is the async read-write lock.
+
+**`Semaphore`** limits concurrency: create one with N permits, and each task `acquire()`s a permit before doing limited work (calling an API, opening a file); the permit is released when dropped. It is the standard tool for rate limiting and for capping parallel connections.
+
+Tokio's channels cover the common patterns: **`mpsc`** (many producers, one consumer, bounded for back-pressure), **`oneshot`** (a single reply, for request/response between tasks), **`broadcast`** (every receiver gets every message: events, chat), and **`watch`** (receivers see the latest value only: configuration, status, shutdown). **Graceful shutdown** combines them: listen for Ctrl+C with `tokio::signal::ctrl_c()`, send a shutdown signal on a `watch` or `broadcast` channel (or a `CancellationToken`), have tasks `select!` on it, and wait for them to finish before exiting.
+@how
+- std `Mutex` for short sync sections; `tokio::sync::Mutex` when held across `.await`.
+- `Semaphore::new(n)`; `let _permit = sem.acquire().await?;` limits concurrency.
+- Channels: `mpsc` (queue), `oneshot` (one reply), `broadcast` (fan-out), `watch` (latest value).
+- Shutdown: `ctrl_c()` → signal via `watch`/`broadcast` → tasks `select!` → await them.
+- Keep critical sections short; never block inside them.
+@example rust: A semaphore, a oneshot reply and a graceful shutdown
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+use tokio::sync::{oneshot, watch, Semaphore};
+use tokio::time::sleep;
+
+#[tokio::main]
+async fn main() {
+    let limit = Arc::new(Semaphore::new(2));
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::new();
+    for _ in 0..6 {
+        let (limit, active, peak) = (limit.clone(), active.clone(), peak.clone());
+        handles.push(tokio::spawn(async move {
+            let _permit = limit.acquire().await.unwrap();
+            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            sleep(Duration::from_millis(20)).await;          // "call the API"
+            active.fetch_sub(1, Ordering::SeqCst);
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+    println!("6 calls, never more than {} at once", peak.load(Ordering::SeqCst));
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let _ = reply_tx.send(format!("price for teapot: {}", 2499));
+    });
+    println!("oneshot reply: {}", reply_rx.await.unwrap());
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut workers = Vec::new();
+    for id in 1..=3 {
+        let mut rx = shutdown_rx.clone();
+        workers.push(tokio::spawn(async move {
+            let mut jobs = 0;
+            loop {
+                tokio::select! {
+                    _ = rx.changed() => break,                 // shutdown requested
+                    _ = sleep(Duration::from_millis(5)) => jobs += 1,
+                }
+            }
+            format!("worker {id} stopped cleanly")
+        }));
+    }
+    sleep(Duration::from_millis(30)).await;
+    shutdown_tx.send(true).unwrap();                          // real servers: after tokio::signal::ctrl_c()
+    for w in workers {
+        println!("{}", w.await.unwrap());
+    }
+}
+@deps tokio@1+full
+@note
+The semaphore capped concurrent "API calls" at two even though six tasks were spawned. The oneshot channel carried a single reply from one task to another. For shutdown, a `watch` channel told every worker to stop; each was in a `select!` between its work and the signal, finished its loop, and was awaited before the program ended.
+@example rust fail: Holding a std MutexGuard across an await
+use std::sync::{Arc, Mutex};
+
+async fn save(_v: u32) {}
+
+#[tokio::main]
+async fn main() {
+    let state = Arc::new(Mutex::new(0u32));
+    let s = state.clone();
+    tokio::spawn(async move {
+        let mut guard = s.lock().unwrap();
+        *guard += 1;
+        save(*guard).await;               // the guard is still alive here
+    })
+    .await
+    .unwrap();
+}
+@deps tokio@1+full
+@note
+`std::sync::MutexGuard` is not `Send`, and keeping it alive across `.await` makes the whole future non-Send, so `tokio::spawn` rejects it ("future cannot be sent between threads safely"). Copy the value out and drop the guard before awaiting, or use `tokio::sync::Mutex` if the lock really must be held across the await.
+@mistakes
+- **Holding std locks across `.await`.** Non-Send futures and stalled tasks. Drop the guard first.
+- **Unlimited concurrency against external services.** Use a Semaphore.
+- **Exiting without waiting for tasks.** Signal shutdown, then await them.
+@keys
+- std Mutex for short sync sections; Tokio's Mutex across awaits.
+- Semaphores cap concurrency for rate limiting.
+- mpsc, oneshot, broadcast and watch channels fit different patterns.
+- Graceful shutdown: signal, select, then await every task.
