@@ -55,6 +55,14 @@ Each exercise also has an **Open in Rust Playground** button when you are away f
 
 (needs Rust and PyYAML; snippets that use crates are built with Cargo).
 
+The expanded lessons (the idea, worked examples 2 and 3, common mistakes, key points) are in
+`source/lessons/*.txt`, and the quick check for each new example is in `source/checks/*.txt`.
+`deep_build_rs.py` compiles and runs every example for its real output, and `checks_build.py`
+attaches the quick checks, failing if a "predict" answer isn't really in the output:
+
+    python3 deep_build_rs.py                        # writes deep.json
+    python3 checks_build.py checks deep.json        # adds the quick checks to it
+
 ## What's different from the online version
 
 - No cloud sync: progress lives in the browser on this computer (use Export/Import).

@@ -1,0 +1,404 @@
+=== 15.1/2 predict
+Q: How big is an `Option<Box<Node>>` on a 64-bit machine, compared with a plain Box (8 bytes)?
++ `a Box is 8 bytes, an Option<Box<Node>> too: 8`
+- `a Box is 8 bytes, an Option<Box<Node>> too: 16`
+- `a Box is 8 bytes, an Option<Box<Node>> too: 9`
+WHY: A Box can never be null, so Rust uses the null value to represent `None`. The Option costs no extra space.
+
+=== 15.1/3
+Q: Why does `enum List { Cons(i32, List), Nil }` fail to compile?
++ A List would contain a List directly, so its size would be infinite; a Box adds a fixed-size pointer instead.
+- Enums can't contain integers.
+- Recursive types are not allowed in Rust at all.
+- `Nil` must come first.
+WHY: The compiler must know each type's size. `Box<List>` is always one pointer, which breaks the infinite nesting.
+
+=== 15.2/2 pick
+Q: Connections A, B and C are created in that order, and `drop(b)` is called early. Which connection is closed last?
++ `  closing connection A`
+- `  closing connection C`
+- `  closing connection B`
+WHY: B was dropped explicitly. At the end of `main`, the remaining values drop in reverse order of creation: C first, then A.
+
+=== 15.2/3
+Q: How do you drop a value early?
++ Call the function `drop(g)`, which takes ownership.
+- Call the method `g.drop()`.
+- Assign `g = null`.
+- Call `std::mem::forget(g)`.
+WHY: `drop(g)` moves `g` into a function that does nothing, so its destructor runs once and the automatic call at the end of scope never happens. `forget` would skip the destructor entirely.
+
+=== 15.3/2 predict
+Q: `shared` is created, then `b` and `c` each clone it, and `c` goes out of scope. What is the count then?
++ `count after c goes out of scope = 2`
+- `count after c goes out of scope = 3`
+- `count after c goes out of scope = 1`
+- `count after c goes out of scope = 0`
+WHY: The count went 1 → 2 → 3 as owners were added. Dropping `c` removes one owner, leaving `shared` and `b`.
+
+=== 15.3/3
+Q: Several owners share a `Vec` and need to push to it. Which type fits?
++ `Rc<RefCell<Vec<i32>>>`
+- `Rc<Vec<i32>>`
+- `Box<Vec<i32>>`
+- `&mut Vec<i32>` in each owner
+WHY: Rc only gives shared access. RefCell adds checked mutable borrowing at run time, so each owner can push, one borrow at a time.
+
+=== 15.4/2
+Q: The `Messenger` trait's `send` takes `&self`. How does the mock still record messages?
++ It stores them in a `RefCell<Vec<String>>` and borrows it mutably inside `send`.
+- It changes the trait to take `&mut self`.
+- It prints them instead of storing them.
+- It uses a global variable without any wrapper.
+WHY: Interior mutability lets a method with `&self` change data in a controlled way: RefCell checks the borrowing rules at run time instead of compile time.
+
+=== 15.4/3
+Q: What happens when you call `borrow_mut()` on a RefCell that is already borrowed?
++ The program panics with "already borrowed".
+- The compiler rejects the program.
+- It waits until the other borrow ends.
+- It returns a copy of the data.
+WHY: RefCell enforces the borrowing rules at run time. `try_borrow_mut` returns an error instead of panicking when you want to handle the conflict.
+
+=== 15.5/2 predict
+Q: The branch owns the leaf through an Rc, and the leaf points back with a Weak. What does `leaf.parent.upgrade()` return after the branch is dropped?
++ `after branch is dropped, leaf's parent: None`
+- `after branch is dropped, leaf's parent: Some("branch")`
+- `after branch is dropped, leaf's parent: Some("")`
+WHY: A Weak doesn't keep its target alive. Once the branch's strong count hits zero it is freed, and `upgrade()` returns None.
+
+=== 15.5/3
+Q: Ben and Cy each hold an `Rc` to the other. What happens at the end of their scope?
++ Their counts only drop to 1, so neither is freed: the memory leaks.
+- Both are freed normally.
+- The program panics.
+- The compiler rejects the cycle.
+WHY: Reference counting can't free cycles on its own. Making one of the links a `Weak` breaks the cycle.
+
+=== 16.1/2
+Q: Why could the scoped threads borrow `data` without `move`?
++ `thread::scope` guarantees every thread finishes before the scope ends, so borrows can't outlive the data.
+- Scoped threads copy all the data they use.
+- Borrowing is always allowed in threads.
+- `data` was declared `static`.
+WHY: A plain `spawn` thread might outlive the function, so it needs owned data. A scope joins its threads before returning, which lets the compiler accept borrows.
+
+=== 16.1/3
+Q: What does adding `move` to the thread's closure do?
++ It transfers ownership of `scores` into the thread, so `main` can no longer use it.
+- It copies `scores` into the thread and keeps the original.
+- It makes the thread run immediately.
+- It makes `scores` immutable.
+WHY: With `move`, the closure owns what it captures. The thread can then outlive `main`'s locals safely.
+
+=== 16.2/2
+Q: Why does the receiving loop end after both producers finish?
++ Every transmitter has been dropped, including the original `tx`, so the channel is closed.
+- The receiver counts five messages and stops.
+- A timeout ends the loop.
+- The producers send a special "stop" message.
+WHY: `for r in rx` ends when all senders are gone. Forgetting to drop the original `tx` would leave the loop waiting forever.
+
+=== 16.2/3
+Q: After `tx.send(message)`, how can the sending thread still print the text?
++ Print it before sending, or send a clone.
+- Use `message` normally: send copies it.
+- Call `tx.unsend()`.
+- Wrap the send in `unsafe`.
+WHY: `send` takes ownership because the receiver might change or drop the value at any moment. The sender keeps nothing unless it keeps a copy.
+
+=== 16.3/2 predict
+Q: Ten threads each increment the counter 1,000 times under a Mutex. What does the first line print?
++ `counter = 10000 (expected 10000)`
+- `counter = 1000 (expected 10000)`
+- `counter = 9998 (expected 10000)`
+WHY: Every increment happens while holding the lock, so none are lost. Without the Mutex, the compiler wouldn't even let the threads share the integer.
+
+=== 16.3/3
+Q: A thread panicked while holding the lock. What does the next `lock()` return?
++ An error saying the lock is poisoned, because the data may be half-updated.
+- The data, as if nothing happened.
+- It blocks forever.
+- It panics immediately in every thread.
+WHY: Poisoning warns that a writer crashed mid-change. You can still reach the data with `into_inner` if you decide it's usable.
+
+=== 16.4/2
+Q: What change makes the program that sends an `Rc` to another thread compile?
++ Replace `Rc` with `Arc`.
+- Add `move` to the closure.
+- Wrap the Rc in a Box.
+- Clone the Rc before spawning.
+WHY: Rc's counter isn't updated atomically, so it isn't `Send`. Arc uses atomic operations and can be shared between threads.
+
+=== 16.4/3
+Q: Which statement about `RefCell<T>` is true?
++ It is `Send` (it can move to another thread) but not `Sync` (it can't be shared between threads).
+- It is both `Send` and `Sync`.
+- It is neither `Send` nor `Sync`.
+- It is `Sync` but not `Send`.
+WHY: Moving a RefCell to one other thread is fine, but sharing it would let two threads borrow at once, and its borrow counter isn't thread-safe. Use a Mutex or RwLock for shared access.
+
+=== 17.1/2 pick
+Q: The program creates a future with `make_tea("teapot")` but doesn't await it yet. What is printed first?
++ `future created, nothing printed yet`
+- `  start teapot`
+- `  done  teapot`
+WHY: Futures are lazy: calling an async function only builds the future. The work starts when it is awaited.
+
+=== 17.1/3
+Q: What does `#[tokio::main]` do for you?
++ It builds a runtime and blocks on the async `main` until it completes.
+- It runs `main` on every CPU core at once.
+- It makes every function in the file async.
+- It turns async code into threads automatically.
+WHY: Futures need an executor to poll them. The attribute expands to code that creates a Tokio runtime and calls `block_on`.
+
+=== 17.2/2 predict
+Q: Three fetches take 80, 50 and 60 ms and run with `join!`. About how long does the whole thing take?
++ `concurrent: about 80 ms, not 190`
+- `concurrent: about 190 ms, not 80`
+- `concurrent: about 50 ms, not 190`
+WHY: `join!` runs the futures concurrently, so the total is roughly the slowest one, not the sum.
+
+=== 17.2/3
+Q: How do you fix a spawned task that borrows the local `names`?
++ Use an `async move` block so the task owns `names`.
+- Await the task before creating `names`.
+- Declare `names` as `mut`.
+- Use `join!` instead of `spawn`.
+WHY: A spawned task may outlive the function, just like a thread, so it must own what it uses.
+
+=== 17.3/2
+Q: Two mirrors race in `select!`. What happens to the future that loses?
++ It is dropped, so its remaining work is cancelled.
+- It keeps running in the background and its result is discarded.
+- Its result is printed afterwards.
+- The program waits for it before continuing.
+WHY: `select!` completes with the first branch to finish and drops the others. In async Rust, dropping a future cancels it.
+
+=== 17.3/3 pick
+Q: Tasks are added to a JoinSet in this order: report (slow), email (panics), thumbnail (fast). Which finished line is printed first?
++ `finished: thumbnail`
+- `finished: report`
+- `a task panicked`
+WHY: `join_next` returns results in completion order, not spawn order, and a panicking task is reported as an error without stopping the others.
+
+=== 17.4/2 predict
+Q: An endless stream yields 0, 1, 2, ... and goes through `filter(even)`, `map(format "tick {n}")` and `take(4)`. What is collected?
++ `["tick 0", "tick 2", "tick 4", "tick 6"]`
+- `["tick 0", "tick 1", "tick 2", "tick 3"]`
+- `["tick 2", "tick 4", "tick 6", "tick 8"]`
+WHY: Stream adaptors work like iterator adaptors: only even numbers pass, and `take(4)` stops after four of them.
+
+=== 17.4/3
+Q: What must a hand-written `poll` do before returning `Poll::Pending`?
++ Arrange for the waker to be called, so the runtime knows to poll again.
+- Sleep the thread until the value is ready.
+- Return `Pending` and nothing else; the runtime polls in a loop.
+- Panic if the value isn't ready.
+WHY: Runtimes only poll futures that were woken. A future that returns Pending without registering the waker may never be polled again.
+
+=== 18.1/2
+Q: Why can't outside code break the cached average of `AveragedCollection`?
++ The fields are private, so the only way to change the list is through `add` and `remove`, which update the average.
+- The average is recomputed on every read.
+- The struct is immutable.
+- Vectors can't be changed after creation.
+WHY: Encapsulation turns an invariant ("the average matches the list") into something the type guarantees, rather than something callers must remember.
+
+=== 18.1/3
+Q: How does Rust provide the code reuse that inheritance gives in other languages?
++ Default methods in traits, and composition: structs that contain other types.
+- Structs can extend other structs with `extends`.
+- Every struct inherits from a base `Object` type.
+- Macros copy methods between structs.
+WHY: A trait's default method is written once and reused by every implementor, and bigger types are built by containing smaller ones.
+
+=== 18.2/2 predict
+Q: How big is a `&dyn Draw` compared with a `&Button` (8 bytes)?
++ `a &dyn Draw is 16 bytes (data pointer + vtable pointer), a &Button 8`
+- `a &dyn Draw is 8 bytes (data pointer + vtable pointer), a &Button 8`
+- `a &dyn Draw is 24 bytes (data pointer + vtable pointer), a &Button 8`
+WHY: A trait object reference is a fat pointer: one pointer to the data and one to the vtable of methods for its concrete type.
+
+=== 18.2/3
+Q: Why can't `Clone` be used as `dyn Clone`?
++ `clone` returns `Self`, a concrete type that a vtable can't describe.
+- Clone has too many methods.
+- Clone is only for numbers.
+- Trait objects can't have methods at all.
+WHY: A trait object hides the concrete type, so methods that return or take `Self` by value can't be called through it.
+
+=== 18.3/2 pick
+Q: A draft gets `approve()` before `request_review()`. What does the content line show right after that early approve?
++ `draft           content: ""`
+- `published       content: "I ate a salad for lunch today"`
+- `pending review  content: ""`
+WHY: Each state decides what transitions mean. Approving a draft does nothing, so it stays a draft with no visible content.
+
+=== 18.3/3
+Q: In the typestate version, why does `draft.content()` fail to compile?
++ `content` exists only on `Post`, so a `DraftPost` has no such method.
+- Drafts are private.
+- The method is marked `#[deprecated]`.
+- `content` requires `unsafe`.
+WHY: Encoding each state as its own type turns invalid operations into compile errors instead of run-time checks.
+
+=== 19.1/2
+Q: Which of these uses a pattern?
++ All of them: `let (a, b) = pair;`, `for (i, x) in v.iter().enumerate()`, and `fn f(&(x, y): &(i32, i32))`.
+- Only `match` arms.
+- Only `if let` and `while let`.
+- Only `let` statements.
+WHY: Patterns appear in `let`, function parameters, `for` loops, closures, `match`, `if let` and `while let`, with the same syntax everywhere.
+
+=== 19.1/3
+Q: How can you bind the name from an `Option<&str>` with `let` when `None` is possible?
++ `let Some(name) = maybe else { return; };`
+- `let Some(name) = maybe;`
+- `let name = maybe as Some;`
+- `let Some(name) = maybe.unwrap_or_none();`
+WHY: A plain `let` needs an irrefutable pattern. `let ... else` says what to do when the pattern doesn't match, so the binding is guaranteed afterwards.
+
+=== 19.2/2 predict
+Q: `classify` checks, in order: 0, then 1..=5 as "small", then a guard `n == lucky` (lucky = 13), then `d @ 6..=9`, then negatives, then anything else. It runs on 0, 3, 13, 7, -4 and 99. What is printed?
++ `["zero", "small", "13 is the lucky number", "single digit 7", "negative", "big"]`
+- `["zero", "small", "big", "single digit 7", "negative", "big"]`
+- `["zero", "small", "13 is the lucky number", "small", "negative", "big"]`
+- `["small", "small", "13 is the lucky number", "single digit 7", "negative", "big"]`
+WHY: Arms are tried top to bottom. 13 reaches the guard that compares with the outer `lucky`, and 7 matches `d @ 6..=9`, which binds the value for the message.
+
+=== 19.2/3
+Q: In `match value { Some(expected) => ..., _ => ... }`, with an outer variable also named `expected`, what does `Some(expected)` do?
++ It creates a new variable that matches any value and shadows the outer one.
+- It compares the value with the outer `expected`.
+- It fails to compile.
+- It matches only `Some(0)`.
+WHY: A name in a pattern always binds. To compare against an outer value, use a guard: `Some(x) if x == expected`.
+
+=== 19.3/2
+Q: What does the pattern `[first, middle @ .., last]` match?
++ Slices with at least two elements, binding the ends and the slice in between.
+- Exactly three elements.
+- Any slice, including an empty one.
+- Only arrays of length 3.
+WHY: `..` stands for any number of elements (including none), and `middle @ ..` captures them as a sub-slice. `first` and `last` need two elements.
+
+=== 19.3/3
+Q: What arm completes `match values { [x] => ..., [x, rest @ ..] => ... }` on a `&[i32]`?
++ `[] => ...`
+- `[_, _] => ...`
+- `[x, y, ..] => ...`
+- None is needed.
+WHY: The two arms cover length 1 and length 1 or more, so only the empty slice is missing, and the compiler names it.
+
+=== 20.1/2
+Q: `split_at_mut` uses `unsafe` inside. Why is its signature still safe?
++ It checks the bounds first and creates two slices that never overlap, so callers can't misuse it.
+- Unsafe code becomes safe when it is in the standard library.
+- The compiler re-checks the unsafe block at run time.
+- It only works on arrays of integers.
+WHY: The function establishes the conditions the unsafe code relies on. A safe wrapper whose invariants are justified is how unsafe code is contained.
+
+=== 20.1/3
+Q: Why does the borrow checker reject two `&mut` slices from one Vec in safe code?
++ It can't prove the two ranges don't overlap, so it sees two mutable borrows of the same data.
+- Vectors can't be sliced.
+- Mutable slices are only allowed in `unsafe` code.
+- It thinks the Vec might be empty.
+WHY: The checker reasons about whole values, not index ranges. That is exactly the situation where a small, justified unsafe block helps.
+
+=== 20.2/2
+Q: How did the `Csv` newtype get around the orphan rule?
++ `Csv` is defined in this crate, so implementing `Display` for it is allowed, even though it wraps a `Vec<String>`.
+- It used `unsafe impl`.
+- The orphan rule doesn't apply to Display.
+- It implemented Display for Vec directly inside a module.
+WHY: The orphan rule needs either the trait or the type to be local. A newtype is a local type, at zero run-time cost.
+
+=== 20.2/3
+Q: A type has its own `fly` method and also implements `Pilot::fly`. How do you call the Pilot version?
++ `Pilot::fly(&person)`
+- `person.fly()`
+- `person.Pilot.fly()`
+- `fly::<Pilot>(person)`
+WHY: Method syntax picks the type's own method first. Naming the trait explicitly selects its version.
+
+=== 20.3/2
+Q: What does `type Kilometers = u32;` create?
++ A second name for `u32`: values mix freely with plain `u32`.
+- A new type the compiler keeps separate from `u32`.
+- A constant equal to a u32.
+- A wrapper struct around u32.
+WHY: Aliases only shorten names. To get a distinct type the compiler checks, use a newtype struct.
+
+=== 20.3/3
+Q: A function must return one of two capturing closures depending on a flag. What return type works?
++ `Box<dyn Fn(i32) -> i32>`
+- `impl Fn(i32) -> i32`
+- `fn(i32) -> i32`
+- `Fn(i32) -> i32`
+WHY: Each closure has its own type, and `impl Fn` promises a single concrete type. Boxing both behind a trait object gives them one common type.
+
+=== 20.4/2
+Q: In `$( v.push($x); )+`, how many times does `v.push` appear in the expansion of `my_vec![1, 5, 16]`?
++ Three: once per expression matched by the repetition.
+- Once, with all three values.
+- None: macros can't call methods.
+- Sixteen, the last value.
+WHY: A repetition in the expansion repeats once per item captured by the matching repetition in the pattern.
+
+=== 20.4/3 predict
+Q: A macro uses its own `tmp` internally and is called with the caller's `tmp = 3` as `power4!(tmp + 1)`. What is printed?
++ `(3 + 1)^4 = 256, and the caller's tmp is still 3`
+- `(3 + 1)^4 = 256, and the caller's tmp is still 4`
+- `(3 + 1)^4 = 13, and the caller's tmp is still 3`
+WHY: Hygiene keeps the macro's `tmp` separate from the caller's, and `$x:expr` captures `tmp + 1` as one whole expression, so it is 4 to the fourth power.
+
+=== 21.1/2
+Q: Why does the test server bind to port 0?
++ The operating system then picks a free port, so the example never clashes with another program.
+- Port 0 is the standard HTTP port.
+- Port 0 accepts connections from any machine.
+- Binding to port 0 disables networking.
+WHY: Asking for port 0 means "any free port". The program then reads the real port with `local_addr()` and connects to it.
+
+=== 21.1/3
+Q: What error do you get when binding to a port another program already uses?
++ `AddrInUse` ("Address already in use")
+- `PermissionDenied`
+- `ConnectionRefused`
+- `TimedOut`
+WHY: A port can have only one listener. A real server should report this clearly instead of crashing on `unwrap`.
+
+=== 21.2/2
+Q: Why must each worker receive the job in a separate `let` statement?
++ The lock guard is dropped at the end of that statement, so the next worker can take a job while this one runs.
+- `let` statements run faster than loops.
+- Jobs can only be received once per worker.
+- It avoids moving the receiver.
+WHY: Releasing the lock before running the job lets all workers run in parallel; that's how eight jobs finish in two rounds on four workers.
+
+=== 21.2/3
+Q: In `while let Ok(job) = receiver.lock().unwrap().recv() { job(); }`, why do the jobs run one at a time?
++ The temporary lock guard lives until the end of the loop body, so each worker holds the mutex while running its job.
+- `recv` only returns one job per second.
+- `while let` loops can't run in threads.
+- The channel only holds one job.
+WHY: Temporaries in a `while let` condition live for the whole body. Receiving with a separate `let` drops the guard first.
+
+=== 21.3/2
+Q: What makes each worker's loop end when the pool is dropped?
++ `Drop` drops the sender, so `recv` returns an error once the queue is empty.
+- Each worker is killed with a signal.
+- Workers count jobs and stop after eight.
+- The pool sends a "stop" closure to each worker.
+WHY: When every sender is gone, the channel closes. Workers finish their current jobs, see the error, exit their loops and are joined.
+
+=== 21.3/3
+Q: How does the pool drop its sender inside `fn drop(&mut self)`?
++ It stores the sender in an `Option` and calls `self.sender.take()`.
+- It calls `drop(self.sender)` directly.
+- It clones the sender and drops the clone.
+- It sets the sender to null.
+WHY: You can't move a field out of a borrowed struct. `Option::take` moves the value out and leaves `None` behind.

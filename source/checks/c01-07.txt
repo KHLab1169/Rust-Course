@@ -1,0 +1,397 @@
+=== 1.1/2
+Q: Which command brings your installed Rust toolchain up to the latest stable release?
++ `rustup update`
+- `cargo update`
+- `rustc --upgrade`
+- `cargo install rust`
+WHY: rustup manages toolchains, so `rustup update` upgrades rustc, cargo and the docs together. `cargo update` only refreshes a project's dependencies in Cargo.lock.
+
+=== 1.1/3 predict
+Q: This program was built normally, without `--release`. What does its first line say?
++ `This program was compiled as a debug build.`
+- `This program was compiled as a release build.`
+- `This program was compiled as a test build.`
+WHY: `cfg!(debug_assertions)` is true in a default (debug) build. Building with `--release` or `-O` turns debug assertions off, so the same file would report a release build.
+
+=== 1.2/2 predict
+Q: What does the line with the padding specs print?
++ `height: 0.29 m, padded: [   9] [9   ] [0009]`
+- `height: 0.29 m, padded: [9   ] [   9] [0009]`
+- `height: 0.29 m, padded: [   9] [9   ] [   9]`
+- `height: 0.2900 m, padded: [   9] [9   ] [0009]`
+WHY: Numbers are right-aligned by default (`{:4}`), `{:<4}` left-aligns, and `{:04}` pads with zeros. `{:.2}` keeps two decimals.
+
+=== 1.2/3
+Q: Why is this mistake caught before the program ever runs?
++ `println!` is a macro, so the compiler checks the format string against the arguments at compile time.
+- The operating system checks every string before running a program.
+- Cargo runs the program once in the background to look for errors.
+- Rust converts the missing argument to an empty string and warns.
+WHY: Macros expand at compile time, so the number of `{}` placeholders and arguments is checked during compilation. Many languages only discover this when the line runs.
+
+=== 1.3/2
+Q: You only want to know whether your code compiles, as fast as possible. Which command fits best?
++ `cargo check`
+- `cargo build --release`
+- `cargo run`
+- `cargo new`
+WHY: `cargo check` type-checks without producing an executable, which is much faster than a full build. A release build is the slowest option, because it optimises.
+
+=== 1.3/3
+Q: How would you pass the name Ada to this program through Cargo?
++ `cargo run -- Ada`
+- `cargo run Ada`
+- `cargo run --name Ada`
+- `cargo Ada run`
+WHY: Everything after `--` goes to your program instead of to Cargo. Without the `--`, Cargo would try to interpret `Ada` itself.
+
+=== 2.1/2
+Q: The user typed `  42` and pressed Enter. What does `guess` contain after `read_line`?
++ `"  42\n"`, spaces and newline included
+- `"42"`, already trimmed
+- `42` as a number
+- `"  42"`, without the newline
+WHY: `read_line` keeps everything typed, including the newline from Enter. That is why the program calls `trim()` before parsing.
+
+=== 2.1/3
+Q: What single change makes this program compile?
++ Declare the variable with `let mut guess`.
+- Call `read_line(guess)` instead of `read_line(&mut guess)`.
+- Use `String::from("")` instead of `String::new()`.
+- Add `use std::io::Write;` at the top.
+WHY: `read_line` needs a mutable reference to fill the string, and a mutable reference requires a mutable binding. The compiler's help line shows the missing `mut`.
+
+=== 2.2/2
+Q: Why does this example print facts like "between 1 and 100: true" rather than the actual numbers?
++ The numbers change on every run, but the facts are always true, so the printed output stays the same.
+- `rand` cannot print its numbers directly.
+- Printing random numbers would leak the secret to the compiler.
+- The numbers are only generated in release builds.
+WHY: Random values differ on each run. Printing properties that always hold keeps the output repeatable while still showing what the code does.
+
+=== 2.2/3
+Q: Which file records the exact versions of every crate used, including rand's own dependencies?
++ `Cargo.lock`
+- `Cargo.toml`
+- `src/main.rs`
+- `target/debug/deps`
+WHY: Cargo.toml states the version range you accept. Cargo.lock records exactly what was chosen, so every build of an application uses the same code.
+
+=== 2.3/2 predict
+Q: The scripted guesses are 50, twenty, 25, 40, 42 and 99, and the secret is 42. What is the last line printed?
++ `42: you win after 4 tries!`
+- `42: you win after 5 tries!`
+- `99: too big!`
+- `42: you win after 6 tries!`
+WHY: "twenty" fails to parse, and `continue` skips it without counting a try, so 42 is the fourth counted guess. The winning arm breaks out of the loop, so 99 is never read.
+
+=== 2.3/3
+Q: Why is it useful that the compiler rejects a `match` that forgets `Ordering::Equal`?
++ If a case is ever missed, including a variant added later, the compiler points at every `match` that must handle it.
+- It makes the program run faster.
+- It stops you from using `match` with numbers.
+- It automatically adds a default arm for you.
+WHY: Exhaustiveness checking means a `match` can be trusted to handle every case. Adding a variant to an enum later turns every incomplete match into a compile error.
+
+=== 3.1/2 predict
+Q: After the inner block ends, what does the last line print?
++ `outer x: 5`
+- `outer x: 50`
+- `outer x: 10`
+- `outer x: 0`
+WHY: The inner `let x` shadowed the outer one only inside its block. When the block ends, the outer `x` is visible again, unchanged at 5.
+
+=== 3.1/3
+Q: Which fix does the compiler suggest for assigning to `speed` twice?
++ Declare it with `let mut speed`.
+- Use `const speed` instead.
+- Wrap the second assignment in `unsafe`.
+- Call `speed.set(...)` instead of assigning.
+WHY: Variables are immutable by default, so a value that changes must be declared `mut`. Shadowing with a new `let` would also work if you want a new variable rather than a changed one.
+
+=== 3.2/2
+Q: What do `300 as u8` and `u8::try_from(300)` do?
++ `as` silently truncates to 44, while `try_from` returns an error.
+- Both panic, because 300 does not fit in a u8.
+- Both give 255, the largest u8.
+- `as` returns an error and `try_from` truncates to 44.
+WHY: `as` keeps only the low 8 bits (300 − 256 = 44) without complaint. `try_from` checks the range and reports `Err` when the value does not fit.
+
+=== 3.2/3
+Q: How do you fix multiplying `items: i32` by `price: f64`?
++ Convert explicitly, for example `items as f64 * price` or `f64::from(items) * price`.
+- Add `#[allow(mixed_types)]` above the function.
+- Nothing: Rust converts the i32 to f64 automatically.
+- Declare both as `let` without types.
+WHY: Rust never converts between number types implicitly, because every implicit conversion could silently lose precision. You choose the conversion and write it out.
+
+=== 3.3/2 predict
+Q: The readings array holds 3, -3, 4, -7 and 0. What does the `get` line print?
++ `get(1) = Some(-3), get(9) = None`
+- `get(1) = Some(3), get(9) = None`
+- `get(1) = -3, get(9) = 0`
+- `get(1) = Some(-3), get(9) = Some(0)`
+WHY: Indexes start at 0, so index 1 is the second reading, -3. `get` returns an Option, so an index past the end gives `None` instead of panicking.
+
+=== 3.3/3
+Q: What does Rust do when you index an array past its end, like `months[7]` on a 3-element array?
++ It panics with "index out of bounds" and stops before touching memory it does not own.
+- It returns whatever value is stored in memory after the array.
+- It returns 0.
+- It wraps around and returns `months[1]`.
+WHY: Every index is bounds-checked. A clear panic is far better than silently reading garbage, which is what the same mistake can do in C. Use `get` when an index might be out of range.
+
+=== 3.4/2 predict
+Q: `grade` maps 95, 85, 72, 40 and 120 to letters, and anything above 100 is invalid. What is printed?
++ `['A', 'B', 'C', 'F', '?']`
+- `['A', 'B', 'C', 'F', 'A']`
+- `['A', 'B', 'C', 'D', '?']`
+- `['A', 'A', 'B', 'F', '?']`
+WHY: The early `return '?'` handles invalid scores before the `match`, so 120 becomes '?'. The other scores fall into their ranges.
+
+=== 3.4/3
+Q: Why does `fn square(x: i32) -> i32 { x * x; }` fail to compile?
++ The semicolon makes `x * x;` a statement, so the body evaluates to `()`, not an `i32`.
+- Functions must always use the `return` keyword.
+- `x * x` can overflow, so the compiler rejects it.
+- Parameters cannot be used in arithmetic without `mut`.
+WHY: A block's value is its final expression. Adding a semicolon turns that expression into a statement, leaving the unit value `()`. Removing the semicolon fixes it.
+
+=== 3.5/2 predict
+Q: The countdown is `(1..=10).rev().step_by(3)`. What does the countdown line print?
++ `countdown: [10, 7, 4, 1]`
+- `countdown: [10, 7, 4]`
+- `countdown: [1, 4, 7, 10]`
+- `countdown: [9, 6, 3]`
+WHY: `rev()` starts at 10 and `step_by(3)` keeps every third value: 10, 7, 4, 1. The range is inclusive, so 1 is reached.
+
+=== 3.5/3
+Q: What is the idiomatic way to write `if unread { ... }` when `unread` is a number?
++ `if unread > 0 { ... }`
+- `if bool(unread) { ... }`
+- `if unread as bool { ... }`
+- `if !!unread { ... }`
+WHY: Rust has no truthiness: conditions must be `bool`. A comparison states the intent exactly. Casting an integer to bool with `as` is not allowed either.
+
+=== 4.1/2 pick
+Q: The inner value is created inside a block, and main's value at the top of `main`. Which line is printed last?
++ `  dropping main's value`
+- `  dropping inner value`
+- `after the block`
+- `inside the block`
+WHY: Values are dropped at the end of their scope, in reverse order of creation. Main's value lives until the closing brace of `main`, after "end of main" is printed.
+
+=== 4.1/3
+Q: Why can't you use `greeting` after `let other = greeting;`?
++ `String` is not `Copy`, so the assignment moved ownership to `other`.
+- `greeting` was dropped when `other` was created.
+- Strings can only be read once.
+- The compiler needs a type annotation on `other`.
+WHY: Assigning a String moves it: only one variable owns the heap data at a time. That rule is how Rust frees memory exactly once. Use `.clone()` if you really need two copies.
+
+=== 4.2/2 predict
+Q: `double(n)` is called with `n = 21`, an `i32`. What does that line print?
++ `42 and n is still 21`
+- `42 and n is still 42`
+- `42 and n is still 0`
+- `21 and n is still 21`
+WHY: Integers are `Copy`, so passing `n` to a function copies it. The function returns 42, and the caller's `n` is unchanged.
+
+=== 4.2/3
+Q: `word_count` only reads the text. What is the best fix for the moved `essay`?
++ Change the parameter to `text: &str` and call `word_count(&essay)`.
+- Call `word_count(essay.clone())` every time.
+- Make `essay` a `static` variable.
+- Return the String from `word_count` along with the count.
+WHY: A function that only reads should borrow. A `&str` parameter accepts a borrowed String and leaves ownership with the caller. Cloning works but copies the text for no reason.
+
+=== 4.3/2 predict
+Q: `visit(&mut count)` is called three times, and each call runs `*counter += 1`. What does the last line print?
++ `visits: 3`
+- `visits: 0`
+- `visits: 1`
+- `visits: 4`
+WHY: The mutable reference lets the function write to the caller's variable through `*counter`, so each call adds one to `count`.
+
+=== 4.3/3
+Q: Why does the compiler refuse `scores.push(...)` while `first` still borrows an element?
++ `push` may reallocate the vector's buffer, which would leave `first` pointing at freed memory.
+- Vectors cannot grow after an element has been read.
+- `first` is a copy, and copies block changes.
+- `push` is only allowed on empty vectors.
+WHY: A shared borrow promises that the data won't change or move. A push that reallocates would break that promise, so the compiler rejects it. Moving the last use of `first` above the push fixes it.
+
+=== 4.4/2 predict
+Q: For the text "café", what does the byte-and-char line print?
++ `5 bytes, 4 chars, last char Some('é')`
+- `4 bytes, 4 chars, last char Some('é')`
+- `5 bytes, 5 chars, last char Some('é')`
+- `4 bytes, 5 chars, last char Some('e')`
+WHY: Strings are UTF-8: "é" takes two bytes, so "café" has 5 bytes but 4 characters. `.chars().last()` returns an Option of the final character.
+
+=== 4.4/3
+Q: Why is `text.clear()` rejected while the slice `word` is still used?
++ `word` borrows part of `text`, and clearing it would leave the slice pointing at nothing.
+- Strings cannot be cleared once sliced.
+- `clear` takes ownership of the string.
+- Slices make the original string read-only forever.
+WHY: A slice is a borrow into its source. While it is in use, the source cannot be changed. Once the slice's last use is over, clearing is allowed again.
+
+=== 5.1/2
+Q: Ben was created with `..ada`, but only `active` and `logins` were copied from Ada. Why can Ada still be used in full afterwards?
++ The fields taken from Ada are `Copy` types, so nothing of hers was moved.
+- Struct update syntax always clones every field.
+- Ada was declared `mut`, which prevents moves.
+- `#[derive(Debug)]` makes structs copyable.
+WHY: Update syntax moves or copies the fields it uses. Ben supplied his own `name` and `email`, so only the `bool` and `u32` came from Ada, and those are copied.
+
+=== 5.1/3
+Q: After `let b = Config { port: 9000, ..base };`, where `host` is a String, how can you keep `base` usable?
++ Write `..base.clone()`, or clone the `host` field explicitly.
+- Add `mut` to `base`.
+- Use `&base` instead of `base` after the update.
+- Put the `..base` line before the `port` field.
+WHY: `..base` moved the String field out of `base`, leaving it partly moved. Cloning gives the new struct its own copy so `base` stays whole.
+
+=== 5.2/2
+Q: What is the difference between `{:?}` and `{:#?}`?
++ `{:?}` prints the debug form on one line; `{:#?}` spreads it over several indented lines.
+- `{:#?}` prints only the type name.
+- `{:?}` needs `Display`, `{:#?}` needs `Debug`.
+- `{:#?}` prints in hexadecimal.
+WHY: Both use the `Debug` trait. The `#` flag asks for "pretty" output, which is easier to read for nested structs.
+
+=== 5.2/3
+Q: What does `let w = dbg!(30 * scale);` assign to `w`, with `scale = 2`?
++ 60, the value of the expression, after printing it to standard error
+- Nothing: `dbg!` returns `()`
+- The string "30 * scale = 60"
+- A reference to the expression
+WHY: `dbg!` prints the file, line, expression and value, then returns the value, so it can be dropped into the middle of code without changing behaviour.
+
+=== 5.3/2
+Q: Why can't `small` be used after `small.into_square()`?
++ `into_square` takes `self` by value, so it consumed `small`.
+- `into_square` takes `&mut self` and locks `small`.
+- Methods that start with `into` delete their struct.
+- `small` was not declared `mut`.
+WHY: A method's receiver decides what happens to the value: `&self` borrows, `&mut self` borrows mutably, and `self` takes ownership. By convention, `into_*` methods consume.
+
+=== 5.3/3
+Q: `increment` is declared with `&mut self`. What must the caller do?
++ Declare the value with `let mut counter`.
+- Call it as `Counter::increment(counter)`.
+- Wrap the call in `unsafe`.
+- Nothing: methods can always change their struct.
+WHY: A `&mut self` method needs a mutable borrow, and mutable borrows require a mutable binding. The signature makes the side effect visible at every call site.
+
+=== 6.1/2 predict
+Q: `find_user(7)` finds nobody, and the caller uses `unwrap_or("unknown")`. What does that line print?
++ `user 7: unknown (raw: None)`
+- `user 7:  (raw: None)`
+- `user 7: unknown (raw: Some("unknown"))`
+- `user 7: null (raw: None)`
+WHY: `find_user` returns `None` for missing users, and `unwrap_or` supplies the fallback. The raw value is still printed as `None`.
+
+=== 6.1/3
+Q: `price` is an `Option<u32>`. Which expression adds 15% when there is a price and keeps `None` otherwise?
++ `price.map(|p| p * 115 / 100)`
+- `price * 115 / 100`
+- `price.unwrap() * 115 / 100`
+- `Some(price) * 115 / 100`
+WHY: `map` applies the closure only to a value inside `Some` and leaves `None` untouched. `unwrap` would panic on `None`, and an Option can't be multiplied directly.
+
+=== 6.2/2 pick
+Q: `describe(Some(-5))` meets these arms in order: a guard `t < -20`, then `t @ -20..=0`, then `1 | 2 | 3`, then `Some(t)`. What does it print?
++ `-5°: freezing`
+- `barely above zero`
+- `-5°`
+- `extreme cold`
+WHY: -5 is not below -20, so the guard arm is skipped. It falls into the `-20..=0` range, and `t @` binds it so the message can show the value.
+
+=== 6.2/3
+Q: What is the shortest fix for a `match` on an `Option<u32>` that only handles `Some(n)`?
++ Add a `None => ...` arm.
+- Add `#[allow(non_exhaustive)]`.
+- Change the type to `u32`.
+- Use `if` instead of `match`, with no else branch.
+WHY: The compiler names the missing pattern. Handling `None` explicitly (or with `_ =>`) makes the match exhaustive.
+
+=== 6.3/2 pick
+Q: Tasks are pushed as "write tests", "fix bug", "review PR", and `while let Some(t) = tasks.pop()` processes them. Which task is done first?
++ `doing: review PR`
+- `doing: write tests`
+- `doing: fix bug`
+WHY: `pop` removes the last element, so a Vec used this way is a stack: the last task pushed comes out first. The loop ends when `pop` returns `None`.
+
+=== 6.3/3
+Q: Which `else` block is valid in `let Ok(p) = text.parse::<u16>() else { ... };`?
++ `else { return 8080; }`
+- `else { 8080 }`
+- `else { p = 8080; }`
+- `else { println!("bad port"); }`
+WHY: When the pattern fails there is no `p`, so the else block must leave the current flow: return, break, continue or panic. An expression or a print alone falls through.
+
+=== 7.1/2
+Q: How did Cargo know there are two binaries in this package?
++ From the file layout: `src/main.rs` is the default binary and every file in `src/bin/` is another.
+- Each binary must be listed in `Cargo.lock`.
+- Binaries are detected by searching for `fn main` in every file.
+- The library declares them with `pub bin`.
+WHY: Cargo follows conventions: `lib.rs` is the library, `main.rs` the default binary, and `src/bin/*.rs` extra binaries. No configuration is needed.
+
+=== 7.1/3
+Q: Why is `analyse` written to return data instead of printing?
++ Logic that returns values can be tested and reused; `main` only handles input and output.
+- Printing is not allowed inside modules.
+- Returning data is faster than printing.
+- Library crates cannot use `println!`.
+WHY: Keeping logic pure and pushing input and output to the edges is the professional shape: tests call `analyse` directly, and other binaries can reuse it.
+
+=== 7.2/2
+Q: Why can't outside code write `Breakfast { toast: ..., fruit: ... }` directly?
++ `fruit` is a private field, so only code inside the module can build a Breakfast.
+- Structs can never be built outside their module.
+- `Breakfast` is a private struct.
+- The struct needs `#[derive(Default)]`.
+WHY: A struct literal needs every field, and private fields can't be named outside the module. A public constructor like `Breakfast::summer` becomes the only way in, which lets the module enforce its rules.
+
+=== 7.2/3
+Q: What is the benefit of keeping `balance` private?
++ The only way to change a balance is through methods that enforce the rules, and the compiler guarantees it.
+- Private fields use less memory.
+- Private fields are encrypted at run time.
+- It lets the field hold any type.
+WHY: Privacy turns "please use deposit and withdraw" into a guarantee: code outside the module cannot set the field at all.
+
+=== 7.3/2
+Q: What does `pub use self::model::Item;` inside `shop` let callers write?
++ `shop::Item` instead of `shop::model::Item`
+- `Item` anywhere in the crate without importing it
+- `model::Item` from any crate
+- Nothing new; it only renames the struct
+WHY: `pub use` re-exports an item at a shorter, more convenient path, so the public API doesn't have to mirror the internal folder structure.
+
+=== 7.3/3
+Q: The crate root has `use reports::total;`. Why can't the child module `printing` call `total()`?
++ A `use` only creates a shortcut in its own scope, and `printing` is a separate scope.
+- `total` is private to `reports`.
+- Child modules can't call functions from their parent.
+- `use` statements only apply to the next line.
+WHY: Each module has its own namespace. `printing` needs its own `use`, or a path like `super::total()` or `crate::reports::total()`.
+
+=== 7.4/2
+Q: Where does the compiler look for `mod hosting;` declared inside `src/front_of_house.rs`?
++ `src/front_of_house/hosting.rs`
+- `src/hosting.rs`
+- `src/front_of_house.rs/hosting`
+- `src/lib/hosting.rs`
+WHY: A child module's file lives in a folder named after its parent. The path in code, `crate::front_of_house::hosting`, matches the folders.
+
+=== 7.4/3
+Q: If you move an inline `mod hosting { ... }` into its own file, what changes for code that calls it?
++ Nothing: the module path stays exactly the same.
+- Callers must add `use file::hosting`.
+- The functions become private.
+- Callers must use `crate::files::hosting`.
+WHY: Inline modules and file modules produce the same tree. Splitting files is purely organisational, so no calling code changes.

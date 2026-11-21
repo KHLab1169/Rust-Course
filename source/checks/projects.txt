@@ -1,0 +1,272 @@
+=== Q1.1/2 predict
+Q: Most of the 1,000 requests take about 20 ms, but 3% take over a second. What does the p99 line show?
++ `p99      1240 ms`
+- `p99        26 ms`
+- `p99        59 ms`
+- `p99       620 ms`
+WHY: The mean (59 ms) and the p95 look healthy, but the slowest 1% are over a second. Percentiles show the tail that averages hide.
+
+=== Q1.1/3
+Q: Why does `validate` take the plan by value and return it inside `Ok`?
++ The rest of the program then only ever receives a plan that has passed validation.
+- Validation is faster on owned values.
+- Borrowed values can't be checked.
+- It lets the plan be modified during validation.
+WHY: Consuming the unchecked plan and handing back a checked one means invalid plans can't sneak past. Each mistake gets its own error variant for a precise message.
+
+=== Q1.2/2 predict
+Q: 200 requests run against a fake target with a Semaphore of 10 permits. What peak concurrency is reported?
++ `peak concurrency: 10 (limit 10)`
+- `peak concurrency: 200 (limit 10)`
+- `peak concurrency: 1 (limit 10)`
+- `peak concurrency: 20 (limit 10)`
+WHY: Every task waits for a permit before calling the target, so no more than ten requests are ever in flight. The fake target records the peak to prove it.
+
+=== Q1.2/3
+Q: What should `summarize` return for p50 when every request failed?
++ `None`, because there are no successful latencies to rank.
+- `Some(Duration::ZERO)`.
+- It should panic.
+- The latency of the fastest error.
+WHY: Errors aren't latencies. Returning `None` lets the report say "no data" instead of printing a misleading 0 ms.
+
+=== Q1.3/2 predict
+Q: The run's p99 is 412 ms. What exit code does `--max-p99 300` produce?
++ `--max-p99 300 -> exit code 1`
+- `--max-p99 300 -> exit code 0`
+- `--max-p99 300 -> exit code 2`
+WHY: The threshold was missed, so the tool exits with 1 and a CI pipeline stops. With a 500 ms budget, the same run passes with 0.
+
+=== Q1.3/3
+Q: What does pushing a tag like `v0.1.0` trigger in the release workflow?
++ Builds for each platform, each uploading its binary to the same GitHub Release.
+- A new crates.io version.
+- A rebuild of the documentation only.
+- Nothing until someone approves it.
+WHY: The workflow runs on tags matching `v*`. A matrix builds Linux, macOS and Windows binaries in parallel and attaches them to the release.
+
+=== Q2.1/2 pick
+Q: `cart::apply_coupon` passed three times, then failed three times. How is it classified?
++ `cart::apply_coupon       Regressed { since_run: 4 }`
+- `login::wrong_password    Flaky { pass_rate: 66, flips: 4 }`
+- `search::fuzzy            Broken`
+WHY: One flip followed by consistent failure points to a change that broke the test, not to flakiness. That needs investigating, not retrying.
+
+=== Q2.1/3
+Q: Why does the id normalise names like "test_valid_password (attempt 2)"?
++ So a retried test is recognised as the same test across runs.
+- To shorten long names.
+- Because parentheses are invalid in XML.
+- To hide retries from the report.
+WHY: Statistics across runs only work if each test keeps one identity. Some runners add retry suffixes, which would split one test into several.
+
+=== Q2.2/2 predict
+Q: Four runs are given, but run 3's XML is truncated. What does the stats line for `login::retry` show?
++ `login::retry [Passed, Failed, Passed]  pass 2/3  median 1.20s`
+- `login::retry [Passed, Failed, Failed, Passed]  pass 2/4  median 1.25s`
+- `login::retry [Passed, Passed, Passed]  pass 3/3  median 1.20s`
+WHY: The broken run is reported and skipped, so only three runs count. The median of 1.10, 3.40 and 1.20 seconds is 1.20.
+
+=== Q2.2/3
+Q: What should the parser do with a `<testcase>` containing an `<error>` element?
++ Count it as failed, the same as `<failure>`.
+- Count it as skipped.
+- Ignore the test case.
+- Count it as passed with a warning.
+WHY: JUnit uses `<failure>` for assertion failures and `<error>` for unexpected exceptions. Both mean the test didn't pass.
+
+=== Q2.3/2 predict
+Q: Two flaky tests are allow-listed; one new flaky test and one regression are not. What exit code does the gate return?
++ `exit code 1`
+- `exit code 0`
+- `exit code 2`
+WHY: Allow-listed tests are reported but don't block the build. The two new problems do, so the gate fails with 1.
+
+=== Q2.3/3
+Q: What should each allow-list entry include, according to the lesson?
++ An owner or ticket, so known flaky tests don't sit there forever.
+- The test's full source code.
+- The date the test was written.
+- Nothing but the test id.
+WHY: An allow-list without owners becomes a graveyard. A ticket reference keeps each entry accountable.
+
+=== Q3.1/2 predict
+Q: Three failures happen at 23:59:58, 23:59:59 on Dec 31 and 00:00:01 on Jan 1. With rollover handling, what are the gaps?
++ `gaps between events: [1, 2] seconds`
+- `gaps between events: [1, -31535998] seconds`
+- `gaps between events: [1, 3] seconds`
+WHY: Syslog lines have no year. Noticing the jump backwards in months and moving to the next year keeps the events two seconds apart, so a burst rule still fires.
+
+=== Q3.1/3 predict
+Q: Seven failures arrive within 16 seconds, straddling a minute boundary. The rule is "5 failures within 60 s". Do fixed one-minute buckets alert?
++ `fixed one-minute buckets alert? false`
+- `fixed one-minute buckets alert? true`
+- `fixed one-minute buckets alert? only in release builds`
+WHY: The burst splits into four and three across the boundary, so no single bucket reaches five. A sliding window sees five within 11 seconds and alerts.
+
+=== Q3.2/2 predict
+Q: The attacker fails six times within 15 seconds, with the rule at 5 failures per 60 s. How many alerts are printed?
++ `ALERT 203.0.113.9: 5 failures in 11 s`
+- `ALERT 203.0.113.9: 6 failures in 14 s`
+- `ALERT 198.51.100.7: 1 failures in 0 s`
+WHY: The fifth failure raises one alert, and the sixth is part of the same burst, so the detector stays quiet. Kev's single mistake was cleared by his successful login.
+
+=== Q3.2/3
+Q: With a 10-second window, failures at t=0 and t=5 are stored. Is the t=0 failure still counted at t=10?
++ No: the test defines an event exactly W seconds old as expired.
+- Yes: it expires only at t=11.
+- Yes: events never expire until a success.
+- It depends on the IP address.
+WHY: The detector pops timestamps where `ts - t >= window`. The test documents that boundary decision so it can't change by accident.
+
+=== Q3.3/2
+Q: What does the follower do when it reads a line without a trailing newline?
++ It seeks back and waits, so the half-written line is processed once it's complete.
+- It processes the partial line immediately.
+- It discards the line.
+- It stops following the file.
+WHY: Writers may flush half a line. Waiting for the newline avoids parsing a truncated log entry.
+
+=== Q3.3/3
+Q: Why does the systemd unit run logwatch as its own user in the `adm` group?
++ It can read the logs but nothing else, so a bug can't damage the system.
+- `adm` makes the service start faster.
+- Root can't read `/var/log`.
+- systemd requires every service to be in `adm`.
+WHY: Least privilege: the `adm` group grants read access to logs, and the sandboxing options make the rest of the filesystem read-only.
+
+=== W1.1/2 predict
+Q: The query string is `?page=0&per_page=5000`. What window does the API use?
++ `?page=0&per_page=5000              -> page 1 per_page 100 status None: LIMIT 100 OFFSET 0`
+- `?page=0&per_page=5000              -> page 0 per_page 5000 status None: LIMIT 5000 OFFSET 0`
+- `?page=0&per_page=5000              -> page 1 per_page 5000 status None: LIMIT 5000 OFFSET 0`
+WHY: `normalised` raises page 0 to 1 and clamps `per_page` to the maximum of 100, so one request can't ask for thousands of rows.
+
+=== W1.1/3
+Q: Which layer should check that a task title isn't empty?
++ The service layer, so the rule applies no matter how the task is created.
+- The repository, inside the SQL.
+- The route handler only.
+- The client, before sending.
+WHY: Business rules belong in the service, testable without HTTP or SQL. The route translates its errors into status codes.
+
+=== W1.2/2 predict
+Q: Task 3 is patched with `done = true` only, using `COALESCE(?1, title)`. What does the result show?
++ `patch done only:  Some(Task { id: 3, title: "Dockerfile", done: true })`
+- `patch done only:  Some(Task { id: 3, title: "", done: true })`
+- `patch done only:  None`
+WHY: `COALESCE(NULL, title)` keeps the existing title, so only the fields that were sent change.
+
+=== W1.2/3
+Q: What lets handlers use `?` on rusqlite calls?
++ `impl From<rusqlite::Error> for ApiError`, with `ApiError` implementing `IntoResponse`.
+- Wrapping every handler in `catch_unwind`.
+- Returning `Box<dyn Error>` from handlers.
+- axum converts database errors automatically.
+WHY: `?` converts the database error into the API's error type, which then becomes a 500 response with the standard JSON body.
+
+=== W1.3/2 pick
+Q: `TASKHUB_ADDR` is set to `localhost:http`. What does loading the config return?
++ `Err("TASKHUB_ADDR=\"localhost:http\" is not an address: invalid socket address syntax")`
+- `Ok(Config { addr: 127.0.0.1:3000, db: "taskhub.db", max_body_kb: 64 })`
+- `Err("TASKHUB_MAX_BODY_KB must be between 1 and 10240, got 0")`
+WHY: `SocketAddr` needs an IP and a numeric port. The loader fails fast with a message naming the variable, instead of misbehaving later.
+
+=== W1.3/3 predict
+Q: Shutdown is requested 50 ms into a 300 ms request. What does the client get?
++ `in-flight request finished: "report ready"`
+- `in-flight request finished: ""`
+- `in-flight request finished: "connection reset"`
+WHY: Graceful shutdown stops accepting new connections but lets in-flight requests finish before the server exits.
+
+=== W2.1/2
+Q: Why does each record carry a CRC32 checksum?
++ So a corrupted or half-written record is detected on replay instead of being returned as a wrong value.
+- To compress the data.
+- To encrypt the value.
+- To sort records by key.
+WHY: Disks and power failures can corrupt bytes. A checksum mismatch marks where the valid log ends.
+
+=== W2.1/3 predict
+Q: The last record was cut off mid-write. After truncating to the valid length and appending "c" = "cranberry", what does replay return?
++ `after the next write: [("a", "apple"), ("b", "banana"), ("c", "cranberry")]`
+- `after the next write: [("a", "apple"), ("b", "banana"), ("c", "cherry")]`
+- `after the next write: [("a", "apple"), ("b", "banana")]`
+WHY: Truncating at the end of the last complete record removes the torn bytes, so the new record follows cleanly. "cherry" was never fully written.
+
+=== W2.2/2 predict
+Q: `counter` was set 50 times, plus one live and one removed key. How big is the file after compaction?
++ `after compaction:  32 bytes, 0 stale`
+- `after compaction:  892 bytes, 0 stale`
+- `after compaction:  32 bytes, 860 stale`
+WHY: Compaction rewrites only the latest value of each live key (two records) into a new file, so all stale space is gone.
+
+=== W2.2/3
+Q: Why do the persistence tests let the store go out of scope and open it again?
++ Only a fresh open from disk proves the data reached the log; in-memory state can hide a broken replay.
+- Opening twice makes the tests faster.
+- Rust requires closing files before reading them.
+- To test that the file can be deleted.
+WHY: Reopening exercises the replay code, which is what actually runs after a restart or a crash.
+
+=== W2.3/2 predict
+Q: `kvlog get user:2` is run, but the key doesn't exist. What exit code does the CLI return?
++ `$ kvlog get user:2               exit 1  [stderr] kvlog: key "user:2" not found`
+- `$ kvlog get user:2               exit 0  [stderr] kvlog: key "user:2" not found`
+- `$ kvlog get user:2               exit 0`
+WHY: A missing key exits with 1 and prints to stderr, so scripts can test for it with `if kvlog get ...` without the message polluting stdout.
+
+=== W2.3/3
+Q: In the benchmark, how does `set` with `sync_data` compare with `set` without it?
++ It is roughly 200 times slower, because each write waits for the disk.
+- About the same speed.
+- Faster, because the OS cache is bypassed.
+- Twice as slow.
+WHY: fsync waits until data is on the physical disk. That's the price of durability, which is why stores let users choose.
+
+=== W3.1/2 predict
+Q: On a 5×4 torus, one cell is alive in each corner. How many live neighbours does the top-left corner see?
++ `#...#   neighbours [3, 2, 0, 2, 3]`
+- `#...#   neighbours [0, 1, 0, 1, 0]`
+- `#...#   neighbours [1, 1, 0, 1, 1]`
+WHY: With wrap-around edges, the four corners touch each other, so each corner cell sees the other three.
+
+=== W3.1/3
+Q: How does JavaScript read the cells without copying them?
++ It builds a `Uint8Array` over WebAssembly memory at the pointer Rust exports.
+- Rust sends the cells as a JSON string every frame.
+- JavaScript calls a Rust function once per cell.
+- WebAssembly copies the cells into a JS array automatically.
+WHY: A flat `Vec<u8>` is one block of memory, so JS can view it directly. That's what makes large grids fast to draw.
+
+=== W3.2/2
+Q: How many generations does it take a glider to return to its shape, shifted one cell diagonally?
++ 4
+- 1
+- 2
+- 8
+WHY: The glider cycles through four phases. On a 6×6 torus, 24 generations carry it all the way round, which tests wrap-around on every edge.
+
+=== W3.2/3
+Q: Why does `tick` write into a second buffer and swap, instead of updating cells in place?
++ Every cell's next state must come from the current generation; updating in place would mix generations.
+- Two buffers use less memory.
+- Swapping is required by WebAssembly.
+- It makes the simulation run backwards.
+WHY: In-place updates would let already-updated neighbours affect later cells. Swapping also avoids allocating a new vector each frame.
+
+=== W3.3/2
+Q: Why does the Pages workflow run `cargo test` before `wasm-pack build`?
++ So a broken simulation is never deployed: the native pattern tests must pass first.
+- wasm-pack needs the test binaries.
+- It warms up the Rust cache.
+- GitHub requires tests before deploying.
+WHY: The fast native tests act as a gate in the same workflow, before anything is published.
+
+=== W3.3/3
+Q: Which release setting removes unused code across crates to shrink the .wasm file?
++ `lto = true`
+- `codegen-units = 16`
+- `opt-level = 0`
+- `debug = true`
+WHY: Link-time optimisation sees the whole program at once and drops what's unused. Combined with `opt-level = "s"` and wasm-opt, the module shrinks to about 16 KB.

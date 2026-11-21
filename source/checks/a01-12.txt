@@ -1,0 +1,580 @@
+=== A1.1/2
+Q: Which command makes CI fail on any Clippy warning?
++ `cargo clippy -- -D warnings`
+- `cargo clippy --fix`
+- `cargo fmt --check`
+- `cargo build --warnings`
+WHY: `-D warnings` turns every warning into an error, so the CI step fails. `--fix` applies suggestions locally, and `cargo fmt --check` checks layout, not lints.
+
+=== A1.1/3
+Q: Why is `fn mean(values: &[f64])` better than `fn mean(values: &Vec<f64>)`?
++ A slice accepts vectors, arrays and sub-slices, so callers aren't forced to build a Vec.
+- Slices are faster to index.
+- `&Vec` can't be iterated.
+- Slices can be resized inside the function.
+WHY: A `&Vec<T>` coerces to `&[T]` automatically, but not the other way round. Taking the slice keeps the function as flexible as possible.
+
+=== A1.2/2 predict
+Q: Two of the input lines are malformed ("cy oops" and a score of "x"). What does the last line print?
++ `average best score: 86.5`
+- `average best score: 0`
+- `average best score: 57.6`
+- `average best score: NaN`
+WHY: Bad lines become errors and are reported, while the two valid people are still parsed. Their best scores average to 86.5 after an explicit conversion to f64.
+
+=== A1.2/3
+Q: What is the idiomatic signature for "the longest name in a list"?
++ `fn longest_name(names: &[String]) -> Option<&str>`
+- `fn longest_name(names: Vec<String>) -> &str`
+- `fn longest_name(names: Vec<String>) -> &'static str`
+- `fn longest_name(names: &Vec<String>) -> String`
+WHY: Borrow the input as a slice, return a borrow tied to it, and use Option for the empty case. Taking the Vec by value leaves nothing to borrow from once the function returns.
+
+=== A1.3/2 predict
+Q: `people` is 0 in the variables. What does evaluating `(price + 2) * 1.15 / people` give?
++ `(price + 2) * 1.15 / people = Err(DivisionByZero)`
+- `(price + 2) * 1.15 / people = Ok(inf)`
+- `(price + 2) * 1.15 / people = Ok(23.0)`
+- `(price + 2) * 1.15 / people = Err(UnknownVariable("people"))`
+WHY: The evaluator checks the divisor and returns a typed error instead of producing infinity or panicking. `?` carries the error up from the sub-expression.
+
+=== A1.3/3
+Q: Why does idiomatic code avoid a `_ =>` catch-all when matching on its own enums?
++ Without it, adding a variant makes the compiler flag every match that must handle the new case.
+- Catch-alls are slower.
+- `_` can't be used with enums.
+- Catch-alls disable exhaustiveness checking for the whole crate.
+WHY: A catch-all silently absorbs new variants. Listing variants explicitly turns the compiler into a checklist of places to update.
+
+=== A2.1/2 predict
+Q: The sorted vector is `[3, 7, 12]`. What does the `binary_search` line print?
++ `binary_search(7) = Ok(1), (8) = Err(2)`
+- `binary_search(7) = Ok(2), (8) = Err(3)`
+- `binary_search(7) = Some(1), (8) = None`
+- `binary_search(7) = Ok(1), (8) = Err(1)`
+WHY: `Ok(index)` means found. `Err(i)` means not found, with `i` the position where the value would be inserted to keep the order: 8 belongs between 7 and 12, at index 2.
+
+=== A2.1/3
+Q: Why is draining a queue with `Vec::remove(0)` slow?
++ Each removal shifts every remaining element, so draining is O(n²); VecDeque pops the front in O(1).
+- `remove(0)` allocates a new Vec each time.
+- Vec doesn't allow removing the first element.
+- It locks the Vec on every call.
+WHY: A Vec stores elements contiguously from the start. VecDeque's ring buffer can move its start point instead of moving the data.
+
+=== A2.2/2
+Q: What do you need to use your own `Seat` struct as a HashMap key?
++ Derive `Hash`, `PartialEq` and `Eq`.
+- Derive `Debug` and `Clone`.
+- Implement `Display`.
+- Nothing: any struct can be a key.
+WHY: The map hashes keys to find a bucket and compares them for equality, so it needs `Hash` and `Eq` that agree with each other.
+
+=== A2.2/3
+Q: Two values compare equal but hash differently. What happens with a HashSet?
++ Lookups fail: the set can't find an equal value because it searches the wrong bucket.
+- The set merges them automatically.
+- The compiler rejects the program.
+- Lookups work, but more slowly.
+WHY: The rule is that equal values must have equal hashes. Normalising data in a constructor and deriving both traits keeps them consistent.
+
+=== A2.3/2
+Q: In what order does a BTreeMap iterate its entries?
++ In sorted key order, regardless of insertion order.
+- In insertion order.
+- In an arbitrary order that changes between runs.
+- Most recently used first.
+WHY: A BTreeMap keeps keys sorted, which also makes range queries like `range("2026-11-02"..="2026-11-04")` efficient.
+
+=== A2.3/3 predict
+Q: Montréal–Toronto is 540 km directly, Montréal–Ottawa 200 then Ottawa–Toronto 450, and Montréal–Kingston 400 then Kingston–Toronto 260. What does Dijkstra report for Toronto?
++ `Toronto    540 km`
+- `Toronto    650 km`
+- `Toronto    660 km`
+- `Toronto    450 km`
+WHY: The direct road (540) beats both detours (650 and 660). The min-heap settles each city at its shortest distance and skips longer entries found later.
+
+=== A3.1/2 predict
+Q: On a 64-bit machine, how big are a String, a `Vec<u64>`, a `&str` and a `&[u8]`?
++ `String 24, Vec<u64> 24, &str 16, &[u8] 16`
+- `String 8, Vec<u64> 8, &str 8, &[u8] 8`
+- `String 24, Vec<u64> 24, &str 8, &[u8] 8`
+- `String 16, Vec<u64> 24, &str 16, &[u8] 16`
+WHY: Owned buffers store a pointer, a length and a capacity (three words). Slices store a pointer and a length (two words).
+
+=== A3.1/3
+Q: Moving a vector of a million elements into a function copies how much data?
++ Only the 24-byte header (pointer, length, capacity); the heap buffer stays where it is.
+- All million elements.
+- Nothing at all.
+- Half the elements, the other half are shared.
+WHY: A move transfers ownership of the existing buffer. That's why moves are cheap, and why the old variable can't be used afterwards.
+
+=== A3.2/2
+Q: What does `std::mem::take(&mut self.messages)` do?
++ It moves the Vec out and leaves an empty Vec (its Default) in its place.
+- It clones the Vec.
+- It deletes the Vec and leaves the field uninitialised.
+- It borrows the Vec for the rest of the function.
+WHY: You can't leave a field empty behind a `&mut`, so `take` swaps in a default value. `mem::replace` does the same with a value you choose.
+
+=== A3.2/3
+Q: Which line correctly returns the log from `fn drain_log(&mut self) -> Vec<String>`, leaving it empty?
++ `std::mem::take(&mut self.log)`
+- `self.log`
+- `&self.log`
+- `drop(self.log)`
+WHY: Returning `self.log` would move a field out of a borrowed struct. `take` hands back the log and leaves an empty Vec in its place.
+
+=== A3.3/2
+Q: Why can a `String` or a `Vec<u32>` satisfy a `T: 'static` bound?
++ They contain no borrowed data, so they can live as long as needed.
+- They are stored in static memory.
+- `'static` means the value never changes.
+- All heap types are 'static.
+WHY: `T: 'static` means "holds no short-lived references", not "lives forever". Owned data qualifies; a `&str` borrowed from a local doesn't.
+
+=== A3.3/3
+Q: `keep_forever(&name)` fails because a thread needs `'static` data. What is the simplest fix?
++ Pass the String itself: `keep_forever(name)`.
+- Add `'static` to the variable: `let name: &'static String`.
+- Clone the reference: `keep_forever(&name.clone())`.
+- Join the thread before `name` is dropped, without changing anything else.
+WHY: An owned String moves into the thread, so nothing borrowed can expire. A reference to a clone is still a reference to a local.
+
+=== A4.1/2 predict
+Q: `nope.cfg` doesn't exist. What does its line print?
++ `nope.cfg: [io] cannot read the config file: No such file or directory (os error 2)`
+- `nope.cfg: [missing] missing required key "port"`
+- `nope.cfg: port 8080`
+- `nope.cfg: [parse] line 1: expected a number`
+WHY: `?` converted the `io::Error` into the `Io` variant through `From`, and the report walked the source chain to add the OS message.
+
+=== A4.1/3
+Q: What makes `fs::read_to_string(path)?` work in a function returning `Result<_, AppError>`?
++ An `impl From<std::io::Error> for AppError`.
+- Making `AppError` derive `Debug`.
+- Adding `#[derive(Error)]` to the function.
+- Returning `Box<AppError>`.
+WHY: `?` calls `From::from` on the error. Without that conversion (or a `map_err`), the compiler can't turn an io::Error into your type.
+
+=== A4.2/2
+Q: What does `#[from]` on a thiserror variant generate?
++ A `From` implementation, so `?` converts that error type into the variant.
+- A `Display` message.
+- A retry loop.
+- A test for the variant.
+WHY: thiserror writes the boilerplate: `#[error(...)]` for Display, `#[from]` for From (and source), `#[source]` for the chain.
+
+=== A4.2/3
+Q: Why do library callers benefit from a typed error enum rather than a String?
++ They can match on variants to decide what to do (retry, skip, give up) without parsing messages.
+- Typed errors use less memory.
+- Strings can't be returned in a Result.
+- Typed errors are printed in colour.
+WHY: Messages are for humans and can change. Variants are a stable contract that code can branch on.
+
+=== A4.3/2
+Q: Which anyhow macro returns an error early when a condition is false?
++ `ensure!(workers <= 64, "...")`
+- `bail!(workers <= 64)`
+- `context!(workers <= 64)`
+- `anyhow!(workers <= 64)`
+WHY: `ensure!(cond, msg)` returns an error when the condition is false. `bail!(msg)` returns an error unconditionally, and `anyhow!` just builds one.
+
+=== A4.3/3 predict
+Q: `main` returns `anyhow::Result` and fails with context "could not start the server" over "APP_PORT is not set". What is the first line printed?
++ `Error: could not start the server`
+- `Error: APP_PORT is not set`
+- `thread 'main' panicked at main.rs`
+- `could not start the server: environment variable not found`
+WHY: Returning an error from `main` prints "Error:" with the outermost context, followed by a "Caused by:" list down to the root cause.
+
+=== A5.1/2 predict
+Q: `total` accepts any `IntoIterator<Item = u32>`. What do `total(vec![1, 2, 3])`, `total([10, 20])`, `total(1..=100)` and `total(BTreeSet::from([5, 5, 6]))` print?
++ `6 30 5050 11`
+- `6 30 5050 16`
+- `6 30 5049 11`
+- `6 30 100 11`
+WHY: All four are iterable over u32. A set keeps one 5, so it sums to 11, and the inclusive range 1..=100 sums to 5050.
+
+=== A5.1/3
+Q: What parameter type lets a function accept arrays, vectors and ranges of u32 directly?
++ `impl IntoIterator<Item = u32>`
+- `&Vec<u32>`
+- `Vec<u32>`
+- `&mut [u32]`
+WHY: `IntoIterator` covers anything iterable. A `&Vec<u32>` forces callers to allocate a Vec just to call the function.
+
+=== A5.2/2 predict
+Q: Versions are parsed from "1.10.0", "v1.2.3", "1.2.10" and "0.9.9", then sorted with derived `Ord` (fields major, minor, patch). What is printed?
++ `0.9.9 < 1.2.3 < 1.2.10 < 1.10.0`
+- `0.9.9 < 1.10.0 < 1.2.10 < 1.2.3`
+- `0.9.9 < 1.2.10 < 1.2.3 < 1.10.0`
+- `1.10.0 < 1.2.10 < 1.2.3 < 0.9.9`
+WHY: Derived comparisons go field by field as numbers, so 1.2.10 comes after 1.2.3 and 1.10.0 is largest. Sorting the strings would give the wrong order.
+
+=== A5.2/3
+Q: Why can a `HashMap<String, u32>` be queried with `stock.get("tea")`?
++ `String` implements `Borrow<str>`, with equal hashing and comparison, so a `&str` can look up a String key.
+- `get` converts the `&str` into a new String first.
+- HashMap keys are always compared as `&str`.
+- `"tea"` is automatically a String.
+WHY: `Borrow` promises the borrowed form hashes and compares like the owned one, so no allocation is needed for lookups.
+
+=== A5.3/2 predict
+Q: `Length<U>` stores one `f64` plus a `PhantomData<U>`. What does the first line print?
++ `total run: 1152.4 m; size of Length: 8 bytes`
+- `total run: 1152.4 m; size of Length: 16 bytes`
+- `total run: 1500.0 m; size of Length: 8 bytes`
+- `total run: 1152.4 m; size of Length: 9 bytes`
+WHY: PhantomData is zero-sized, so the unit costs nothing at run time. 500 feet were converted (152.4 m) before adding, because only same-unit lengths can be added.
+
+=== A5.3/3
+Q: Why is multiplying a 2×3 matrix by another 2×3 matrix a compile error here?
++ The dimensions are const generic parameters, and `mul` requires the left's columns to equal the right's rows.
+- Matrices can't be multiplied in Rust.
+- The arrays are too small.
+- Const generics only work with `u8`.
+WHY: With `Matrix<R, K>` times `Matrix<K, C>`, the shared `K` must match. 3 columns and 2 rows don't, and the compiler says so.
+
+=== A6.1/2
+Q: Which visibility lets a field be read anywhere in the same crate but not by users of the library?
++ `pub(crate)`
+- `pub`
+- `pub(super)`
+- No modifier
+WHY: `pub(crate)` stops at the crate boundary. `pub(super)` reaches only the parent module, and no modifier means the current module and its children.
+
+=== A6.1/3
+Q: `wipe` is declared `pub(super)` inside `app::db`. Who can call it?
++ Code in `app`, the parent of `db` (and `db` itself).
+- Any code in the crate.
+- Only code in `main`.
+- Any crate that depends on this one.
+WHY: `pub(super)` makes an item visible to the parent module. The crate root is further up, so `main` can't call it.
+
+=== A6.2/2
+Q: What does the requirement `chrono = "0.4"` accept?
++ Any version from 0.4.0 up to, but not including, 0.5.0.
+- Exactly 0.4.0.
+- Any version from 0.4.0 to 1.0.0.
+- Any 0.x version.
+WHY: For 0.x crates the minor number is the breaking one, so the compatible range stops below 0.5.0. For 1.x crates it stops below 2.0.0.
+
+=== A6.2/3
+Q: Why must Cargo features be additive?
++ Cargo unifies features across the whole dependency graph, so any crate may end up with a feature enabled by someone else.
+- Features can't be turned off.
+- Additive features compile faster.
+- crates.io rejects non-additive features.
+WHY: If enabling a feature broke code that worked without it, two dependencies asking for different combinations would conflict. Features should only add.
+
+=== A6.3/2
+Q: In a doc example, what does a line starting with `# ` do?
++ It runs as part of the doc test but is hidden from the rendered documentation.
+- It's a comment that is ignored entirely.
+- It marks the line as expected to fail.
+- It prints the line as a heading.
+WHY: Hidden lines let examples use `?` and setup code while readers see only the interesting part.
+
+=== A6.3/3
+Q: What does `#![warn(missing_docs)]` at the crate root do?
++ Produces a warning for every public item without a doc comment.
+- Generates placeholder docs automatically.
+- Fails the build if any comment is misspelled.
+- Hides undocumented items from docs.rs.
+WHY: It keeps documentation coverage complete over time: a new public function without docs is flagged immediately.
+
+=== A7.1/2 pick
+Q: The prime table is a `LazyLock`, built on first access. Which line is printed right after `main woke up, ready = true`?
++ `  (building the prime table once)`
+- `first access: 17 primes below 60`
+- `second access: largest is 59`
+WHY: The closure inside `LazyLock::new` runs during the first access, so its message appears before the "first access" line is finished printing, and never again.
+
+=== A7.1/3
+Q: Why does the bounded queue use `wait_while` rather than a plain `wait`?
++ It re-checks the condition after every wakeup, which handles spurious wakeups correctly.
+- `wait` doesn't release the lock.
+- `wait_while` is faster.
+- `wait` only works with RwLock.
+WHY: A thread can wake up without the condition being true. `wait_while` loops until the condition no longer holds.
+
+=== A7.2/2 predict
+Q: Eight threads each call `hits.fetch_add(1, Relaxed)` 10,000 times. What is printed?
++ `hits: 80000 (expected 80000)`
+- `hits: 79998 (expected 80000)`
+- `hits: 10000 (expected 80000)`
+WHY: Atomic operations never lose updates, even with Relaxed ordering. Relaxed only means no ordering guarantees for other memory, which a counter doesn't need.
+
+=== A7.2/3
+Q: Which orderings should a "data ready" flag use?
++ `store(true, Release)` on the writer and `load(Acquire)` on the reader.
+- `Relaxed` on both sides.
+- `Acquire` on the store and `Release` on the load.
+- `SeqCst` on the store only.
+WHY: A Release store paired with an Acquire load guarantees that everything written before the store is visible after the load sees the new value.
+
+=== A7.3/2
+Q: What do you change to make `(1..limit).map(f).max()` run on all cores with rayon?
++ Use `(1..limit).into_par_iter().map(f).max()` after `use rayon::prelude::*;`.
+- Wrap the chain in `thread::spawn`.
+- Add `#[parallel]` above the function.
+- Replace `map` with `par_map` only.
+WHY: Rayon's parallel iterators mirror the standard adaptors, so converting the source is usually the only change.
+
+=== A7.3/3
+Q: How should you sum numbers in a rayon chain?
++ With a reduction: `(1..1000u64).into_par_iter().sum::<u64>()`.
+- By adding to an outer `let mut total` in `for_each`.
+- By wrapping `total` in `Rc<RefCell<_>>`.
+- By collecting into a Vec and summing on each thread.
+WHY: Parallel closures run on several threads and must be `Fn`, so mutating an outer variable is rejected. Reductions combine partial results safely.
+
+=== A8.1/2 predict
+Q: Fetch delays are proportional to the URL's length, and "bad.example" fails. In what order do the successes appear?
++ `finished, in completion order: ["a.io (400 B)", "b.io (400 B)", "longer-site.example (1900 B)"]`
+- `finished, in completion order: ["longer-site.example (1900 B)", "b.io (400 B)", "a.io (400 B)"]`
+- `finished, in completion order: ["a.io (400 B)", "longer-site.example (1900 B)", "b.io (400 B)"]`
+WHY: `join_next` yields results as tasks finish, so the short URLs come first. The failing fetch is printed as an error without disturbing the others.
+
+=== A8.1/3
+Q: What does `std::thread::sleep` inside async code do on a single-threaded runtime?
++ It blocks the only worker thread, so no other task can run until it returns.
+- It pauses only the current task.
+- It is automatically converted to `tokio::time::sleep`.
+- It panics.
+WHY: The runtime switches tasks only at `.await` points. A blocking call holds the thread; use `tokio::time::sleep` or `spawn_blocking` instead.
+
+=== A8.2/2
+Q: What should an accept loop do with each new connection?
++ Spawn a task per connection, so one slow client doesn't block the others.
+- Handle it fully before accepting the next one.
+- Start a new OS thread for every byte read.
+- Close it immediately and reopen it in a task.
+WHY: Tasks are cheap, so thousands of mostly idle connections can be served concurrently.
+
+=== A8.2/3 predict
+Q: A client writes "hello", "world" and "again" in three separate writes, then closes. What does the server receive?
++ `server received one undelimited stream: "helloworldagain"`
+- `server received one undelimited stream: "hello"`
+- `server received one undelimited stream: "hello world again"`
+WHY: TCP is a byte stream with no message boundaries, which is why protocols frame their messages with newlines or length prefixes.
+
+=== A8.3/2 predict
+Q: Six tasks call an API through a `Semaphore::new(2)`. What does the first line report?
++ `6 calls, never more than 2 at once`
+- `6 calls, never more than 6 at once`
+- `6 calls, never more than 1 at once`
+WHY: Each task waits for one of the two permits, so at most two run the limited section at the same time.
+
+=== A8.3/3
+Q: What's the fix for holding a `std::sync::MutexGuard` across `.await` in a spawned task?
++ Copy the value out and drop the guard before awaiting, or use `tokio::sync::Mutex`.
+- Add `move` to the async block.
+- Await the guard itself.
+- Use `Rc` instead of `Arc`.
+WHY: The std guard isn't `Send`, so keeping it alive across an await makes the future non-Send. A short critical section avoids the problem.
+
+=== A9.1/2 predict
+Q: `max_of!` recurses on its tail. What does `max_of!(3, 17, 8, 12)` print?
++ `max: 17`
+- `max: 12`
+- `max: 3`
+- `max: 40`
+WHY: The macro compares the first value with the maximum of the rest, recursively, until one value remains.
+
+=== A9.1/3
+Q: How can a macro give a friendlier message for a common misuse?
++ Add a final rule that matches the wrong form and calls `compile_error!("...")`.
+- Use `panic!` in the expansion.
+- Mark the macro `#[deny(misuse)]`.
+- Write the message in a doc comment.
+WHY: `compile_error!` produces a compile-time error with your text, instead of the generic "no rules expected the token".
+
+=== A9.2/2
+Q: In a derive macro, what should happen when the input is an enum but only structs are supported?
++ Return `syn::Error::new_spanned(...)` converted with `to_compile_error()`, so the compiler points at the user's code.
+- `panic!` with a message.
+- Return an empty token stream.
+- Print a warning with `println!`.
+WHY: Panics give users "proc macro panicked" with no location. A syntax error with a span underlines exactly what's wrong.
+
+=== A9.2/3
+Q: Why does serde ship a separate `serde_derive` crate?
++ Procedural macros must live in their own crate with `proc-macro = true`.
+- To make serde download faster.
+- Because derive macros are licensed differently.
+- So users can choose a different derive syntax.
+WHY: A proc-macro crate is compiled for the compiler to run, so it can't also be a normal library. The trait stays in the main crate.
+
+=== A9.3/2 pick
+Q: The routing table has `GET "/"`, `GET "/books/:id"`, `POST "/books"` and `GET "/books/:id/reviews/:n"`. What does `DELETE /books/1` return?
++ `DELETE /books/1               -> NotFound`
+- `GET    /books/42              -> Ok("book 42")`
+- `POST   /books                 -> Ok("created")`
+WHY: No route matches the DELETE method, so the closure falls through to `Response::NotFound`.
+
+=== A9.3/3
+Q: What is the main advantage of a builder API over a macro DSL?
++ It's plain Rust, so errors are clearer and editors can complete it.
+- It runs faster.
+- It can generate new syntax.
+- It needs no types.
+WHY: Builders are ordinary methods, so the compiler and IDE understand them fully. That's why axum and most libraries choose them.
+
+=== A10.1/2
+Q: How does the `FakeMailer` record calls when `send` takes `&self`?
++ It keeps the messages in a `RefCell<Vec<_>>` and borrows it mutably inside `send`.
+- It changes the trait to `&mut self` in tests only.
+- It writes them to a file.
+- It uses a `static mut` vector.
+WHY: Interior mutability lets a fake keep the real trait's signature while recording everything it was asked to do.
+
+=== A10.1/3 predict
+Q: `play` sums the rolls and checks for two sixes in a row. What does `play(&mut Scripted(vec![2, 6, 6, 1]), 4)` return?
++ `scripted double six: (15, true)`
+- `scripted double six: (15, false)`
+- `scripted double six: (14, true)`
+WHY: The scripted fake returns exactly 2, 6, 6, 1: the sum is 15 and there are two sixes in a row. Injected fakes make rare cases trivial to test.
+
+=== A10.2/2
+Q: Which property best tests an encoder and decoder pair?
++ Round trip: `decode(encode(s)) == s` for all inputs.
+- The encoded output is shorter than the input.
+- Encoding never panics on ASCII.
+- The encoder returns the same result twice.
+WHY: A round-trip property checks both functions together over hundreds of generated inputs, including empty strings and Unicode.
+
+=== A10.2/3
+Q: What does proptest do after finding a failing input?
++ It shrinks the input to a minimal case that still fails, and reports that.
+- It stops and prints the first random input.
+- It retries with a different seed until the test passes.
+- It deletes the failing case.
+WHY: Shrinking turns a big random failure into the smallest example, often an empty string or two numbers, which makes the bug obvious.
+
+=== A10.3/2
+Q: Where should `tracing_subscriber::fmt().init()` be called?
++ In the application's `main`, never in a library.
+- In every function that logs.
+- In each library's `lib.rs`.
+- Inside `#[instrument]` functions.
+WHY: Libraries only emit events. The application chooses how to format and filter them, once, at start-up.
+
+=== A10.3/3
+Q: What does `black_box` do in a criterion benchmark?
++ It stops the compiler from optimising the benchmarked work away.
+- It hides the benchmark from the report.
+- It runs the code in a sandbox.
+- It makes timings more accurate by disabling the CPU cache.
+WHY: If the compiler can see a result is unused, it may delete the computation entirely. `black_box` makes the input and output opaque.
+
+=== A11.1/2
+Q: The TOML file omits `port`, and the field has `#[serde(default = "default_port")]`. What happens?
++ `default_port()` fills it in, so the config parses with port 8080.
+- Parsing fails with "missing field port".
+- The port becomes 0.
+- The port becomes `None`.
+WHY: `default` attributes supply values for missing fields. Without one, a required field missing from the input is an error.
+
+=== A11.1/3 pick
+Q: The JSON `{"name": "tea", "price_cents": 450, "colour": "green"}` is parsed into an `Item` with `deny_unknown_fields`. What is printed?
++ error: unknown field `colour`, expected one of `name`, `price_cents`, `tags` at line 1 column 44
+- `ok:    Item { name: "tea", price_cents: 450, tags: None }`
+- `error: EOF while parsing a value at line 1 column 35`
+WHY: `deny_unknown_fields` turns an unexpected key into an error with its position, instead of silently ignoring a possible typo.
+
+=== A11.2/2 pick
+Q: A user types `todo lsit`. What does clap print after the error line?
++ `  tip: a similar subcommand exists: 'list'`
+- `error: unrecognized subcommand 'lsit'`
+- `todo 0.3.0`
+WHY: clap suggests close matches for typos. The first line names the problem; the tip line offers the likely intended subcommand.
+
+=== A11.2/3
+Q: Where does clap's help text for each option come from?
++ The doc comments on the struct's fields.
+- A separate `help.txt` file.
+- The field names only.
+- Comments starting with `//`.
+WHY: `///` comments become help lines, so documentation and parsing come from one struct and can't drift apart.
+
+=== A11.3/2 pick
+Q: The client requests `/authors`, which the server doesn't have. What does the first line about it say?
++ `404 is still Ok(response): status 404 Not Found`
+- `404 is still Ok(response): status 200 OK`
+- `after error_for_status: error with status Some(404)`
+WHY: reqwest treats any HTTP status as a successful request. Only `error_for_status()` turns 4xx and 5xx into errors.
+
+=== A11.3/3
+Q: Which failure is worth retrying?
++ A 503 Service Unavailable response.
+- A 404 Not Found response.
+- A 400 Bad Request response.
+- A 401 Unauthorized response.
+WHY: 503 (like 429, timeouts and refused connections) is often temporary. Client errors such as 404 will fail the same way on every retry.
+
+=== A12.1/2 hide
+Q: A request body `{"txt":"typo"}` is sent to `POST /notes`, whose handler expects `{"text": ...}`. What comes back?
++ A 422 response from the `Json` extractor saying the field `text` is missing; the handler never runs.
+- A 201 response with an empty note.
+- A 500 response because the handler panicked.
+- A 422 response from the handler saying "text must not be empty".
+WHY: Extractors validate the request before the handler is called, so a body of the wrong shape is rejected automatically. The handler's own empty-text check only sees well-formed bodies.
+
+=== A12.1/3
+Q: Why do internal errors return a generic "something went wrong" message?
++ To avoid leaking details like database errors to clients, while logging them in full on the server.
+- Because 500 responses can't have a body.
+- Because axum truncates messages.
+- To make responses faster.
+WHY: Clients get a consistent JSON error; operators get the details in the logs. Leaking internals helps attackers and confuses users.
+
+=== A12.2/2 predict
+Q: Three bugs are inserted with severities 1, 4 and 2. The query selects `severity <= 2 ORDER BY severity`. Which bug is printed second?
++ `Bug { id: 3, title: "Slow search", severity: 2, assignee: Some("bo") }`
+- `Bug { id: 2, title: "Typo in menu", severity: 4, assignee: None }`
+- `Bug { id: 1, title: "Slow search", severity: 2, assignee: Some("bo") }`
+WHY: Only severities 1 and 2 pass the filter, sorted ascending, so "Slow search" (id 3) comes after "Crash on save".
+
+=== A12.2/3
+Q: Why did the query built with `format!` match every user?
++ The input's `' OR '1'='1` became part of the SQL and changed the query's logic.
+- `format!` lowercases the input.
+- SQLite ignores the WHERE clause in formatted queries.
+- The parameterised query had a bug.
+WHY: That's SQL injection. Parameters send the input as a value only, so it can never change the query's structure.
+
+=== A12.3/2
+Q: Why does `c_len` create a `CString` before calling `strlen`?
++ C needs a NUL-terminated string, and `CString` guarantees one (rejecting text with an inner NUL).
+- `strlen` only accepts heap memory.
+- Rust strings can't be passed by pointer.
+- To convert the text to ASCII.
+WHY: Rust `&str` isn't NUL-terminated. `CString::new` adds the terminator and fails if the text already contains a NUL byte, which C would treat as the end.
+
+=== A12.3/3
+Q: What is required to call a function declared in an `unsafe extern "C"` block?
++ An `unsafe { }` block at the call site, ideally with a SAFETY comment.
+- Nothing: foreign functions are safe by default.
+- Building with `--release`.
+- Marking `main` as `extern "C"`.
+WHY: The compiler can't check what C code does with the arguments, so the caller must promise it's correct. Wrapping the call in a safe function contains that promise.
+
+=== A12.4/2
+Q: Why keep the markdown statistics in a plain Rust function rather than behind `#[wasm_bindgen]`?
++ It can be tested natively with `cargo test`, and the wasm layer stays thin.
+- wasm-bindgen functions can't contain loops.
+- Plain functions run faster in the browser.
+- WebAssembly can't use structs.
+WHY: The browser-specific code is just a wrapper. All the logic gets fast, ordinary tests.
+
+=== A12.4/3
+Q: Which Cargo setting is needed for a crate built with wasm-pack?
++ `crate-type = ["cdylib", "rlib"]` under `[lib]`
+- `edition = "wasm"`
+- `target = "browser"` under `[package]`
+- `panic = "unwind"`
+WHY: `cdylib` produces the `.wasm` module; `rlib` keeps the crate usable by native tests and other Rust crates.

@@ -1,0 +1,363 @@
+=== 8.1/2 predict
+Q: The scores 72, 95, 88, 61 and 100 are stored in a Vec. What does the second line print?
++ `third: 88, get(10): None, last: Some(100)`
+- `third: 61, get(10): None, last: Some(100)`
+- `third: 88, get(10): Some(0), last: Some(100)`
+- `third: 88, get(10): None, last: 100`
+WHY: Indexes start at 0, so `scores[2]` is the third value, 88. `get` and `last` return Options: `None` for a missing index, `Some(100)` for the last element.
+
+=== 8.1/3
+Q: When is direct indexing `v[i]` a better choice than `v.get(i)`?
++ When an out-of-range index would mean a bug, so stopping with a panic is the right reaction.
+- When the index comes from user input.
+- When you want the program to keep running after a bad index.
+- Always: `get` is slower and should be avoided.
+WHY: `get` is for situations where a missing element is normal and must be handled. Indexing states "this index is always valid", and a panic exposes the bug if it isn't.
+
+=== 8.2/2
+Q: Why does Rust refuse `s[0]` on a String but allow `s.chars().nth(0)`?
++ Characters can take several bytes in UTF-8, so a plain number has no single meaning; `chars()` walks real characters.
+- Strings are stored backwards in memory.
+- Indexing would copy the whole string.
+- `chars()` only works on ASCII text.
+WHY: "café" is 5 bytes but 4 characters. Rust makes you say whether you want bytes (`as_bytes()`), characters (`chars()`) or a byte range slice.
+
+=== 8.2/3
+Q: How do you get the first character of a String as a `char`?
++ `greeting.chars().next()`
+- `greeting[0]`
+- `greeting.first()`
+- `greeting.get(0)`
+WHY: `chars()` iterates over characters and `next()` returns the first one as an `Option<char>` (None for an empty string). Strings can't be indexed by an integer.
+
+=== 8.3/2 predict
+Q: Cake is not in the map yet, so `stock.entry("cake").and_modify(|n| *n += 1).or_insert(5)` runs on a missing key. Which line shows the final stock, printed sorted?
++ `stock: [("cake", 5), ("tea", 10)]`
+- `stock: [("tea", 10)]`
+- `stock: [("cake", 0), ("tea", 10)]`
+- `stock: [("tea", 10), ("cake", 5)]`
+WHY: `and_modify` only runs for an existing key, so `or_insert` adds cake with 5. The output is sorted before printing, which is why cake comes first: HashMap iteration order is arbitrary.
+
+=== 8.3/3
+Q: After `map.insert(country, capital)` with two Strings, how can you still print `country`?
++ Insert a clone (`country.clone()`), or read the key back from the map.
+- Insert `&mut country` instead.
+- Call `map.release(country)`.
+- Nothing: insert copies Strings automatically.
+WHY: A HashMap owns what you insert, so the Strings are moved in. Cloning keeps your own copy, at the cost of a second allocation.
+
+=== 9.1/2 pick
+Q: `average(&[])` panics while a `TempFile` value is alive in `main`. Which line is printed last?
++ `cleanup: removing /tmp/report.part`
+- `average of [3, 4, 8] = 5`
+- `average() called with no values; the caller must check first`
+WHY: A panic unwinds the stack and runs destructors on the way out, so the `TempFile`'s `Drop` runs after the panic message is printed. Code after the panicking call never runs.
+
+=== 9.1/3
+Q: Why is `expect("config value must be a number")` better than a bare `unwrap()`?
++ Its message appears in the panic, explaining what was expected and where to look.
+- `expect` never panics.
+- `expect` returns a default value instead of panicking.
+- `unwrap` is not allowed on Results.
+WHY: Both panic on `Err` or `None`, but `expect` puts your explanation in front of the underlying error, which makes the failure much easier to diagnose.
+
+=== 9.2/2 predict
+Q: In the `?` version, `missing.txt` does not exist. What does that line print?
++ `?:     missing.txt -> error: No such file or directory (os error 2)`
+- `?:     missing.txt -> 0`
+- `?:     missing.txt -> error: invalid digit found in string`
+- `?:     missing.txt -> 100`
+WHY: The `?` version returns the first error it meets, converted to `Box<dyn Error>`; for a missing file that is the I/O error. Only the `match` version substitutes a default.
+
+=== 9.2/3
+Q: What makes `?` usable inside `main`?
++ Declaring `fn main() -> Result<(), Box<dyn std::error::Error>>` and ending with `Ok(())`.
+- Adding `#[allow(question_mark)]`.
+- Wrapping the whole body in `unsafe`.
+- Nothing: `?` works in every function.
+WHY: `?` returns the error to the caller, so the function must return a `Result` (or `Option`) for the error to go somewhere. `main` is allowed to return a `Result`.
+
+=== 9.3/2 predict
+Q: `Percent::new` accepts 0 to 100. What does the line for the input `250` print?
++ `  250 -> rejected: TooLarge(250)`
+- `  250 -> Percent(250); tip on 84.50 = 211.25`
+- `  250 -> Percent(100); tip on 84.50 = 84.50`
+- `  250 -> rejected: NotANumber("250")`
+WHY: The value parses as a number but fails the range check in `new`, which returns a descriptive error instead of building an invalid `Percent`.
+
+=== 9.3/3
+Q: Why can't code outside the module write `Percent(250)`?
++ The tuple field is private, so the only way to build a Percent is `Percent::new`, which validates.
+- 250 doesn't fit in a `u8`.
+- Tuple structs can never be built with literals.
+- `Percent` must be built with `Default`.
+WHY: A private field makes the constructor private too. Validation in `new` then guarantees that every `Percent` in the program holds a valid value.
+
+=== 10.1/2
+Q: Why can't you call `distance_from_origin()` on a `Point<i32>`?
++ The method is defined only in `impl Point<f64>`, so it exists only for float points.
+- Integers can't be squared.
+- `Point<i32>` is not a valid type.
+- The method is private.
+WHY: An `impl` block for a concrete type (`Point<f64>`) adds methods only to that type, while `impl<T> Point<T>` adds them to all points.
+
+=== 10.1/3
+Q: What does the bound `T: PartialOrd` let `largest` do?
++ Compare two `T` values with `>` and `<`.
+- Print `T` values with `{}`.
+- Copy `T` values freely.
+- Add two `T` values together.
+WHY: A generic function may only use what its bounds promise. `PartialOrd` provides comparison; printing would need `Display`, copying `Copy`, adding `Add`.
+
+=== 10.2/2 pick
+Q: `Post` does not override `summarize`; the default returns "(Read more from " plus `self.author()` plus "...)". What does `notify` print for the post, as part of the second line?
++ `Breaking! (Read more from @ferris...)`
+- `Breaking! @ferris: traits are great`
+- `Breaking! Rust 2026 edition announced, by Ada`
+- `Breaking! (Read more...)`
+WHY: The default method calls `author`, which Post does implement, so the default text includes "@ferris". Article overrides `summarize`, which is why its line differs.
+
+=== 10.2/3
+Q: You want to implement `Display` for `Vec<i32>`. What is the standard workaround?
++ Wrap it in your own type, such as `struct Numbers(Vec<i32>);`, and implement `Display` for that.
+- Add `#[allow(orphan)]` above the impl.
+- Implement `Display` inside `main`.
+- Copy the standard library's source into your crate.
+WHY: The orphan rule forbids implementing a foreign trait for a foreign type. A newtype is local to your crate, so you may implement any trait for it.
+
+=== 10.3/2
+Q: What does `fn longest<'a>(x: &'a str, y: &'a str) -> &'a str` promise?
++ The returned reference is valid only while both inputs are still alive.
+- Both strings must have the same length.
+- The function copies the longer string.
+- The result lives for the whole program.
+WHY: Lifetime annotations relate references to each other. The compiler then checks at each call that the result isn't used after either input has been dropped.
+
+=== 10.3/3
+Q: In this run `longest` would actually return `outer`, yet the code doesn't compile. Why?
++ The compiler checks the signature's promise, and the signature says the result may come from `inner`.
+- `inner` is longer than `outer`.
+- The compiler runs the program and sees an error.
+- Strings in blocks always have the `'static` lifetime.
+WHY: Borrow checking works on signatures, not on one particular execution. Since the result could borrow from `inner`, using it after `inner` is dropped is rejected.
+
+=== 10.4/2 predict
+Q: `best_match(&[-7, 3, 1, -2], |n| n.abs())` returns the item with the smallest score. What is printed?
++ `Some(1)`
+- `Some(-7)`
+- `Some(-2)`
+- `Some(3)`
+WHY: The closure scores each number by its absolute value, so 1 (score 1) is closest to zero. The result is an Option because the slice could be empty.
+
+=== 10.4/3
+Q: An impl block declares `impl<'a, T> Labelled<'a, T>` and a method uses `{}` on a `T`. What fixes the error?
++ Add a bound: `impl<'a, T: std::fmt::Display> Labelled<'a, T>`.
+- Add a second lifetime parameter.
+- Call the method only with integers.
+- Change `{}` to `{:?}` without any bound.
+WHY: Each part of a signature is checked on its own. Formatting with `{}` requires `Display`, and the impl must promise it for every `T`. (`{:?}` would need `Debug`.)
+
+=== 11.1/2
+Q: What makes a test marked `#[should_panic(expected = "...")]` pass?
++ The test panics, and the panic message contains the expected text.
+- The test finishes without panicking.
+- Any panic at all, whatever the message.
+- The test returns `Err`.
+WHY: `should_panic` inverts the usual rule, and `expected` makes it precise: a panic for a different reason still fails the test.
+
+=== 11.1/3
+Q: Why does `assert_eq!(a, b)` with a `Money` struct need `#[derive(Debug)]`?
++ When the values differ, `assert_eq!` prints both, which requires `Debug`.
+- `Debug` makes comparisons faster.
+- Tests only compile in debug builds.
+- `assert_eq!` converts values to strings to compare them.
+WHY: Comparison uses `PartialEq`, and the failure message uses `Debug`. The compiler checks both even when the test would pass.
+
+=== 11.2/2
+Q: How do you run only the tests marked `#[ignore]`?
++ `cargo test -- --ignored`
+- `cargo test --ignored`
+- `cargo test --all`
+- `cargo test -- --show-output`
+WHY: Options after `--` go to the test binary, and `--ignored` selects only ignored tests. `--include-ignored` runs everything.
+
+=== 11.2/3
+Q: In `cargo test add -- --show-output`, what is `add`?
++ A filter: only tests whose names contain "add" run.
+- The name of the crate to test.
+- A feature to enable.
+- The name of a test file in `tests/`.
+WHY: A plain word before `--` filters tests by name. The output reports how many tests were filtered out.
+
+=== 11.3/2
+Q: Why can a unit test call the private function `tax`?
++ The test module is a child of `pricing`, and child modules can see their parent's private items.
+- Tests ignore privacy rules.
+- `#[cfg(test)]` makes everything public.
+- `tax` is public inside the crate by default.
+WHY: Privacy in Rust is about module boundaries, and `mod tests` sits inside `pricing`. Integration tests in `tests/` are separate crates and only see public items.
+
+=== 11.3/3
+Q: Why does shared test setup go in `tests/common/mod.rs` rather than `tests/common.rs`?
++ Every `.rs` file directly in `tests/` is compiled as its own test crate; a subfolder is not.
+- Cargo can't read files named `common.rs`.
+- `mod.rs` files run before all tests.
+- It makes the helpers public.
+WHY: Placing helpers in a subfolder stops Cargo from treating them as a test file (which would show up as "running 0 tests"), while test files can still use them with `mod common;`.
+
+=== 12.1/2
+Q: In the real program, how are the arguments collected?
++ `let args: Vec<String> = env::args().collect();`
+- `let args = std::args();`
+- `let args = env::var("ARGS");`
+- `let args = io::stdin().read_line();`
+WHY: `env::args()` returns an iterator over the arguments, starting with the program name, and `collect` gathers them into a Vec.
+
+=== 12.1/3
+Q: What is wrong with indexing `args[2]` to get the file path?
++ With too few arguments it panics with an index error that tells the user nothing about how to run the program.
+- It returns the wrong argument.
+- Indexing a Vec copies all its elements.
+- It only works on Windows.
+WHY: A missing argument is a normal user mistake, so it deserves a clear message. The next step replaces indexing with a `Config::build` that returns an error.
+
+=== 12.2/2 pick
+Q: `run` fails because `missing.txt` doesn't exist. What exit code does the program report?
++ `exit code 1`
+- `exit code 0`
+- `exit code 2`
+WHY: `run` returns the I/O error with `?`, and `main` prints "Application error: ..." and exits with code 1, the conventional "something went wrong" code.
+
+=== 12.2/3
+Q: Why does `unwrap_or_else(|err| { eprintln!(...); process::exit(1) })` type-check?
++ `process::exit` never returns (its type is `!`), so the closure fits wherever a Config is expected.
+- `process::exit` returns a default Config.
+- The closure is never compiled.
+- `unwrap_or_else` accepts any type.
+WHY: The never type `!` can stand in for any type, because code after it can't run. So `config` is a plain `Config` once the line finishes.
+
+=== 12.3/2
+Q: Searching for "duct" in "safe, fast, productive." and "Duct tape.", which lines match?
++ Only "safe, fast, productive."
+- Both lines.
+- Only "Duct tape."
+- Neither line.
+WHY: `contains` is case-sensitive, so "duct" matches inside "productive" but not "Duct". The case-insensitive version comes in the next lesson.
+
+=== 12.3/3
+Q: In `search<'a>(query: &str, contents: &'a str) -> Vec<&'a str>`, what does the lifetime say?
++ The returned slices borrow from `contents`, not from `query`.
+- The function may only be called once.
+- `query` and `contents` must be the same string.
+- The results are copied into new Strings.
+WHY: With two reference inputs the compiler can't guess which one the output borrows from. The annotation states it, and the compiler then checks callers keep `contents` alive.
+
+=== 12.4/2
+Q: Why does the Config constructor take the IGNORE_CASE value as a parameter instead of reading the environment itself?
++ Tests can pass the value directly without changing the real environment, which matters because tests run in parallel.
+- Environment variables can only be read in `main`.
+- It makes the program faster.
+- `env::var` doesn't work in libraries.
+WHY: Passing the value in makes the constructor a pure function of its inputs, so each test controls exactly what it gets.
+
+=== 12.4/3
+Q: You run `minigrep to poem.txt > results.txt`. Where do the error messages printed with `eprintln!` go?
++ To the terminal, because only standard output is redirected.
+- Into `results.txt` along with the results.
+- Nowhere: they are discarded.
+- Into a file called `errors.txt`.
+WHY: `>` redirects standard output only. Error messages on standard error stay visible, while the results go to the file.
+
+=== 13.1/2 predict
+Q: `make_adder(10)` returns a closure that adds its captured `amount`. What does the fourth line print?
++ `make_adder(10)(32) = 42`
+- `make_adder(10)(32) = 32`
+- `make_adder(10)(32) = 10`
+- `make_adder(10)(32) = 320`
+WHY: The returned closure carries its own copy of `amount` (10), captured with `move`, and adds it to the argument 32.
+
+=== 13.1/3
+Q: Why can the `send` closure only be called once?
++ It moves `report` out of itself when it runs, so it implements only `FnOnce`.
+- Closures can only ever be called once.
+- It was declared with `let` instead of `let mut`.
+- It captures a reference that expires.
+WHY: After the first call the captured String is gone. Borrowing it inside the closure instead of moving it would make the closure callable many times.
+
+=== 13.2/2 predict
+Q: Four orders exist. `map` is created, then `take(2)` is collected. How many times did the closure run?
++ `took [3, 1], closure calls now: 2`
+- `took [3, 1], closure calls now: 4`
+- `took [3, 1], closure calls now: 0`
+WHY: Iterators are lazy: creating `map` ran nothing, and `take(2)` pulled exactly two items through it, so the closure ran twice.
+
+=== 13.2/3
+Q: Which single method do you have to write to get `filter`, `take`, `sum` and the other adaptors for your own iterator?
++ `next`
+- `iter`
+- `collect`
+- `map`
+WHY: The `Iterator` trait requires only `next`; every adaptor is a provided method built on it.
+
+=== 13.3/2 pick
+Q: `Config::build` receives only the program name and "to". What does it return?
++ `Err("didn't get a file path")`
+- `Err("didn't get a query string")`
+- `Ok(Config { query: "to", file_path: "", ignore_case: false })`
+WHY: The first `next()` skips the program name, the second yields the query, and the third returns `None`, which `ok_or` turns into the file-path error.
+
+=== 13.3/3
+Q: In optimised builds, how does an iterator chain usually compare with the equivalent hand-written loop?
++ About the same: the compiler typically produces near-identical machine code.
+- The chain is always several times slower.
+- The chain is always faster because it runs in parallel.
+- The loop can't be optimised.
+WHY: Iterators are a zero-cost abstraction: the adaptors inline away. Choose the version that reads best.
+
+=== 14.1/2
+Q: What does `panic = "abort"` in the release profile change?
++ A panic ends the process immediately, without unwinding, so destructors don't run.
+- Panics are turned into errors.
+- The program can no longer panic.
+- Panics are logged to a file.
+WHY: Abort skips unwinding, which gives a slightly smaller, faster binary. That's fine for many tools, but cleanup code in `Drop` won't run on a panic.
+
+=== 14.1/3
+Q: In a library crate, what happens to the code block in a `/// # Examples` section when you run `cargo test`?
++ It is compiled and run as a doc test.
+- It is shown in docs but never compiled.
+- It is only checked for spelling.
+- It runs only with `cargo doc --test`.
+WHY: Doc tests keep documentation honest: if the example stops compiling or its assertions fail, the test suite fails.
+
+=== 14.2/2
+Q: The types live in `kinds` and the function in `utils`. What do the `pub use` lines at the crate root give users?
++ Short, flat import paths, and freedom to reorganise the internals later.
+- Faster compilation.
+- Private copies of the types.
+- A second, incompatible version of each type.
+WHY: Re-exports decouple the public API from the internal module layout, so users write `art::mix` and internal moves don't break them.
+
+=== 14.2/3
+Q: Which two Cargo.toml fields does crates.io require before you can publish?
++ `description` and `license`
+- `authors` and `readme`
+- `keywords` and `categories`
+- `repository` and `homepage`
+WHY: Publishing fails without a description and a license (or license-file). The other fields are optional but help people find and trust the crate.
+
+=== 14.3/2
+Q: How many `Cargo.lock` files does a workspace with two members have?
++ One, at the workspace root
+- One per member
+- None: workspaces don't use lock files
+- One per dependency
+WHY: A workspace shares a single lock file and a single `target/` folder, so all members agree on dependency versions and reuse each other's build output.
+
+=== 14.3/3
+Q: How does a binary member of a workspace depend on a library member?
++ With a path dependency, such as `add_one = { path = "../add_one" }`.
+- By copying the library's source into its folder.
+- Automatically: every member sees every other member.
+- By publishing the library to crates.io first.
+WHY: Members don't depend on each other implicitly; a path dependency in Cargo.toml declares the relationship, and Cargo builds them together.
