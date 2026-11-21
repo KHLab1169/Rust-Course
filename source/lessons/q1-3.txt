@@ -1,0 +1,1045 @@
+=== Q1.1
+@idea
+A load tester answers one question: **how does a service behave under a given amount of concurrent traffic?** Before writing code, decide what to measure. **Throughput** is completed requests per second. **Latency** is how long each request took, and it must be reported as **percentiles** (p50, p95, p99), not an average: the average hides the slow tail, and the tail is what users feel and what service-level objectives are written against. Also count **status codes** (a fast stream of 500s is not success) and **errors** (timeouts, refused connections), kept separate from HTTP responses.
+
+Then design the interface the way users will type it: `loadtest http://localhost:3000/health -n 1000 -c 50 --timeout 5s --json`. The number of requests, the concurrency, a timeout and an output format cover most needs; extras (custom headers, a request body, a duration-based mode) can wait for later versions.
+
+The key design decision is **separating the statistics and the scheduling from the network**. A `Target` trait with one method, "perform one request and report the outcome", lets the real app use reqwest while tests use a fake target that returns scripted outcomes instantly. The percentile code, the concurrency limiter and the report can then be tested exhaustively without a server, which is exactly how professional tools stay trustworthy.
+@how
+- Measure throughput, latency percentiles (p50/p95/p99), status counts and errors.
+- Model outcomes as an enum: a response with status and latency, or an error with a kind.
+- Validate the plan up front: positive counts, concurrency ≤ requests, sane timeout.
+- Hide the network behind a `Target` trait; fakes in tests, reqwest in the app.
+- Sketch the CLI and the report before writing the core.
+@example rust: Why averages lie about latency
+use std::time::Duration;
+
+fn percentile(sorted: &[Duration], p: f64) -> Duration {
+    let rank = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
+    sorted[rank.clamp(1, sorted.len()) - 1]
+}
+
+fn main() {
+    // 1,000 requests: most are fast, 3% hit a slow database query
+    let mut lat: Vec<Duration> = (0..1000)
+        .map(|i| if i % 33 == 0 { Duration::from_millis(1200 + (i % 7) * 10) } else { Duration::from_millis(18 + (i % 9)) })
+        .collect();
+    lat.sort();
+    let mean = lat.iter().sum::<Duration>() / lat.len() as u32;
+    println!("mean   {:>6} ms   <- looks healthy", mean.as_millis());
+    for p in [50.0, 95.0, 99.0, 99.9] {
+        println!("p{:<5} {:>6} ms", p, percentile(&lat, p).as_millis());
+    }
+    let slow = lat.iter().filter(|d| **d > Duration::from_millis(500)).count();
+    println!("{slow} users in 1000 waited over half a second");
+}
+@note
+The mean of 59 ms suggests a healthy service, but the p99 shows that one request in a hundred took over a second. Percentiles describe what real users experience at each level of "unluckiness", which is why the tool reports them and why SLOs are written as "p99 under 300 ms".
+@example rust: Validating the plan before any request is sent
+use std::time::Duration;
+
+#[derive(Debug)]
+pub struct Plan {
+    pub url: String,
+    pub requests: usize,
+    pub concurrency: usize,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PlanError {
+    NoRequests,
+    TooConcurrent { concurrency: usize, requests: usize },
+    BadUrl(String),
+    TimeoutTooShort,
+}
+
+impl Plan {
+    pub fn validate(self) -> Result<Plan, PlanError> {
+        if self.requests == 0 {
+            return Err(PlanError::NoRequests);
+        }
+        if self.concurrency == 0 || self.concurrency > self.requests {
+            return Err(PlanError::TooConcurrent { concurrency: self.concurrency, requests: self.requests });
+        }
+        if !(self.url.starts_with("http://") || self.url.starts_with("https://")) {
+            return Err(PlanError::BadUrl(self.url));
+        }
+        if self.timeout < Duration::from_millis(10) {
+            return Err(PlanError::TimeoutTooShort);
+        }
+        Ok(self)
+    }
+}
+
+fn main() {
+    let plans = [
+        Plan { url: "http://localhost:3000/health".into(), requests: 1000, concurrency: 50, timeout: Duration::from_secs(5) },
+        Plan { url: "http://localhost:3000".into(), requests: 10, concurrency: 50, timeout: Duration::from_secs(5) },
+        Plan { url: "localhost:3000".into(), requests: 10, concurrency: 2, timeout: Duration::from_secs(5) },
+        Plan { url: "https://example.test".into(), requests: 0, concurrency: 1, timeout: Duration::from_secs(1) },
+    ];
+    for p in plans {
+        match p.validate() {
+            Ok(plan) => println!("ok: {} x{} at concurrency {}", plan.url, plan.requests, plan.concurrency),
+            Err(e) => println!("rejected: {e:?}"),
+        }
+    }
+}
+@note
+`validate` consumes the plan and gives it back only if it makes sense, so the rest of the program can assume a valid plan. Each mistake has its own error variant, which the CLI can turn into a precise message ("concurrency 50 is higher than the 10 requests") instead of failing halfway through a run.
+@mistakes
+- **Reporting average latency.** Report percentiles; the tail matters most.
+- **Counting 500 responses as successes.** Track status codes separately from errors.
+- **Testing the core against a real server.** Put the network behind a trait and use fakes.
+@keys
+- Measure throughput, latency percentiles, statuses and errors.
+- Validate plans before sending anything.
+- A Target trait separates the core from the network.
+- Design the CLI and report first.
+
+=== Q1.2
+@idea
+The core of the load tester has two parts: a **runner** that performs N requests with at most C in flight, and the **statistics** that turn outcomes into a summary. Both are pure logic once the network is behind the `Target` trait.
+
+The runner is a natural fit for Tokio: spawn the requests as tasks and cap how many run at once with a **`Semaphore`** of C permits (or, equivalently, keep a `JoinSet` topped up to C tasks). Each task records its own latency with `Instant::now()` around the call. Collect outcomes as they finish, and measure the **wall-clock** time of the whole run to compute throughput. With a fake target that sleeps for a scripted latency, tests can check precise properties: all N requests ran, concurrency never exceeded C, and the total time is about N/C × latency.
+
+For statistics, sort the successful latencies once and read percentiles by **nearest rank**; count statuses in a `BTreeMap` so reports list them in order. Edge cases matter for a tool people trust: no successful responses (percentiles are `None`), one request, all errors. Each gets a test.
+@how
+- Share the target with `Arc`; spawn one task per request.
+- Limit in-flight requests with `Semaphore::new(concurrency)`.
+- Time each call with `Instant`; time the whole run for throughput.
+- Sort latencies once; nearest-rank percentiles; `BTreeMap` for status counts.
+- Test with a fake target: counts, peak concurrency, timing, edge cases.
+@example rust: A concurrency-limited runner, measured with a fake target
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+
+#[derive(Debug, Clone)]
+enum Outcome {
+    Response { status: u16, latency: Duration },
+    Error { kind: String, latency: Duration },
+}
+
+trait Target: Send + Sync + 'static {
+    fn hit(&self, n: usize) -> impl std::future::Future<Output = Result<u16, String>> + Send;
+}
+
+struct FakeTarget { in_flight: AtomicUsize, peak: AtomicUsize }
+
+impl Target for FakeTarget {
+    async fn hit(&self, n: usize) -> Result<u16, String> {
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        match n % 25 {
+            0 => Err("timeout".into()),
+            7 => Ok(503),
+            _ => Ok(200),
+        }
+    }
+}
+
+async fn run<T: Target>(target: Arc<T>, requests: usize, concurrency: usize) -> (Vec<Outcome>, Duration) {
+    let limit = Arc::new(Semaphore::new(concurrency));
+    let started = Instant::now();
+    let mut set = JoinSet::new();
+    for n in 0..requests {
+        let (target, limit) = (Arc::clone(&target), Arc::clone(&limit));
+        set.spawn(async move {
+            let _permit = limit.acquire_owned().await.unwrap();
+            let t0 = Instant::now();
+            match target.hit(n).await {
+                Ok(status) => Outcome::Response { status, latency: t0.elapsed() },
+                Err(kind) => Outcome::Error { kind, latency: t0.elapsed() },
+            }
+        });
+    }
+    let mut outcomes = Vec::with_capacity(requests);
+    while let Some(o) = set.join_next().await {
+        outcomes.push(o.expect("request task panicked"));
+    }
+    (outcomes, started.elapsed())
+}
+
+#[tokio::main]
+async fn main() {
+    let target = Arc::new(FakeTarget { in_flight: AtomicUsize::new(0), peak: AtomicUsize::new(0) });
+    let (outcomes, wall) = run(Arc::clone(&target), 200, 10).await;
+    let errors = outcomes.iter().filter(|o| matches!(o, Outcome::Error { .. })).count();
+    let s503 = outcomes.iter().filter(|o| matches!(o, Outcome::Response { status: 503, .. })).count();
+    println!("completed {} requests: {errors} errors, {s503} responses with status 503", outcomes.len());
+    println!("peak concurrency: {} (limit 10)", target.peak.load(Ordering::SeqCst));
+    let ideal = Duration::from_millis(200 / 10 * 20);
+    println!("wall time close to 200/10 x 20 ms = {} ms: {}", ideal.as_millis(), wall >= ideal && wall < ideal * 3);
+    println!("throughput above 150 req/s: {}", 200.0 / wall.as_secs_f64() > 150.0);
+}
+@deps tokio@1+full
+@note
+All 200 requests ran, never more than 10 at a time, and the run took about 20 rounds of 20 ms, as the arithmetic predicts. The fake target made these properties checkable in milliseconds, including the error and 503 paths. The real app swaps in a reqwest-based target with the same trait.
+@example rust test: Statistics tests for the edge cases
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+#[derive(Debug, Clone)]
+pub enum Outcome {
+    Response { status: u16, latency: Duration },
+    Error { kind: String, latency: Duration },
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Summary {
+    pub total: usize,
+    pub errors: usize,
+    pub p50: Option<Duration>,
+    pub p99: Option<Duration>,
+    pub statuses: BTreeMap<u16, usize>,
+}
+
+fn percentile(sorted: &[Duration], p: f64) -> Option<Duration> {
+    if sorted.is_empty() { return None; }
+    let rank = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
+    Some(sorted[rank.clamp(1, sorted.len()) - 1])
+}
+
+pub fn summarize(outcomes: &[Outcome]) -> Summary {
+    let mut lat = Vec::new();
+    let mut statuses = BTreeMap::new();
+    let mut errors = 0;
+    for o in outcomes {
+        match o {
+            Outcome::Response { status, latency } => { lat.push(*latency); *statuses.entry(*status).or_insert(0) += 1; }
+            Outcome::Error { .. } => errors += 1,
+        }
+    }
+    lat.sort();
+    Summary { total: outcomes.len(), errors, p50: percentile(&lat, 50.0), p99: percentile(&lat, 99.0), statuses }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn ok(ms: u64) -> Outcome { Outcome::Response { status: 200, latency: Duration::from_millis(ms) } }
+
+    #[test]
+    fn empty_run_has_no_percentiles() {
+        let s = summarize(&[]);
+        assert_eq!((s.total, s.p50, s.p99), (0, None, None));
+    }
+
+    #[test]
+    fn all_errors() {
+        let e = Outcome::Error { kind: "refused".into(), latency: Duration::ZERO };
+        let s = summarize(&[e.clone(), e]);
+        assert_eq!((s.errors, s.p50), (2, None));
+        assert!(s.statuses.is_empty());
+    }
+
+    #[test]
+    fn single_request_is_every_percentile() {
+        let s = summarize(&[ok(42)]);
+        assert_eq!((s.p50, s.p99), (Some(Duration::from_millis(42)), Some(Duration::from_millis(42))));
+    }
+
+    #[test]
+    fn nearest_rank_on_a_hundred_values() {
+        let outcomes: Vec<Outcome> = (1..=100).rev().map(ok).collect();      // unsorted input
+        let s = summarize(&outcomes);
+        assert_eq!((s.p50, s.p99), (Some(Duration::from_millis(50)), Some(Duration::from_millis(99))));
+    }
+
+    #[test]
+    fn statuses_are_counted_in_order() {
+        let mixed = [Outcome::Response { status: 503, latency: Duration::ZERO }, ok(1), ok(2)];
+        let s = summarize(&mixed);
+        assert_eq!(s.statuses.into_iter().collect::<Vec<_>>(), vec![(200, 2), (503, 1)]);
+    }
+}
+@note
+Five small tests pin down the behaviour users rely on: no data means no percentiles rather than a panic, errors never count as latencies, one request is its own p50 and p99, input order doesn't matter, and status counts come out sorted. With these in place, the statistics can be refactored or optimised without fear.
+@mistakes
+- **Spawning all requests without a limit.** That's a burst of N, not concurrency C. Use a Semaphore.
+- **Timing from before acquiring the permit.** Queue time isn't request latency; start the clock after.
+- **Untested edge cases.** Empty runs and all-error runs are exactly when users need correct output.
+@keys
+- A Semaphore caps requests in flight; JoinSet collects outcomes.
+- Time each request and the whole run separately.
+- Nearest-rank percentiles over sorted latencies.
+- Fake targets make the core fully testable.
+
+=== Q1.3
+@idea
+"Shipping" turns working code into a tool other people can install and trust. Three pieces matter. **The interface**: wire the clap struct to the core, print a readable **human report** by default and a **machine-readable JSON report** with `--json`, so the tool fits both terminals and CI pipelines. Use distinct **exit codes** (0 success, 1 thresholds missed, 2 usage error) so scripts can react.
+
+**Continuous integration**: a GitHub Actions workflow that runs `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` on every push and pull request, on Linux, macOS and Windows, catches regressions before users do. Caching (`Swatinem/rust-cache`) keeps it fast.
+
+**Releases**: tag a version (`git tag v0.1.0 && git push --tags`) and let a workflow build binaries for each platform and attach them to a GitHub Release, so users without Rust can download and run the tool; `cargo install --git ...` or publishing to crates.io serves Rust users. A README with an example command, a sample report, and an honest "limitations" section completes the portfolio piece: it shows you can deliver, not just code.
+@how
+- Human report by default, `--json` for machines; exit codes for scripts.
+- Optional thresholds: `--max-p99 300ms` fails the run (exit 1) when missed.
+- CI: fmt, clippy with `-D warnings`, tests, on three OSes, with caching.
+- Release on tags: build per-platform binaries and attach them to a GitHub Release.
+- README: install, usage, sample output, limitations.
+@example rust: One summary, two report formats, and a threshold
+use serde::Serialize;
+use std::collections::BTreeMap;
+
+#[derive(Serialize)]
+struct Report {
+    url: String,
+    requests: usize,
+    errors: usize,
+    throughput_rps: f64,
+    p50_ms: u64,
+    p95_ms: u64,
+    p99_ms: u64,
+    statuses: BTreeMap<u16, usize>,
+}
+
+fn human(r: &Report) -> String {
+    let mut s = format!("Target      {}\nRequests    {} ({} errors, {:.1}%)\nThroughput  {:.1} req/s\n", r.url, r.requests, r.errors, 100.0 * r.errors as f64 / r.requests as f64, r.throughput_rps);
+    s += &format!("Latency     p50 {} ms | p95 {} ms | p99 {} ms\nStatuses   ", r.p50_ms, r.p95_ms, r.p99_ms);
+    for (code, n) in &r.statuses {
+        s += &format!(" {code}x{n}");
+    }
+    s
+}
+
+fn exit_code(r: &Report, max_p99_ms: Option<u64>) -> u8 {
+    match max_p99_ms {
+        Some(limit) if r.p99_ms > limit => 1,
+        _ => 0,
+    }
+}
+
+fn main() {
+    let r = Report {
+        url: "http://localhost:3000/health".into(),
+        requests: 1000,
+        errors: 4,
+        throughput_rps: 812.4,
+        p50_ms: 11,
+        p95_ms: 38,
+        p99_ms: 412,
+        statuses: BTreeMap::from([(200, 990), (503, 6)]),
+    };
+    println!("{}\n", human(&r));
+    println!("{}\n", serde_json::to_string(&r).unwrap());
+    println!("--max-p99 300 -> exit code {}", exit_code(&r, Some(300)));
+    println!("--max-p99 500 -> exit code {}", exit_code(&r, Some(500)));
+}
+@deps serde@1+derive, serde_json@1
+@note
+The same `Report` struct prints as an aligned summary for people and as one line of JSON for machines (via derived `Serialize`). The threshold turns the tool into a CI gate: a p99 of 412 ms fails a 300 ms budget with exit code 1, which `main` would return as `ExitCode::from(1)`.
+@example yaml: A release workflow that builds binaries on every tag
+# .github/workflows/release.yml
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  ext: "" }
+          - { os: macos-latest,   target: aarch64-apple-darwin,      ext: "" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    ext: ".exe" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: mv target/${{ matrix.target }}/release/loadtest${{ matrix.ext }} loadtest-${{ matrix.target }}${{ matrix.ext }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: loadtest-${{ matrix.target }}${{ matrix.ext }}
+# git tag v0.1.0 && git push origin v0.1.0  ->  a Release with three downloadable binaries
+@note
+Pushing a tag such as `v0.1.0` triggers three parallel builds, one per platform, and each uploads its binary to the same GitHub Release. `--locked` makes the build use exactly the versions in Cargo.lock. Tools like `cargo-dist` can generate a more complete version of this workflow, including installers.
+@mistakes
+- **Only a human-readable report.** CI can't parse it; offer `--json`.
+- **Exit code 0 when thresholds fail.** Pipelines need a non-zero code to stop.
+- **Releases that require a Rust toolchain.** Attach prebuilt binaries for each platform.
+@keys
+- Human and JSON reports from one struct; meaningful exit codes.
+- CI runs fmt, clippy and tests on every change.
+- Tagged releases publish binaries for each platform.
+- A clear README turns the project into a portfolio piece.
+
+=== Q2.1
+@idea
+**testlens** analyses JUnit XML reports from many CI runs to find tests that can't be trusted. JUnit XML is the de facto interchange format: pytest, Jest, Maven, Gradle, Go and cargo-nextest can all emit it. A report contains `<testsuite>` elements holding `<testcase classname=".." name=".." time="..">`, where a child `<failure>` or `<error>` means it failed and `<skipped/>` means it was skipped; no child means it passed.
+
+The analysis needs a precise definition of **flaky**: a test that both passed and failed **on the same code**. That rules out tests that started failing because of a real change, which is a regression, not a flake. In practice, comparing runs of the same commit is ideal; with mixed commits, looking at the **pattern** helps: `P P F P F P` (many flips) suggests flakiness, `P P P F F F` (one flip, then consistent failure) suggests a regression. Require a **minimum number of runs** before judging, so one failure on a brand-new test isn't labelled.
+
+Model it with types: a `Verdict` enum, a `CaseResult` with a stable id (`classname::name`), and a `Classification` enum (`Stable`, `Flaky`, `Broken`, `Regressed`, `NotEnoughData`) that the report and the exit code both use.
+@how
+- Parse `testcase` elements; failure or error child = failed, skipped child = skipped.
+- Id each test by `classname::name` so it matches across runs.
+- Flaky = passed and failed on the same code; count flips to spot regressions.
+- Require a minimum number of non-skipped runs before classifying.
+- One `Classification` enum drives the report and the exit code.
+@example rust: Classifying a test from its history
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Verdict { Passed, Failed, Skipped }
+
+#[derive(Debug, PartialEq)]
+enum Classification {
+    Stable,
+    Broken,
+    Flaky { pass_rate: u32, flips: usize },
+    Regressed { since_run: usize },
+    NotEnoughData,
+}
+
+fn classify(history: &[Verdict], min_runs: usize) -> Classification {
+    let ran: Vec<Verdict> = history.iter().copied().filter(|v| *v != Verdict::Skipped).collect();
+    if ran.len() < min_runs {
+        return Classification::NotEnoughData;
+    }
+    let passes = ran.iter().filter(|v| **v == Verdict::Passed).count();
+    let flips = ran.windows(2).filter(|w| w[0] != w[1]).count();
+    match (passes, flips) {
+        (p, _) if p == ran.len() => Classification::Stable,
+        (0, _) => Classification::Broken,
+        (_, 1) if *ran.last().unwrap() == Verdict::Failed => {
+            Classification::Regressed { since_run: ran.iter().position(|v| *v == Verdict::Failed).unwrap() + 1 }
+        }
+        _ => Classification::Flaky { pass_rate: (100 * passes / ran.len()) as u32, flips },
+    }
+}
+
+fn main() {
+    use Verdict::*;
+    let tests: [(&str, &[Verdict]); 6] = [
+        ("login::valid_password", &[Passed, Passed, Passed, Passed, Passed, Passed]),
+        ("login::wrong_password", &[Passed, Failed, Passed, Passed, Failed, Passed]),
+        ("cart::apply_coupon", &[Passed, Passed, Passed, Failed, Failed, Failed]),
+        ("search::fuzzy", &[Failed, Failed, Failed, Failed, Failed, Failed]),
+        ("sso::okta", &[Skipped, Skipped, Passed, Skipped, Failed, Skipped]),
+        ("cart::new_feature", &[Passed, Failed]),
+    ];
+    for (id, history) in tests {
+        println!("{id:24} {:?}", classify(history, 5));
+    }
+}
+@note
+The same "it has both passes and failures" observation splits into two very different findings: `wrong_password` flips back and forth (flaky, 66% pass rate, four flips), while `apply_coupon` passed and then failed consistently from run 4 onward (a regression to investigate, not to retry). Skipped runs don't count, so the SSO test and the two-run new test don't have enough data to be judged.
+@example rust: Stable ids across runs
+fn case_id(classname: Option<&str>, name: &str) -> String {
+    let class = classname.unwrap_or("<no class>");
+    let name = name.split(" (attempt").next().unwrap().trim();      // some runners suffix retries
+    format!("{class}::{name}")
+}
+
+fn main() {
+    let seen = [
+        (Some("tests.test_login"), "test_valid_password"),
+        (Some("tests.test_login"), "test_valid_password (attempt 2)"),
+        (Some("tests.test_admin"), "test_valid_password"),
+        (None, "smoke"),
+    ];
+    for (class, name) in seen {
+        println!("{:<32} {:<36} -> {}", format!("{class:?}"), name, case_id(class, name));
+    }
+}
+@note
+Test names alone collide (two suites can both have `test_valid_password`), so the id combines class and name, and normalises the retry suffix some runners add so a retried test is still recognised as the same test. Getting identity right is what makes cross-run statistics meaningful.
+@mistakes
+- **Calling every intermittent failure "flaky".** A consistent failure after a change is a regression.
+- **Judging tests with very few runs.** Require a minimum before classifying.
+- **Using the test name alone as an id.** Names repeat across suites; include the class.
+@keys
+- JUnit XML is the common format for test results.
+- Flaky means passed and failed on the same code; flips reveal the pattern.
+- Stable ids make results comparable across runs.
+- One Classification enum drives every output.
+
+=== Q2.2
+@idea
+With the model defined, the work is parsing and aggregation. **roxmltree** is a fast, read-only XML parser that builds a tree you can query: `Document::parse(text)?` then `doc.descendants().filter(|n| n.has_tag_name("testcase"))`, reading attributes with `node.attribute("name")` and checking children for `failure`, `error` and `skipped`. It returns a descriptive error for malformed files (with a position for most syntax errors), which the tool should report with the file name and then **skip** rather than abort: one corrupted artefact shouldn't hide the other 49 runs.
+
+Aggregation folds every run into per-test statistics: a `HashMap<String, TestStats>` where each entry collects the verdict history (in run order), pass/fail counts and durations. From those, compute each test's classification, pass rate and **median duration**, and also suite-level facts a QA lead cares about, such as the slowest tests.
+
+Parsing must be robust to real-world variations: nested `<testsuites>`, missing `time` attributes, `time` values with commas in some locales, `<error>` used instead of `<failure>`, and `<system-out>` noise. Tests with small inline XML documents pin each variation down.
+@how
+- `roxmltree::Document::parse(&text)?`; iterate `descendants()` for `testcase` nodes.
+- `attribute("time").and_then(|t| t.parse().ok()).unwrap_or(0.0)` for optional numbers.
+- Report and skip malformed files; never abort the whole analysis.
+- Fold runs into `HashMap<String, TestStats>` keeping history in order.
+- Derive classifications, pass rates and medians from the stats.
+@example rust: Aggregating several CI runs into per-test statistics
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Verdict { Passed, Failed, Skipped }
+
+#[derive(Default, Debug)]
+struct TestStats { history: Vec<Verdict>, seconds: Vec<f64> }
+
+fn parse(xml: &str) -> Result<Vec<(String, Verdict, f64)>, roxmltree::Error> {
+    let doc = roxmltree::Document::parse(xml)?;
+    Ok(doc.descendants().filter(|n| n.has_tag_name("testcase")).map(|tc| {
+        let has = |t: &str| tc.children().any(|c| c.has_tag_name(t));
+        let v = if has("failure") || has("error") { Verdict::Failed } else if has("skipped") { Verdict::Skipped } else { Verdict::Passed };
+        let id = format!("{}::{}", tc.attribute("classname").unwrap_or("?"), tc.attribute("name").unwrap_or("?"));
+        let secs = tc.attribute("time").and_then(|t| t.replace(',', ".").parse().ok()).unwrap_or(0.0);
+        (id, v, secs)
+    }).collect())
+}
+
+fn main() {
+    let runs = [
+        r#"<testsuites><testsuite name="login"><testcase classname="login" name="ok" time="0.20"/><testcase classname="login" name="retry" time="1.10"/></testsuite></testsuites>"#,
+        r#"<testsuite name="login"><testcase classname="login" name="ok" time="0,25"/><testcase classname="login" name="retry" time="3.40"><failure message="timeout"/></testcase></testsuite>"#,
+        r#"<testsuite name="login"><testcase classname="login" name="ok"/><testcase classname="login" name="retry" time="1.30"><error type="ConnectionReset"/></testcase>"#,
+        r#"<testsuite name="login"><testcase classname="login" name="ok" time="0.21"/><testcase classname="login" name="retry" time="1.20"/></testsuite>"#,
+    ];
+    let mut stats: BTreeMap<String, TestStats> = BTreeMap::new();
+    for (i, xml) in runs.iter().enumerate() {
+        match parse(xml) {
+            Ok(cases) => for (id, v, s) in cases {
+                let e = stats.entry(id).or_default();
+                e.history.push(v);
+                e.seconds.push(s);
+            },
+            Err(err) => println!("run {}: skipped, invalid XML ({err})", i + 1),
+        }
+    }
+    for (id, s) in &stats {
+        let mut secs = s.seconds.clone();
+        secs.sort_by(f64::total_cmp);
+        let passed = s.history.iter().filter(|v| **v == Verdict::Passed).count();
+        println!("{id:12} {:?}  pass {}/{}  median {:.2}s", s.history, passed, s.history.len(), secs[secs.len() / 2]);
+    }
+}
+@deps roxmltree@0.20
+@note
+Run 3 was truncated (its `testsuite` never closes), so roxmltree reported why parsing failed and the tool skipped that run instead of giving up. The remaining runs aggregated into per-test histories: `login::retry` failed once out of three, a flaky candidate, and is also the slow one. The comma in `0,25` was normalised, and a missing `time` defaulted to zero.
+@example rust test: Parser tests for real-world variations
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Verdict { Passed, Failed, Skipped }
+
+pub fn verdicts(xml: &str) -> Result<Vec<(String, Verdict)>, String> {
+    let doc = roxmltree::Document::parse(xml).map_err(|e| e.to_string())?;
+    Ok(doc.descendants().filter(|n| n.has_tag_name("testcase")).map(|tc| {
+        let has = |t: &str| tc.children().any(|c| c.has_tag_name(t));
+        let v = if has("failure") || has("error") { Verdict::Failed } else if has("skipped") { Verdict::Skipped } else { Verdict::Passed };
+        (tc.attribute("name").unwrap_or("?").to_string(), v)
+    }).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_counts_as_failure() {
+        let x = r#"<testsuite><testcase name="a"><error type="NPE"/></testcase></testsuite>"#;
+        assert_eq!(verdicts(x).unwrap(), vec![("a".to_string(), Verdict::Failed)]);
+    }
+
+    #[test]
+    fn nested_suites_and_output_noise() {
+        let x = r#"<testsuites><testsuite><testsuite><testcase name="deep"><system-out>log</system-out></testcase></testsuite></testsuite></testsuites>"#;
+        assert_eq!(verdicts(x).unwrap(), vec![("deep".to_string(), Verdict::Passed)]);
+    }
+
+    #[test]
+    fn skipped_and_passed() {
+        let x = r#"<testsuite><testcase name="s"><skipped message="wip"/></testcase><testcase name="p"/></testsuite>"#;
+        let v: Vec<Verdict> = verdicts(x).unwrap().into_iter().map(|(_, v)| v).collect();
+        assert_eq!(v, vec![Verdict::Skipped, Verdict::Passed]);
+    }
+
+    #[test]
+    fn malformed_xml_is_a_descriptive_error() {
+        let err = verdicts("<testsuite><testcase name=\"x\">").unwrap_err();
+        assert!(err.contains("never closed"), "unexpected message: {err}");
+    }
+}
+@deps roxmltree@0.20
+@note
+Each test captures a variation seen in real CI artefacts: `<error>` instead of `<failure>`, suites nested inside suites with `<system-out>` noise, skipped tests next to passing ones, and truncated files. Because the parser is a pure function of a string, these tests need no files on disk.
+@mistakes
+- **Aborting on the first bad report.** Report it with its position and continue with the rest.
+- **Treating only `<failure>` as failed.** `<error>` is a failure too.
+- **Losing run order.** Classification depends on the sequence; keep histories ordered.
+@keys
+- roxmltree parses XML into a queryable tree with descriptive errors.
+- Be lenient with real-world variations and test each one.
+- Aggregate runs into per-test histories, counts and durations.
+- Skip bad inputs, never the whole analysis.
+
+=== Q2.3
+@idea
+testlens earns its place when it runs automatically. In CI, it becomes a **quality gate**: after the test step, download the last N reports, run testlens, and **fail the pipeline** when a new flaky test appears. That requires deliberate **exit codes** (0 clean, 1 new flaky or regressed tests, 2 bad input or usage) and an **allow-list** file of known flaky tests being worked on, so the gate catches new problems without blocking every build on old ones. Each allow-list entry should name an owner or ticket, so it doesn't become a graveyard.
+
+The CLI follows the usual pattern: a directory or glob of reports, `--min-runs` to require enough data, `--json` for dashboards and bots, and `--fail-on-flaky` to enable the gate. The human report should lead with what to act on: the number of flaky and regressed tests, then a table sorted by impact (lowest pass rate, most runs), then the slowest tests.
+
+Document the tool like a product: what problem it solves, a one-command quick start, the classification rules in plain words, the exit codes, and a GitHub Action snippet. That README is often the first thing a hiring manager reads.
+@how
+- Exit codes: 0 clean, 1 actionable findings, 2 usage or input errors.
+- Allow-list file for known flaky tests, with owners or tickets.
+- `--min-runs`, `--json`, `--fail-on-flaky` flags.
+- Report: summary line, impact-sorted table, slowest tests.
+- README: problem, quick start, rules, exit codes, CI snippet.
+@example rust: The gate decision with an allow-list
+use std::collections::HashSet;
+
+#[derive(Debug, PartialEq)]
+enum Finding { Flaky(u32), Regressed, Stable }
+
+fn parse_allow_list(text: &str) -> HashSet<String> {
+    text.lines()
+        .map(|l| l.split('#').next().unwrap().trim())           // allow comments
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+fn gate(results: &[(&str, Finding)], allowed: &HashSet<String>) -> (u8, Vec<String>) {
+    let mut report = Vec::new();
+    let mut blocking = 0;
+    for (id, f) in results {
+        match f {
+            Finding::Stable => {}
+            _ if allowed.contains(*id) => report.push(format!("  known   {id} {f:?}")),
+            _ => {
+                blocking += 1;
+                report.push(format!("  NEW     {id} {f:?}"));
+            }
+        }
+    }
+    report.insert(0, format!("{blocking} new problem(s), {} allow-listed", report.len() - blocking));
+    (if blocking > 0 { 1 } else { 0 }, report)
+}
+
+fn main() {
+    let allow = parse_allow_list("# known flaky tests, with tickets\nlogin::sso_redirect   # QA-412 (Kev)\n\ncart::coupon_expiry  # QA-418\n");
+    let results = [
+        ("login::valid_password", Finding::Stable),
+        ("login::sso_redirect", Finding::Flaky(70)),
+        ("cart::coupon_expiry", Finding::Flaky(90)),
+        ("search::fuzzy_match", Finding::Flaky(55)),
+        ("checkout::tax_rounding", Finding::Regressed),
+    ];
+    let (code, lines) = gate(&results, &allow);
+    println!("{}", lines.join("\n"));
+    println!("exit code {code}");
+    let (code_ok, _) = gate(&results[..3], &allow);
+    println!("with only known problems: exit code {code_ok}");
+}
+@note
+Known flaky tests listed in the allow-list (with ticket numbers in comments) are reported but don't fail the build, while the new flaky test and the regression produce exit code 1 and stop the pipeline. When only known problems remain, the gate passes, so the team can adopt testlens without first fixing every historic flake.
+@example bash: What a CI run shows
+$ testlens reports/ --min-runs 5 --fail-on-flaky --allow-list .testlens-allow
+Analysed 20 runs, 412 tests (3 files skipped: invalid XML)
+
+Flaky (new)        pass rate   runs   flips   median
+  search::fuzzy        55%       20      9     0.84s
+Regressed
+  checkout::tax        since run 17          0.12s
+Known flaky (allow-listed)
+  login::sso_redirect  70%       20      6     2.10s   QA-412
+
+Slowest tests: login::sso_redirect 2.10s, export::pdf 1.95s, search::fuzzy 0.84s
+error: 2 new problems found (exit code 1)
+
+$ testlens reports/ --json | jq '.flaky[] | .id'
+"search::fuzzy"
+"login::sso_redirect"
+@note
+The report leads with what needs action, shows the evidence (pass rate, runs, flips) and keeps allow-listed tests visible so they aren't forgotten. The JSON output feeds dashboards or a bot that comments on pull requests. This sample shows the shape the finished tool aims for.
+@mistakes
+- **A gate that fails on every known flake.** Teams disable it. Use an allow-list with owners.
+- **Exit code 1 for both findings and crashes.** Distinguish actionable findings from input errors.
+- **Reports that bury the action.** Lead with counts and the worst offenders.
+@keys
+- Exit codes turn the analyser into a CI quality gate.
+- Allow-lists separate new problems from known, owned ones.
+- Human reports lead with actions; JSON feeds other tools.
+- Document rules and exit codes clearly.
+
+=== Q3.1
+@idea
+**logwatch** reads authentication logs and raises an alert when one IP address fails to log in too often within a short time, a classic brute-force signal, like a minimal fail2ban. Start with one well-defined format: OpenSSH lines in `/var/log/auth.log` (Debian/Ubuntu) or `/var/log/secure` (RHEL), such as `Failed password for invalid user admin from 203.0.113.9 port 51240 ssh2`. On systemd machines the same lines are available from `journalctl -u ssh -o short`.
+
+The detection **rule** has two parameters: N failures from one IP within a window of W seconds. Use a **sliding window** (the last W seconds before each event), not fixed buckets ("per minute"), because a burst that straddles a bucket boundary would be missed. Decide the details explicitly: alert once per burst rather than on every further failure, and **reset** an IP's history after a successful login so a user who mistyped twice isn't flagged later. Timestamps need care: syslog lines omit the **year**, so the parser must assume the current year and handle the December-to-January rollover.
+
+There are **ethical and legal limits**: monitor only systems you own or are explicitly authorised to monitor, treat IP addresses as personal data where privacy law says so, and keep the tool detection-only (alerts, not automatic attacks back). Blocking, if added, should go through the system's firewall with allow-lists for your own addresses.
+@how
+- Support one log format well; read files or `journalctl` output.
+- Rule: N failures per IP within a sliding window of W seconds.
+- Alert once per burst; reset an IP after a successful login.
+- Parse syslog timestamps with an assumed year and handle rollover.
+- Monitor only authorised systems; detection first, blocking via the firewall.
+@example rust: Syslog timestamps without a year
+fn month_index(m: &str) -> Option<u32> {
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].iter().position(|x| *x == m).map(|i| i as u32)
+}
+
+/// Seconds since an arbitrary epoch, good enough for comparing nearby events.
+fn parse_ts(line: &str, year: i64) -> Option<i64> {
+    let mut parts = line.split_whitespace();
+    let month = month_index(parts.next()?)? as i64;
+    let day: i64 = parts.next()?.parse().ok()?;
+    let hms: Vec<i64> = parts.next()?.split(':').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    let [h, m, s] = hms[..] else { return None };
+    const DAYS: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let doy = DAYS[month as usize] + day - 1 + if leap && month > 1 { 1 } else { 0 };
+    let days_before_year = (year - 1970) * 365 + (year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400;
+    Some(((days_before_year + doy) * 86_400) + h * 3600 + m * 60 + s)
+}
+
+/// Lines are in order; a jump backwards of months means the year changed.
+fn with_rollover(lines: &[&str], start_year: i64) -> Vec<i64> {
+    let mut year = start_year;
+    let mut last: Option<i64> = None;
+    lines.iter().filter_map(|l| {
+        let mut t = parse_ts(l, year)?;
+        if last.is_some_and(|prev| t < prev - 30 * 86_400) {
+            year += 1;
+            t = parse_ts(l, year)?;
+        }
+        last = Some(t);
+        Some(t)
+    }).collect()
+}
+
+fn main() {
+    let lines = [
+        "Dec 31 23:59:58 web sshd[901]: Failed password for root from 203.0.113.9 port 4000 ssh2",
+        "Dec 31 23:59:59 web sshd[902]: Failed password for root from 203.0.113.9 port 4001 ssh2",
+        "Jan  1 00:00:01 web sshd[903]: Failed password for root from 203.0.113.9 port 4002 ssh2",
+    ];
+    let ts = with_rollover(&lines, 2026);
+    println!("gaps between events: {:?} seconds", ts.windows(2).map(|w| w[1] - w[0]).collect::<Vec<_>>());
+    let naive: Vec<i64> = lines.iter().filter_map(|l| parse_ts(l, 2026)).collect();
+    println!("without rollover handling the last gap is {} seconds", naive[2] - naive[1]);
+    println!("garbage line parses to {:?}", parse_ts("not a log line", 2026));
+}
+@note
+Three failures two seconds apart straddle midnight on New Year's Eve. With rollover handling the gaps are 1 and 2 seconds, so a burst rule would fire; parsed naively, January 1st lands in the same year as the December lines and the gap becomes almost minus a year, hiding the attack. Attackers don't stop for holidays, so this edge case is worth handling.
+@example rust: Sliding windows catch what fixed buckets miss
+fn fixed_bucket_alert(times: &[u64], n: usize, w: u64) -> bool {
+    let mut counts = std::collections::HashMap::new();
+    times.iter().any(|t| {
+        let c = counts.entry(t / w).or_insert(0);
+        *c += 1;
+        *c >= n
+    })
+}
+
+fn sliding_alert(times: &[u64], n: usize, w: u64) -> bool {
+    times.windows(n).any(|win| win[n - 1] - win[0] < w)
+}
+
+fn main() {
+    let burst = [50, 52, 55, 58, 61, 63, 66];        // 7 failures in 16 seconds, across the 60 s boundary
+    println!("rule: 5 failures within 60 s");
+    println!("fixed one-minute buckets alert? {}", fixed_bucket_alert(&burst, 5, 60));
+    println!("sliding window alerts?          {}", sliding_alert(&burst, 5, 60));
+    let slow = [0, 40, 80, 120, 160, 200];            // one failure every 40 s
+    println!("slow trickle, sliding window?   {}", sliding_alert(&slow, 5, 60));
+}
+@note
+The burst of seven failures in 16 seconds split into four in the first minute and three in the second, so per-minute buckets never reached five. The sliding window looks at any five consecutive failures and saw them within 11 seconds. A slow trickle of one failure every 40 seconds correctly doesn't trigger the rule.
+@mistakes
+- **Fixed time buckets.** Bursts across boundaries slip through; use sliding windows.
+- **Ignoring the missing year in syslog.** New Year's Eve breaks naive parsing.
+- **Monitoring systems you don't own.** Get authorisation; keep the tool detection-first.
+@keys
+- One log format, parsed well, beats many parsed loosely.
+- N failures within a sliding window of W seconds per IP.
+- Alert once per burst; reset after successful logins.
+- Handle syslog's missing year; stay within ethical and legal limits.
+
+=== Q3.2
+@idea
+The detector combines two parts. The **parser** turns lines into events with a regular expression compiled **once** (in a `LazyLock<Regex>` static), because compiling a regex is far more expensive than matching; with the `regex` crate, matching runs in linear time, so hostile input can't make it hang. Lines that don't match (other services, other messages) return `None` and are ignored.
+
+The **detector** keeps, for each IP, a `VecDeque<u64>` of recent failure timestamps: on each failure, push the new time to the back, pop times older than the window from the front, and alert when the queue holds N or more. This is a classic **sliding window**: each timestamp is pushed and popped once, so the work per event is constant on average. On a successful login from an IP, remove its history. Track which IPs are already **in alert** so a burst produces one alert, re-arming once the window has emptied.
+
+Memory must stay bounded on a long-running service: an attacker can rotate through thousands of addresses. Remove an IP's entry when its queue empties, and optionally cap the map size. Test the detector with event sequences rather than files: exactly-at-the-boundary timing, reset after success, re-alerting after a quiet period, and many IPs at once.
+@how
+- `static RE: LazyLock<Regex>`; `RE.captures(line)?` → `Option<Event>`.
+- Per IP: `VecDeque<u64>`; push back, pop expired from front, alert when `len() >= n`.
+- Remove history on success; remove empty queues to bound memory.
+- Alert once per burst; re-arm when the window clears.
+- Test with sequences: boundaries, resets, re-alerts, many IPs.
+@example rust: Parser and sliding-window detector end to end
+use regex::Regex;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::LazyLock;
+
+static LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\S+ +\d+ (\d+):(\d+):(\d+) \S+ sshd\[\d+\]: (Failed|Accepted) \S+ for (?:invalid user )?(\S+) from (\S+) port").unwrap()
+});
+
+#[derive(Debug)]
+enum Event { Failed { ip: String, ts: u64 }, Accepted { ip: String } }
+
+fn parse(line: &str) -> Option<Event> {
+    let c = LINE.captures(line)?;
+    let ts = c[1].parse::<u64>().ok()? * 3600 + c[2].parse::<u64>().ok()? * 60 + c[3].parse::<u64>().ok()?;
+    let ip = c[6].to_string();
+    Some(if &c[4] == "Failed" { Event::Failed { ip, ts } } else { Event::Accepted { ip } })
+}
+
+struct Detector { n: usize, window: u64, recent: HashMap<String, VecDeque<u64>>, alerting: HashSet<String> }
+
+impl Detector {
+    fn feed(&mut self, e: Event) -> Option<String> {
+        match e {
+            Event::Accepted { ip } => {
+                self.recent.remove(&ip);
+                self.alerting.remove(&ip);
+                None
+            }
+            Event::Failed { ip, ts } => {
+                let q = self.recent.entry(ip.clone()).or_default();
+                q.push_back(ts);
+                while q.front().is_some_and(|&t| ts - t >= self.window) {
+                    q.pop_front();
+                }
+                if q.len() < self.n {
+                    self.alerting.remove(&ip);
+                    None
+                } else if self.alerting.insert(ip.clone()) {
+                    Some(format!("ALERT {ip}: {} failures in {} s", q.len(), ts - q[0]))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+fn main() {
+    let log = "\
+Nov  4 06:12:01 web sshd[1]: Failed password for root from 203.0.113.9 port 1 ssh2
+Nov  4 06:12:03 web sshd[2]: Failed password for invalid user admin from 203.0.113.9 port 2 ssh2
+Nov  4 06:12:04 web CRON[3]: pam_unix(cron:session): session opened for user root
+Nov  4 06:12:05 web sshd[4]: Failed password for kev from 198.51.100.7 port 3 ssh2
+Nov  4 06:12:06 web sshd[5]: Failed password for invalid user test from 203.0.113.9 port 4 ssh2
+Nov  4 06:12:07 web sshd[6]: Accepted password for kev from 198.51.100.7 port 5 ssh2
+Nov  4 06:12:09 web sshd[7]: Failed password for invalid user oracle from 203.0.113.9 port 6 ssh2
+Nov  4 06:12:12 web sshd[8]: Failed password for root from 203.0.113.9 port 7 ssh2
+Nov  4 06:12:15 web sshd[9]: Failed password for root from 203.0.113.9 port 8 ssh2";
+    let mut d = Detector { n: 5, window: 60, recent: HashMap::new(), alerting: HashSet::new() };
+    let (mut parsed, mut ignored) = (0, 0);
+    for line in log.lines() {
+        match parse(line) {
+            Some(e) => {
+                parsed += 1;
+                if let Some(alert) = d.feed(e) { println!("{alert}"); }
+            }
+            None => ignored += 1,
+        }
+    }
+    println!("{parsed} events, {ignored} ignored line; IPs still tracked: {:?}", d.recent.keys().collect::<Vec<_>>());
+}
+@deps regex@1
+@note
+The attacker's fifth failure within the window raised exactly one alert, and the sixth was folded into the same burst. Kev's single mistyped password was cleared by his successful login, so his address isn't tracked any more, and the cron line didn't match the regex and was ignored.
+@example rust test: Detector tests built from event sequences
+use std::collections::{HashMap, VecDeque};
+
+pub struct Detector { n: usize, window: u64, recent: HashMap<String, VecDeque<u64>> }
+
+impl Detector {
+    pub fn new(n: usize, window: u64) -> Self { Detector { n, window, recent: HashMap::new() } }
+
+    pub fn failed(&mut self, ip: &str, ts: u64) -> bool {
+        let q = self.recent.entry(ip.to_string()).or_default();
+        q.push_back(ts);
+        while q.front().is_some_and(|&t| ts - t >= self.window) { q.pop_front(); }
+        q.len() >= self.n
+    }
+
+    pub fn accepted(&mut self, ip: &str) { self.recent.remove(ip); }
+
+    pub fn tracked(&self) -> usize { self.recent.len() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_boundary_is_exclusive() {
+        let mut d = Detector::new(3, 10);
+        assert!(!d.failed("a", 0));
+        assert!(!d.failed("a", 5));
+        assert!(!d.failed("a", 10), "the event at t=0 is exactly 10 s old and has expired");
+        assert!(d.failed("a", 11));
+    }
+
+    #[test]
+    fn success_resets_history() {
+        let mut d = Detector::new(3, 60);
+        d.failed("a", 1);
+        d.failed("a", 2);
+        d.accepted("a");
+        assert!(!d.failed("a", 3));
+        assert_eq!(d.tracked(), 1);
+    }
+
+    #[test]
+    fn ips_are_independent_including_ipv6() {
+        let mut d = Detector::new(2, 60);
+        assert!(!d.failed("2001:db8::1", 1));
+        assert!(!d.failed("203.0.113.9", 2));
+        assert!(d.failed("2001:db8::1", 3));
+    }
+
+    #[test]
+    fn slow_attempts_never_alert() {
+        let mut d = Detector::new(3, 60);
+        assert!((0..20).all(|i| !d.failed("a", i * 31)));
+    }
+}
+@note
+The tests use plain timestamps instead of log files, so each scenario is one readable line per event. The boundary test documents a decision (an event exactly W seconds old has expired), and the others cover resets after success, independence between addresses (including IPv6) and a slow trickle that must never alert.
+@mistakes
+- **Compiling the regex inside the loop.** Compile once in a `LazyLock` static.
+- **Unbounded per-IP state.** Remove empty or reset entries so memory stays bounded.
+- **Alerting on every failure after the threshold.** One alert per burst; re-arm later.
+@keys
+- A compiled regex turns lines into events; non-matching lines are ignored.
+- A per-IP VecDeque implements the sliding window in constant time per event.
+- Reset on success, de-duplicate alerts, bound memory.
+- Test with event sequences, not files.
+
+=== Q3.3
+@idea
+A detector is only useful if it runs continuously. **Following** a log like `tail -f` means: open the file, seek to the end, read new lines as they're appended, and sleep briefly when there's nothing new. Real logs also **rotate**: logrotate renames `auth.log` to `auth.log.1` and creates a new file, or truncates the existing one. A robust follower notices when the file got **shorter** than its read position (truncation) or when the path now refers to a **different file** (its inode changed), and reopens from the start. Crates like `notify` replace polling with filesystem events.
+
+**Alerts** should be machine-readable: one JSON object per line on stdout (`{"ts":..,"ip":..,"failures":..}`) composes with `jq`, log shippers and systemd's journal; an optional webhook (Slack, Discord, Teams) uses reqwest with a timeout and must never block detection, so it runs in its own task or thread with a bounded queue. A **benchmark** on a large synthetic log (millions of lines) shows the parser and detector keep up with a busy server.
+
+Deploy it as a **systemd service** running as an unprivileged user with read access to the log (the `adm` group on Debian), with sandboxing options such as `ProtectSystem=strict` and `NoNewPrivileges=yes`, and `Restart=on-failure`. Document what it does, what it doesn't do, and that it should only watch systems you're authorised to monitor.
+@how
+- Follow: seek to end, read new lines, sleep when idle.
+- Detect truncation (file shorter than position) and rotation (inode changed); reopen.
+- Alerts as JSON lines; webhooks off the detection path with timeouts.
+- Benchmark with a synthetic log of millions of lines.
+- systemd unit: dedicated user, `adm` group, sandboxing, restart policy.
+@example rust: Following a file through appends and a truncation
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::thread;
+use std::time::Duration;
+
+struct Follower { path: std::path::PathBuf, reader: BufReader<File>, pos: u64 }
+
+impl Follower {
+    fn open_at_end(path: &std::path::Path) -> std::io::Result<Self> {
+        let mut f = File::open(path)?;
+        let pos = f.seek(SeekFrom::End(0))?;
+        Ok(Follower { path: path.into(), reader: BufReader::new(f), pos })
+    }
+
+    /// Returns any complete new lines; reopens from the start if the file was truncated.
+    fn poll(&mut self) -> std::io::Result<Vec<String>> {
+        let len = std::fs::metadata(&self.path)?.len();
+        if len < self.pos {
+            println!("  (file truncated: reopening from the start)");
+            let f = File::open(&self.path)?;
+            self.reader = BufReader::new(f);
+            self.pos = 0;
+        }
+        let mut lines = Vec::new();
+        let mut line = String::new();
+        while self.reader.read_line(&mut line)? > 0 {
+            if !line.ends_with('\n') {                       // a partial line: wait for the rest
+                self.reader.seek(SeekFrom::Start(self.pos))?;
+                break;
+            }
+            self.pos += line.len() as u64;
+            lines.push(line.trim_end().to_string());
+            line.clear();
+        }
+        Ok(lines)
+    }
+}
+
+fn main() -> std::io::Result<()> {
+    let path = std::env::temp_dir().join(format!("logwatch-demo-{}.log", std::process::id()));
+    std::fs::write(&path, "old line, before we started\n")?;
+    let mut follower = Follower::open_at_end(&path)?;
+
+    let writer_path = path.clone();
+    let writer = thread::spawn(move || -> std::io::Result<()> {
+        let mut f = OpenOptions::new().append(true).open(&writer_path)?;
+        writeln!(f, "Failed password for root from 203.0.113.9")?;
+        write!(f, "Failed password for adm")?;                // half a line...
+        f.flush()?;
+        thread::sleep(Duration::from_millis(60));
+        writeln!(f, "in from 203.0.113.9")?;                // ...completed later
+        thread::sleep(Duration::from_millis(60));
+        std::fs::write(&writer_path, "")?;                  // logrotate-style truncation
+        let mut f = OpenOptions::new().append(true).open(&writer_path)?;
+        writeln!(f, "Accepted publickey for kev from 198.51.100.7")?;
+        Ok(())
+    });
+
+    for _ in 0..12 {
+        for line in follower.poll()? {
+            println!("new line: {line}");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    writer.join().unwrap()?;
+    std::fs::remove_file(&path)?;
+    Ok(())
+}
+@note
+The follower skipped the line that existed before it started, held back a half-written line until its newline arrived, and noticed when the file was truncated (as `logrotate` with `copytruncate` does), reopening from the start so the next line wasn't lost. The real tool polls forever and also compares inodes to catch rename-style rotation.
+@example ini: Running logwatch as a hardened systemd service
+# /etc/systemd/system/logwatch.service
+[Unit]
+Description=logwatch: SSH brute-force detector
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/logwatch /var/log/auth.log --failures 5 --window 60s --webhook-env LOGWATCH_WEBHOOK
+EnvironmentFile=-/etc/logwatch.env
+User=logwatch
+Group=adm
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/var/log
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
+
+# $ sudo useradd --system --no-create-home logwatch
+# $ sudo systemctl enable --now logwatch
+# $ journalctl -u logwatch -f -o cat | jq .
+# {"ts":"2026-11-04T06:12:06Z","ip":"203.0.113.9","failures":5,"window_s":60}
+@note
+The service runs as its own unprivileged user in the `adm` group, which can read the log but nothing else matters: the filesystem is read-only to it, home directories are hidden and it can't gain privileges. The webhook URL comes from an environment file rather than the command line, so it doesn't appear in process listings. Alerts go to the journal as JSON lines.
+@mistakes
+- **Assuming the log file never changes identity.** Handle truncation and rotation.
+- **Sending webhooks inline.** A slow endpoint would stall detection; use a separate task with timeouts.
+- **Running as root.** Use a dedicated user with read access and systemd sandboxing.
+@keys
+- Follow files like `tail -f`, handling partial lines, truncation and rotation.
+- Emit alerts as JSON lines; send webhooks asynchronously.
+- Benchmark on synthetic logs to prove it keeps up.
+- Deploy as a sandboxed, unprivileged systemd service.

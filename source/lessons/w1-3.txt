@@ -1,0 +1,1140 @@
+=== W1.1
+@idea
+**taskhub** is a REST API for tasks, built the way production services are. The first step is the **contract**: the resources (a task with id, title, done, due date, created time), the routes (`GET /tasks`, `POST /tasks`, `GET/PATCH/DELETE /tasks/{id}`, `GET /health`), the request and response shapes, the **status codes** (200 OK, 201 Created, 204 No Content, 404 Not Found, 422 for validation errors) and a single **error format** (`{"error": "..."}`) used everywhere. Writing this down first means the handlers, the tests and the README all agree, and a front-end developer could start before the server exists.
+
+**Pagination** is part of the contract from day one: `GET /tasks?page=2&per_page=20` returns `items` plus `page`, `per_page` and `total`, with defaults for missing parameters and a cap on `per_page` so one request can't ask for a million rows. Filtering (`?status=open`) follows the same pattern.
+
+Structure the code in **layers**: **routes** (HTTP only: extract, call, convert to responses), a **service** (business rules such as "a title can't be empty" or "a done task can't be un-done after 30 days") and a **repository** (SQL only). Each layer depends on the one below through plain functions or a trait, so the rules can be tested without HTTP and the SQL without the rules.
+@how
+- Write the contract: routes, shapes, status codes, one error format.
+- Paginate with `page`/`per_page`, defaults and a maximum; return `total`.
+- Validate query parameters into a typed struct with defaults.
+- Layers: routes → service → repository, each testable alone.
+- Keep HTTP types out of the service and SQL out of the routes.
+@example rust: Pagination parameters parsed, defaulted and clamped
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct ListQuery {
+    page: u32,
+    per_page: u32,
+    status: Option<Status>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum Status { Open, Done }
+
+impl Default for ListQuery {
+    fn default() -> Self { ListQuery { page: 1, per_page: 20, status: None } }
+}
+
+impl ListQuery {
+    const MAX_PER_PAGE: u32 = 100;
+    fn normalised(self) -> Self {
+        ListQuery { page: self.page.max(1), per_page: self.per_page.clamp(1, Self::MAX_PER_PAGE), ..self }
+    }
+    fn sql_window(&self) -> (u32, u32) {
+        (self.per_page, (self.page - 1) * self.per_page)          // LIMIT, OFFSET
+    }
+}
+
+fn pages(total: u32, per_page: u32) -> u32 { total.div_ceil(per_page).max(1) }
+
+fn main() {
+    for qs in ["", "page=3", "page=0&per_page=5000", "status=done&per_page=10&page=2", "status=archived"] {
+        match serde_urlencoded::from_str::<ListQuery>(qs) {
+            Ok(q) => {
+                let q = q.normalised();
+                let (limit, offset) = q.sql_window();
+                println!("{:34} -> page {} per_page {} status {:?}: LIMIT {limit} OFFSET {offset}", format!("?{qs}"), q.page, q.per_page, q.status);
+            }
+            Err(e) => println!("{:34} -> 422 {{\"error\":\"{e}\"}}", format!("?{qs}")),
+        }
+    }
+    println!("57 tasks at 20 per page = {} pages", pages(57, 20));
+}
+@deps serde@1+derive, serde_urlencoded@0.7
+@note
+Missing parameters took their defaults, a page of 0 became 1, and a request for 5,000 items per page was capped at 100. An unknown status value was rejected with a clear message, which the API returns as a 422 in its standard error format. axum's `Query` extractor uses this same `serde_urlencoded` parsing.
+@example rust: Layers you can test separately
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq)]
+struct Task { id: u64, title: String, done: bool }
+
+trait TaskRepo {
+    fn insert(&mut self, title: &str) -> Task;
+    fn get(&self, id: u64) -> Option<Task>;
+    fn set_done(&mut self, id: u64, done: bool) -> Option<Task>;
+}
+
+#[derive(Default)]
+struct MemoryRepo { rows: BTreeMap<u64, Task> }
+
+impl TaskRepo for MemoryRepo {
+    fn insert(&mut self, title: &str) -> Task {
+        let id = self.rows.len() as u64 + 1;
+        let t = Task { id, title: title.into(), done: false };
+        self.rows.insert(id, t.clone());
+        t
+    }
+    fn get(&self, id: u64) -> Option<Task> { self.rows.get(&id).cloned() }
+    fn set_done(&mut self, id: u64, done: bool) -> Option<Task> {
+        let t = self.rows.get_mut(&id)?;
+        t.done = done;
+        Some(t.clone())
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum ServiceError { Validation(String), NotFound(u64) }
+
+struct TaskService<R: TaskRepo> { repo: R }
+
+impl<R: TaskRepo> TaskService<R> {
+    fn create(&mut self, title: &str) -> Result<Task, ServiceError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(ServiceError::Validation("title must not be empty".into()));
+        }
+        if title.chars().count() > 200 {
+            return Err(ServiceError::Validation("title must be at most 200 characters".into()));
+        }
+        Ok(self.repo.insert(title))
+    }
+    fn complete(&mut self, id: u64) -> Result<Task, ServiceError> {
+        self.repo.set_done(id, true).ok_or(ServiceError::NotFound(id))
+    }
+}
+
+fn main() {
+    let mut svc = TaskService { repo: MemoryRepo::default() };
+    println!("{:?}", svc.create("  Write the README  "));
+    println!("{:?}", svc.create("   "));
+    println!("{:?}", svc.create(&"x".repeat(201)).map(|t| t.id));
+    println!("{:?}", svc.complete(1));
+    println!("{:?}", svc.complete(42));
+    println!("stored: {:?}", svc.repo.get(1));
+}
+@note
+The service enforces the rules (trimmed titles, non-empty, a length limit, existing ids) without knowing anything about HTTP or SQL, and here it runs on an in-memory repository. In the real app the routes translate `ServiceError::Validation` into 422 and `NotFound` into 404, and a SQLite repository implements the same trait.
+@mistakes
+- **Designing the API while writing handlers.** Write the contract first; it keeps everything consistent.
+- **Unbounded list endpoints.** Paginate with a maximum page size from the start.
+- **Business rules inside handlers.** Put them in a service layer you can test without HTTP.
+@keys
+- A written contract defines routes, shapes, status codes and errors.
+- Paginate with defaults, caps and a total count.
+- Routes, service and repository each have one job.
+- Each layer is testable on its own.
+
+=== W1.2
+@idea
+The repository wraps SQLite. A `rusqlite::Connection` isn't `Sync`, so the simplest correct sharing for a small service is **`Arc<Mutex<Connection>>`** in the app state: each handler locks, runs a short query and unlocks. Because rusqlite is synchronous, heavier services move database calls into `spawn_blocking` or use a pool (r2d2, deadpool) or an async driver like sqlx; for a portfolio API with modest traffic, a mutex is honest and fast enough.
+
+Map rows to structs in one helper (`fn row_to_task(row) -> Result<Task>`) so every query returns the same shape. Use **parameters** everywhere, `LIMIT ?1 OFFSET ?2` for pagination and a separate `COUNT(*)` for the total. For **PATCH**, accept optional fields and update only those present: `UPDATE tasks SET title = COALESCE(?1, title), done = COALESCE(?2, done) WHERE id = ?3`, then check `changes()` (zero rows means 404).
+
+Errors flow through one type: `ApiError` with `From<rusqlite::Error>` so `?` works in handlers, and `IntoResponse` so each variant becomes the right status and the standard JSON body. Finally, test the whole stack with **`oneshot`**: build the router on an in-memory database and send real requests, asserting status codes and bodies.
+@how
+- State: `Arc<Mutex<Connection>>`; lock briefly, never across `.await`.
+- One `row_to_task` mapper; parameters for every value.
+- Pagination: `LIMIT ?1 OFFSET ?2` plus `COUNT(*)`.
+- PATCH with `COALESCE(?n, column)`; `changes() == 0` means not found.
+- `ApiError`: `From<rusqlite::Error>` + `IntoResponse`; test with `oneshot` on `:memory:`.
+@example rust: The SQLite repository with pagination and partial updates
+use rusqlite::{params, Connection, OptionalExtension, Result, Row};
+
+#[derive(Debug)]
+struct Task { id: i64, title: String, done: bool }
+
+fn row_to_task(row: &Row) -> Result<Task> {
+    Ok(Task { id: row.get("id")?, title: row.get("title")?, done: row.get("done")? })
+}
+
+struct Repo { conn: Connection }
+
+impl Repo {
+    fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch("CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);")?;
+        Ok(Repo { conn })
+    }
+    fn create(&self, title: &str) -> Result<Task> {
+        self.conn.execute("INSERT INTO tasks (title) VALUES (?1)", params![title])?;
+        self.get(self.conn.last_insert_rowid()).map(|t| t.unwrap())
+    }
+    fn get(&self, id: i64) -> Result<Option<Task>> {
+        self.conn.query_row("SELECT id, title, done FROM tasks WHERE id = ?1", params![id], row_to_task).optional()
+    }
+    fn list(&self, page: u32, per_page: u32) -> Result<(Vec<Task>, i64)> {
+        let mut stmt = self.conn.prepare("SELECT id, title, done FROM tasks ORDER BY id LIMIT ?1 OFFSET ?2")?;
+        let items = stmt.query_map(params![per_page, (page - 1) * per_page], row_to_task)?.collect::<Result<Vec<_>>>()?;
+        let total = self.conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?;
+        Ok((items, total))
+    }
+    fn patch(&self, id: i64, title: Option<&str>, done: Option<bool>) -> Result<Option<Task>> {
+        let changed = self.conn.execute(
+            "UPDATE tasks SET title = COALESCE(?1, title), done = COALESCE(?2, done) WHERE id = ?3",
+            params![title, done, id],
+        )?;
+        if changed == 0 { Ok(None) } else { self.get(id) }
+    }
+}
+
+fn main() -> Result<()> {
+    let repo = Repo::open_in_memory()?;
+    for t in ["Write tests", "Add pagination", "Dockerfile", "README", "Release"] {
+        repo.create(t)?;
+    }
+    let (page2, total) = repo.list(2, 2)?;
+    println!("page 2 of {total}: {page2:?}");
+    println!("patch done only:  {:?}", repo.patch(3, None, Some(true))?);
+    println!("patch title only: {:?}", repo.patch(3, Some("Multi-stage Dockerfile"), None)?);
+    println!("patch missing id: {:?}", repo.patch(99, None, Some(true))?);
+    println!("get missing id:   {:?}", repo.get(99)?);
+    Ok(())
+}
+@deps rusqlite@0.32+bundled
+@note
+Page 2 with two items per page returned tasks 3 and 4 along with the total of five, which is all the API needs to build its pagination response. `COALESCE` let one PATCH statement update only the fields that were sent, and an update touching zero rows became `None`, which the handler turns into a 404. `.optional()` turns "no rows" into `None` for single-row lookups.
+@example rust: The full HTTP stack tested with oneshot on an in-memory database
+use axum::{body::Body, extract::{Path, State}, http::{Request, StatusCode}, response::{IntoResponse, Response}, routing::{get, post}, Json, Router};
+use http_body_util::BodyExt;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::sync::{Arc, Mutex};
+use tower::ServiceExt;
+
+#[derive(Serialize)]
+struct Task { id: i64, title: String, done: bool }
+
+#[derive(Deserialize)]
+struct NewTask { title: String }
+
+enum ApiError { NotFound(i64), Validation(String), Internal(String) }
+
+impl From<rusqlite::Error> for ApiError {
+    fn from(e: rusqlite::Error) -> Self { ApiError::Internal(e.to_string()) }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (status, msg) = match self {
+            ApiError::NotFound(id) => (StatusCode::NOT_FOUND, format!("task {id} not found")),
+            ApiError::Validation(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
+            ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
+        };
+        (status, Json(json!({ "error": msg }))).into_response()
+    }
+}
+
+type Db = Arc<Mutex<Connection>>;
+
+async fn create(State(db): State<Db>, Json(new): Json<NewTask>) -> Result<(StatusCode, Json<Task>), ApiError> {
+    let title = new.title.trim().to_string();
+    if title.is_empty() {
+        return Err(ApiError::Validation("title must not be empty".into()));
+    }
+    let conn = db.lock().unwrap();
+    conn.execute("INSERT INTO tasks (title) VALUES (?1)", params![title])?;
+    Ok((StatusCode::CREATED, Json(Task { id: conn.last_insert_rowid(), title, done: false })))
+}
+
+async fn show(State(db): State<Db>, Path(id): Path<i64>) -> Result<Json<Task>, ApiError> {
+    let conn = db.lock().unwrap();
+    conn.query_row("SELECT id, title, done FROM tasks WHERE id = ?1", params![id], |r| Ok(Task { id: r.get(0)?, title: r.get(1)?, done: r.get(2)? }))
+        .optional()?
+        .map(Json)
+        .ok_or(ApiError::NotFound(id))
+}
+
+fn app() -> Router {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);").unwrap();
+    Router::new()
+        .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
+        .route("/tasks", post(create))
+        .route("/tasks/{id}", get(show))
+        .with_state(Arc::new(Mutex::new(conn)))
+}
+
+async fn send(app: &Router, method: &str, uri: &str, body: &str) -> (u16, String) {
+    let req = Request::builder().method(method).uri(uri).header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status().as_u16();
+    (status, String::from_utf8(resp.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap())
+}
+
+#[tokio::main]
+async fn main() {
+    let app = app();
+    let checks = [
+        ("GET", "/health", "", 200),
+        ("POST", "/tasks", r#"{"title":"Write tests"}"#, 201),
+        ("POST", "/tasks", r#"{"title":"   "}"#, 422),
+        ("GET", "/tasks/1", "", 200),
+        ("GET", "/tasks/9", "", 404),
+    ];
+    for (method, uri, body, expected) in checks {
+        let (status, text) = send(&app, method, uri, body).await;
+        let mark = if status == expected { "pass" } else { "FAIL" };
+        println!("{mark} {method:4} {uri:9} {status} {text}");
+    }
+}
+@deps axum@0.8, tokio@1+full, tower@0.5+util, http-body-util@0.1, serde@1+derive, serde_json@1, rusqlite@0.32+bundled
+@note
+Each request went through routing, extraction, the handler, SQLite and error conversion, without a network or a database file, so a test suite like this runs in milliseconds. Because `ApiError` converts from `rusqlite::Error`, handlers use `?` on database calls, and every error response shares the `{"error": ...}` format promised in the contract.
+@mistakes
+- **Holding the Mutex across `.await`.** Lock, query, drop; or use `spawn_blocking` or a pool.
+- **Reading the inserted row with a second query when not needed.** `last_insert_rowid()` gives the id.
+- **Testing only the happy path.** Assert 404 and 422 bodies as well.
+@keys
+- `Arc<Mutex<Connection>>` is a simple, correct start for SQLite.
+- One row mapper; parameters, LIMIT/OFFSET and COUNT for pages.
+- PATCH with COALESCE; zero changed rows means 404.
+- `ApiError` unifies errors; `oneshot` tests the whole stack.
+
+=== W1.3
+@idea
+Shipping a web service adds operational features. **Configuration** comes from environment variables (`TASKHUB_ADDR`, `TASKHUB_DB`, `RUST_LOG`), the convention for containers and the twelve-factor app; parse them once at start-up into a typed `Config` with defaults, and **fail fast** with a clear message if a value is invalid, rather than discovering it on the first request.
+
+**Request logging** with `tower_http::trace::TraceLayer` records the method, path, status and latency of every request through `tracing`, and a request-id layer lets you follow one request through the logs. **Graceful shutdown** matters for deployments: on SIGTERM (what Docker and Kubernetes send), the server stops accepting new connections, lets in-flight requests finish, and exits; `axum::serve(listener, app).with_graceful_shutdown(signal)` does this.
+
+The **Dockerfile** uses a multi-stage build: compile in a full Rust image, then copy only the binary into a minimal runtime image (distroless or debian-slim) running as a non-root user, typically under 30 MB. CI builds and tests on every push, and an **OpenAPI-style README** documents each endpoint with example requests and responses. Together, they show employers you understand the whole life of a service, not just the handlers.
+@how
+- Typed `Config` from env vars with defaults; exit early on invalid values.
+- `TraceLayer::new_for_http()` for request logs; `RUST_LOG` filters them.
+- `axum::serve(..).with_graceful_shutdown(shutdown_signal())` for SIGTERM/Ctrl+C.
+- Multi-stage Dockerfile, minimal runtime image, non-root user, volume for the database.
+- CI and a README with every endpoint, example requests and status codes.
+@example rust: Configuration from the environment, validated at start-up
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+#[derive(Debug)]
+struct Config { addr: SocketAddr, db: PathBuf, max_body_kb: u32 }
+
+fn load<I: IntoIterator<Item = (String, String)>>(vars: I) -> Result<Config, String> {
+    let env: HashMap<String, String> = vars.into_iter().filter(|(k, _)| k.starts_with("TASKHUB_")).collect();
+    let get = |k: &str, default: &str| env.get(k).cloned().unwrap_or_else(|| default.to_string());
+    let addr = get("TASKHUB_ADDR", "127.0.0.1:3000");
+    let addr = addr.parse().map_err(|e| format!("TASKHUB_ADDR={addr:?} is not an address: {e}"))?;
+    let max = get("TASKHUB_MAX_BODY_KB", "64");
+    let max_body_kb: u32 = max.parse().map_err(|_| format!("TASKHUB_MAX_BODY_KB={max:?} must be a whole number"))?;
+    if !(1..=10_240).contains(&max_body_kb) {
+        return Err(format!("TASKHUB_MAX_BODY_KB must be between 1 and 10240, got {max_body_kb}"));
+    }
+    Ok(Config { addr, db: get("TASKHUB_DB", "taskhub.db").into(), max_body_kb })
+}
+
+fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+fn main() {
+    println!("{:?}", load(vars(&[])));
+    println!("{:?}", load(vars(&[("TASKHUB_ADDR", "0.0.0.0:8080"), ("TASKHUB_DB", "/data/taskhub.db"), ("PATH", "/usr/bin")])));
+    println!("{:?}", load(vars(&[("TASKHUB_ADDR", "localhost:http")])));
+    println!("{:?}", load(vars(&[("TASKHUB_MAX_BODY_KB", "0")])));
+    // in main: let config = load(std::env::vars()).unwrap_or_else(|e| { eprintln!("config error: {e}"); std::process::exit(2) });
+}
+@note
+With no variables set, every setting took a sensible default; in a container, the variables override them. Invalid values produce one precise message naming the variable, so a misconfigured deployment fails immediately at start-up instead of misbehaving later. Taking the variables as an iterator (`std::env::vars()` in production) makes the loader testable without touching the real environment.
+@example rust: Graceful shutdown lets in-flight requests finish
+use axum::{routing::get, Router};
+use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new().route("/report", get(|| async {
+        tokio::time::sleep(Duration::from_millis(300)).await;      // a slow request
+        "report ready"
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/report", listener.local_addr().unwrap());
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async { stop_rx.await.ok(); })   // real apps: tokio::signal::ctrl_c() or SIGTERM
+            .await
+            .unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let started = Instant::now();
+    let in_flight = tokio::spawn({
+        let (client, url) = (client.clone(), url.clone());
+        async move { client.get(url).send().await.unwrap().text().await.unwrap() }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    stop_tx.send(()).unwrap();                                       // shutdown requested mid-request
+    println!("in-flight request finished: {:?}", in_flight.await.unwrap());
+    server.await.unwrap();
+    println!("server exited after the request completed: {}", started.elapsed() >= Duration::from_millis(300));
+    println!("new connections refused: {}", client.get(&url).send().await.is_err());
+}
+@deps axum@0.8, tokio@1+full, reqwest@0.12
+@note
+Shutdown was requested 50 ms into a 300 ms request, yet the client still received "report ready": the server stopped accepting connections but waited for the in-flight request before exiting. After that, a new request failed to connect. Without graceful shutdown, every deployment would cut off requests in progress.
+@mistakes
+- **Reading environment variables all over the code.** Load one typed Config at start-up.
+- **Killing the process on deploy.** Handle SIGTERM with graceful shutdown.
+- **Shipping the build image.** Multi-stage builds give small, non-root runtime images.
+@keys
+- Typed configuration from env vars, validated at start-up.
+- TraceLayer gives per-request logs through tracing.
+- Graceful shutdown finishes in-flight requests.
+- Multi-stage Docker images, CI and a clear README complete the service.
+
+=== W2.1
+@idea
+**kvlog** is a persistent key-value store in the style of **Bitcask**, the engine behind Riak. Its core idea is simple: never modify data in place. Every `set` and `remove` is **appended** to a log file as a record, and an in-memory **index** maps each key to the position of its latest record. Reads are one index lookup plus one disk read; writes are one sequential append, which is the fastest thing a disk can do. Removes append a **tombstone** record.
+
+Because old values are never overwritten, the log grows with every update. **Compaction** fixes that: write the live records (the latest value of each key) to a new file, then atomically replace the old one. On start-up, **opening** the store replays the log from the beginning to rebuild the index.
+
+The on-disk **record format** must make crashes survivable. Each record carries a header with a **checksum** (CRC32) over its contents, the kind (set or remove) and the key and value lengths, followed by the bytes. If the machine loses power mid-write, the last record may be **torn** (incomplete) or corrupted; on replay, a record whose length runs past the end of the file or whose checksum doesn't match marks the end of the valid log, and the store truncates there. Durability depends on **fsync**: calling `file.sync_data()` after a write guarantees it reached the disk, at a cost, so stores often offer a choice between syncing every write and syncing periodically.
+@how
+- Append-only log of set and tombstone records; in-memory index of key → position.
+- Reads: index lookup then one read; writes: one append.
+- Replay on open to rebuild the index; compact to reclaim space.
+- Record = `[crc32][kind][key_len][val_len][key][value]`, little-endian.
+- On replay, stop at a torn or corrupted record and truncate; `sync_data()` for durability.
+@example rust: A real CRC32 and why it catches corruption
+fn crc32_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    for (i, entry) in table.iter_mut().enumerate() {
+        let mut c = i as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+        }
+        *entry = c;
+    }
+    table
+}
+
+fn crc32(table: &[u32; 256], bytes: &[u8]) -> u32 {
+    !bytes.iter().fold(!0u32, |c, &b| table[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8))
+}
+
+fn encode_set(table: &[u32; 256], key: &[u8], value: &[u8]) -> Vec<u8> {
+    let mut body = vec![1u8];
+    body.extend((key.len() as u32).to_le_bytes());
+    body.extend((value.len() as u32).to_le_bytes());
+    body.extend(key);
+    body.extend(value);
+    let mut rec = crc32(table, &body).to_le_bytes().to_vec();
+    rec.extend(body);
+    rec
+}
+
+fn verify(table: &[u32; 256], rec: &[u8]) -> bool {
+    let stored = u32::from_le_bytes(rec[..4].try_into().unwrap());
+    stored == crc32(table, &rec[4..])
+}
+
+fn main() {
+    let t = crc32_table();
+    println!("crc32(\"123456789\") = {:08x} (the standard check value is cbf43926)", crc32(&t, b"123456789"));
+    let rec = encode_set(&t, b"user:1", b"Ada");
+    println!("record: {} bytes, valid: {}", rec.len(), verify(&t, &rec));
+    let mut flipped = rec.clone();
+    flipped[15] ^= 0b0000_0100;                                   // one bit flips on disk
+    println!("one flipped bit detected: {}", !verify(&t, &flipped));
+    let mut swapped = rec.clone();
+    swapped.swap(16, 17);                                          // two bytes swap places
+    println!("swapped bytes detected: {}", !verify(&t, &swapped));
+}
+@note
+The implementation reproduces the standard CRC32 check value, so it matches zlib and the `crc32fast` crate (which a real project would use for speed). A single flipped bit or two swapped bytes changes the checksum, so a corrupted record is recognised on replay instead of being returned as a wrong value. The simple rotate-and-xor checksum from the original sketch would miss some of these errors.
+@example rust: Recovering from a torn final record
+fn records(log: &[u8]) -> (Vec<(String, String)>, usize) {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while pos + 8 <= log.len() {
+        let klen = u32::from_le_bytes(log[pos..pos + 4].try_into().unwrap()) as usize;
+        let vlen = u32::from_le_bytes(log[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        let end = pos + 8 + klen + vlen;
+        if end > log.len() {
+            break;                                                 // torn: the write never finished
+        }
+        let key = String::from_utf8_lossy(&log[pos + 8..pos + 8 + klen]).into_owned();
+        let value = String::from_utf8_lossy(&log[pos + 8 + klen..end]).into_owned();
+        out.push((key, value));
+        pos = end;
+    }
+    (out, pos)
+}
+
+fn append(log: &mut Vec<u8>, k: &str, v: &str) {
+    log.extend((k.len() as u32).to_le_bytes());
+    log.extend((v.len() as u32).to_le_bytes());
+    log.extend(k.as_bytes());
+    log.extend(v.as_bytes());
+}
+
+fn main() {
+    let mut log = Vec::new();
+    append(&mut log, "a", "apple");
+    append(&mut log, "b", "banana");
+    append(&mut log, "c", "cherry");
+    let full = log.len();
+    log.truncate(full - 4);                                        // power lost mid-write
+    let (recovered, valid_len) = records(&log);
+    println!("recovered {recovered:?}");
+    println!("file is {} bytes; truncate to {valid_len} and carry on", log.len());
+    log.truncate(valid_len);
+    append(&mut log, "c", "cranberry");
+    println!("after the next write: {:?}", records(&log).0);
+}
+@note
+The last record was cut off four bytes short, as if the power failed during the write. Replay kept the two complete records, reported where the valid log ends, and after truncating there, new writes appended cleanly. Without truncation, the next record would be glued to the torn bytes and the log would be unreadable from that point.
+@mistakes
+- **Updating values in place.** A crash mid-write corrupts data; append instead.
+- **No checksums.** Corruption is returned as data; verify every record.
+- **Assuming a write is durable when `write` returns.** It's in the OS cache until `sync_data`.
+@keys
+- Append-only log plus an in-memory index: fast writes and reads.
+- Tombstones record removals; compaction reclaims space.
+- Checksums and length checks detect torn and corrupted records.
+- Durability needs fsync; trade it off deliberately.
+
+=== W2.2
+@idea
+The engine turns the record format into a working store. **`open`** reads the file from the start, decoding records one by one: a set inserts `key → (offset, length)` into the index, a tombstone removes the key, and a torn or corrupted tail is truncated. Storing positions rather than values keeps memory proportional to the number of keys, not the data size; small stores may keep values in memory, as the original sketch does.
+
+**`set`** appends a record and updates the index; **`get`** looks up the position, seeks and reads the value; **`remove`** appends a tombstone and removes the key (returning whether it existed). Track **stale bytes**, the space taken by superseded records, so the store knows when compaction is worthwhile (for example when more than half the file is stale).
+
+**Compaction** writes every live record to a new file (`data.compact`), calls `sync_all`, then **atomically renames** it over the old file, so a crash leaves either the old file or the new one, never a mix; the index is rebuilt with the new offsets. Tests prove persistence by **reopening**: set values, drop the store, open it again from the same path, and check everything is still there, including removals and the result of a compaction.
+@how
+- Index `HashMap<Vec<u8>, (u64, u32)>`: key → offset and length of the value.
+- `set`: append, then update the index; count superseded bytes as stale.
+- `get`: index lookup, `seek`, `read_exact`.
+- Compact: write live records to a temp file, `sync_all`, `rename` over the original.
+- Test by dropping and reopening the store.
+@example rust: An engine with an offset index and atomic compaction
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+
+const TOMBSTONE: u32 = u32::MAX;
+
+struct KvStore { path: PathBuf, file: File, index: HashMap<Vec<u8>, (u64, u32)>, stale: u64, end: u64 }
+
+impl KvStore {
+    fn open(path: &Path) -> io::Result<Self> {
+        let mut file = OpenOptions::new().read(true).append(true).create(true).open(path)?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        let (mut index, mut stale, mut pos) = (HashMap::new(), 0u64, 0usize);
+        while pos + 8 <= buf.len() {
+            let klen = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+            let vlen = u32::from_le_bytes(buf[pos + 4..pos + 8].try_into().unwrap());
+            let vbytes = if vlen == TOMBSTONE { 0 } else { vlen as usize };
+            let end = pos + 8 + klen + vbytes;
+            if end > buf.len() { break; }
+            let key = buf[pos + 8..pos + 8 + klen].to_vec();
+            let old = if vlen == TOMBSTONE { stale += (end - pos) as u64; index.remove(&key) }
+                      else { index.insert(key, ((pos + 8 + klen) as u64, vlen)) };
+            if let Some((_, l)) = old { stale += 8 + klen as u64 + l as u64; }
+            pos = end;
+        }
+        file.set_len(pos as u64)?;                                   // drop a torn tail
+        Ok(KvStore { path: path.into(), file, index, stale, end: pos as u64 })
+    }
+
+    fn append(&mut self, key: &[u8], value: Option<&[u8]>) -> io::Result<u64> {
+        let vlen = value.map_or(TOMBSTONE, |v| v.len() as u32);
+        let mut rec = (key.len() as u32).to_le_bytes().to_vec();
+        rec.extend(vlen.to_le_bytes());
+        rec.extend(key);
+        rec.extend(value.unwrap_or(&[]));
+        self.file.write_all(&rec)?;
+        let value_at = self.end + 8 + key.len() as u64;
+        self.end += rec.len() as u64;
+        Ok(value_at)
+    }
+
+    fn set(&mut self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        let at = self.append(key, Some(value))?;
+        if let Some((_, l)) = self.index.insert(key.to_vec(), (at, value.len() as u32)) {
+            self.stale += 8 + key.len() as u64 + l as u64;
+        }
+        Ok(())
+    }
+
+    fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let Some(&(at, len)) = self.index.get(key) else { return Ok(None) };
+        let mut f = File::open(&self.path)?;
+        f.seek(SeekFrom::Start(at))?;
+        let mut v = vec![0; len as usize];
+        f.read_exact(&mut v)?;
+        Ok(Some(v))
+    }
+
+    fn remove(&mut self, key: &[u8]) -> io::Result<bool> {
+        let Some((_, l)) = self.index.remove(key) else { return Ok(false) };
+        self.append(key, None)?;
+        self.stale += 2 * (8 + key.len() as u64) + l as u64;
+        Ok(true)
+    }
+
+    fn compact(&mut self) -> io::Result<()> {
+        let tmp = self.path.with_extension("compact");
+        let mut out = File::create(&tmp)?;
+        let mut keys: Vec<Vec<u8>> = self.index.keys().cloned().collect();
+        keys.sort();
+        for k in keys {
+            let v = self.get(&k)?.unwrap();
+            out.write_all(&(k.len() as u32).to_le_bytes())?;
+            out.write_all(&(v.len() as u32).to_le_bytes())?;
+            out.write_all(&k)?;
+            out.write_all(&v)?;
+        }
+        out.sync_all()?;
+        fs::rename(&tmp, &self.path)?;                                // atomic replace
+        *self = KvStore::open(&self.path)?;
+        Ok(())
+    }
+}
+
+fn main() -> io::Result<()> {
+    let path = std::env::temp_dir().join(format!("kvlog-demo-{}.data", std::process::id()));
+    let _ = fs::remove_file(&path);
+    let mut kv = KvStore::open(&path)?;
+    for i in 0..50 {
+        kv.set(b"counter", i.to_string().as_bytes())?;              // 50 versions of one key
+    }
+    kv.set(b"name", b"Ada")?;
+    kv.set(b"temp", b"to be removed")?;
+    kv.remove(b"temp")?;
+    println!("before compaction: {} bytes, {} stale, {} live keys", kv.end, kv.stale, kv.index.len());
+    kv.compact()?;
+    println!("after compaction:  {} bytes, {} stale", kv.end, kv.stale);
+    drop(kv);
+    let mut kv = KvStore::open(&path)?;
+    println!("reopened: counter={:?} name={:?} temp={:?}", kv.get(b"counter")?.map(|v| String::from_utf8(v).unwrap()), kv.get(b"name")?.map(|v| String::from_utf8(v).unwrap()), kv.get(b"temp")?);
+    fs::remove_file(&path)?;
+    Ok(())
+}
+@note
+Fifty overwrites of `counter` plus a removed key left most of the file stale. Compaction rewrote only the two live records into a new file and renamed it over the old one, shrinking the log to a few dozen bytes. Reopening from disk restored exactly the latest values, and the removed key stayed removed.
+@example rust test: Persistence tests that reopen the store
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+pub struct Kv { file: File, map: HashMap<String, String> }
+
+impl Kv {
+    pub fn open(path: &Path) -> io::Result<Kv> {
+        let mut file = OpenOptions::new().read(true).append(true).create(true).open(path)?;
+        let mut text = String::new();
+        file.read_to_string(&mut text)?;
+        let mut map = HashMap::new();
+        for line in text.lines() {                       // a text log keeps the test readable
+            match line.split_once('\t') {
+                Some(("-", k)) => { map.remove(k); }
+                Some((k, v)) => { map.insert(k.to_string(), v.to_string()); }
+                None => {}
+            }
+        }
+        Ok(Kv { file, map })
+    }
+    pub fn set(&mut self, k: &str, v: &str) -> io::Result<()> {
+        writeln!(self.file, "{k}\t{v}")?;
+        self.map.insert(k.into(), v.into());
+        Ok(())
+    }
+    pub fn remove(&mut self, k: &str) -> io::Result<bool> {
+        writeln!(self.file, "-\t{k}")?;
+        Ok(self.map.remove(k).is_some())
+    }
+    pub fn get(&self, k: &str) -> Option<&str> { self.map.get(k).map(|s| s.as_str()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("kv-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn values_survive_reopen() -> io::Result<()> {
+        let p = temp("reopen");
+        { let mut kv = Kv::open(&p)?; kv.set("a", "1")?; kv.set("b", "2")?; kv.set("a", "3")?; }
+        let kv = Kv::open(&p)?;
+        assert_eq!((kv.get("a"), kv.get("b")), (Some("3"), Some("2")));
+        Ok(())
+    }
+
+    #[test]
+    fn removals_survive_reopen() -> io::Result<()> {
+        let p = temp("remove");
+        { let mut kv = Kv::open(&p)?; kv.set("a", "1")?; assert!(kv.remove("a")?); assert!(!kv.remove("zz")?); }
+        assert_eq!(Kv::open(&p)?.get("a"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn set_after_remove_wins() -> io::Result<()> {
+        let p = temp("resurrect");
+        { let mut kv = Kv::open(&p)?; kv.set("a", "1")?; kv.remove("a")?; kv.set("a", "2")?; }
+        assert_eq!(Kv::open(&p)?.get("a"), Some("2"));
+        Ok(())
+    }
+}
+@note
+Each test writes through one store, lets it go out of scope (closing the file), and checks the data through a freshly opened store, which is the only way to prove that what's in memory also reached the log. The cases cover overwrites, removals of present and absent keys, and a key set again after removal, where replay order must decide.
+@mistakes
+- **Writing compaction output over the live file directly.** A crash mid-compaction loses data. Write elsewhere, sync, rename.
+- **Testing without reopening.** In-memory state can hide a broken replay.
+- **Counting stale space wrongly.** Superseded sets and tombstones both count; test the numbers.
+@keys
+- Open replays the log into an index of positions.
+- Set and remove append; get reads one value from disk.
+- Compaction rewrites live data and atomically renames.
+- Reopen in tests to prove persistence.
+
+=== W2.3
+@idea
+A storage engine becomes a product with a **command-line client** and honest documentation. The CLI uses clap subcommands (`set`, `get`, `rm`, `compact`, `stats`) and conventional behaviour: values print to stdout, errors to stderr, a missing key exits with code 1 so scripts can test for it (`if kvlog get user:1 >/dev/null; then ...`), and `stats` reports keys, file size, stale bytes and whether compaction is recommended.
+
+**Benchmarks** with criterion measure what users care about: writes per second (with and without `sync_data` per write, which can differ by a factor of a hundred or more), random reads, and open time for a large log. Publish the numbers with the hardware they were measured on.
+
+**Document the guarantees and limits** plainly: single process only (no file locking yet, so two writers would corrupt the log), the index must fit in memory, durability depends on the sync setting, keys and values up to 4 GB each. Then publish: fill in Cargo.toml metadata (description, license, repository, keywords), run `cargo publish --dry-run` to check the package, and `cargo publish`. A crate on crates.io with docs on docs.rs is a strong portfolio signal.
+@how
+- clap subcommands; stdout for values, stderr for messages, exit 1 for missing keys.
+- `stats` reports size, live keys, stale bytes and a compaction hint.
+- criterion benchmarks for writes (synced and not), reads and open time.
+- README: guarantees, limits, benchmark results with hardware.
+- Cargo metadata, `cargo publish --dry-run`, then `cargo publish`.
+@example rust: The CLI dispatching to a store, with script-friendly exit codes
+use clap::{Parser, Subcommand};
+use std::collections::BTreeMap;
+
+#[derive(Parser, Debug)]
+#[command(name = "kvlog", color = clap::ColorChoice::Never)]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    Set { key: String, value: String },
+    Get { key: String },
+    Rm { key: String },
+    Stats,
+}
+
+struct Store { map: BTreeMap<String, String>, file_bytes: u64, stale: u64 }
+
+/// Returns (stdout, stderr, exit code) so the dispatch is testable.
+fn run(store: &mut Store, cli: Cli) -> (String, String, u8) {
+    match cli.cmd {
+        Cmd::Set { key, value } => {
+            let rec = 8 + key.len() as u64 + value.len() as u64;
+            if let Some(old) = store.map.insert(key.clone(), value) { store.stale += 8 + key.len() as u64 + old.len() as u64; }
+            store.file_bytes += rec;
+            (String::new(), String::new(), 0)
+        }
+        Cmd::Get { key } => match store.map.get(&key) {
+            Some(v) => (v.clone(), String::new(), 0),
+            None => (String::new(), format!("kvlog: key {key:?} not found"), 1),
+        },
+        Cmd::Rm { key } => match store.map.remove(&key) {
+            Some(_) => (String::new(), String::new(), 0),
+            None => (String::new(), format!("kvlog: key {key:?} not found"), 1),
+        },
+        Cmd::Stats => {
+            let pct = if store.file_bytes == 0 { 0 } else { 100 * store.stale / store.file_bytes };
+            let hint = if pct > 50 { "  (run `kvlog compact`)" } else { "" };
+            (format!("keys {}  file {} B  stale {} B ({pct}%){hint}", store.map.len(), store.file_bytes, store.stale), String::new(), 0)
+        }
+    }
+}
+
+fn main() {
+    let mut store = Store { map: BTreeMap::new(), file_bytes: 0, stale: 0 };
+    let script = ["set user:1 Ada", "set user:1 Ada_Lovelace", "set user:1 Countess", "get user:1", "get user:2", "rm user:2", "stats"];
+    for line in script {
+        let args = std::iter::once("kvlog").chain(line.split(' '));
+        let (out, err, code) = run(&mut store, Cli::try_parse_from(args).unwrap());
+        println!("$ kvlog {line:24} exit {code}  {}{}", out, if err.is_empty() { String::new() } else { format!("[stderr] {err}") });
+    }
+}
+@deps clap@4+derive
+@note
+Values went to stdout and "not found" messages to stderr with exit code 1, which is what lets shell scripts use the tool in conditions and pipes. After three writes to the same key most of the file was stale, so `stats` suggested compaction. Returning `(stdout, stderr, code)` from `run` keeps the dispatch testable; `main` would print them and return the exit code.
+@example bash: Benchmarks, a dry run and publishing
+$ cargo bench
+set (no sync)           time:   [1.21 µs 1.23 µs 1.26 µs]
+set (sync_data)         time:   [212.7 µs 218.3 µs 224.9 µs]
+get (random, 100k keys) time:   [2.94 µs 2.98 µs 3.03 µs]
+open (100k records)     time:   [18.41 ms 18.66 ms 18.93 ms]
+# measured on a Ryzen 7 5800X with an NVMe SSD; numbers vary by disk
+
+$ cargo publish --dry-run
+   Packaging kvlog v0.1.0
+   Verifying kvlog v0.1.0
+   Compiling kvlog v0.1.0 (target/package/kvlog-0.1.0)
+    Finished `dev` profile [unoptimized + debuginfo] target(s)
+   Uploading kvlog v0.1.0
+warning: aborting upload due to dry run
+
+$ cargo publish
+   Published kvlog v0.1.0 at registry `crates-io`
+# docs appear on docs.rs/kvlog a few minutes later
+@note
+The benchmark makes the durability trade-off concrete: syncing every write costs about 200 times more than leaving it to the OS cache, which is why the store should let users choose. The dry run builds the packaged crate exactly as crates.io would, catching missing files or metadata before anything is published; publishing is permanent (versions can be yanked but not deleted).
+@mistakes
+- **Printing errors to stdout.** Scripts capture stdout; send messages to stderr.
+- **Hiding limits.** Say clearly that the store is single-process and needs the index in RAM.
+- **Benchmark numbers without context.** State the hardware and whether writes were synced.
+@keys
+- A clap CLI with stdout/stderr discipline and exit codes.
+- `stats` exposes the engine's health.
+- criterion quantifies the cost of durability.
+- Document guarantees and limits; publish after a dry run.
+
+=== W3.1
+@idea
+**lifewasm** runs Conway's **Game of Life** in the browser, with the simulation in Rust compiled to WebAssembly. The rules are tiny: on a grid of cells, each alive or dead, the next generation is computed from each cell's eight neighbours. A live cell with two or three live neighbours survives; a dead cell with exactly three becomes alive; every other cell is dead next turn. Simple rules produce rich behaviour: still lifes, oscillators, gliders that travel across the grid.
+
+Represent the grid as a **flat `Vec<u8>`** of `width × height` cells, indexed by `row * width + col`. A flat buffer is cache-friendly and, crucially, JavaScript can read it **directly from WebAssembly memory** without copying, which is what makes large grids fast. Make the edges **wrap around** (a torus), so a glider leaving the right edge reappears on the left: neighbour coordinates are computed with `(row + height - 1) % height` and similar, avoiding bounds checks and special cases.
+
+Split the work between the languages by strength: **Rust** owns the state and computes generations (`tick`), plus mutations like toggling a cell or inserting a pattern; **JavaScript** draws cells on a `<canvas>`, handles clicks and buttons, and drives the animation with `requestAnimationFrame`. The boundary stays narrow: a few calls per frame and a pointer to the cell buffer.
+@how
+- Rules: survive with 2 or 3 neighbours; birth with exactly 3; otherwise dead.
+- Flat `Vec<u8>`: index `row * width + col`.
+- Wrap-around neighbours with modular arithmetic.
+- Rust: state, `tick`, `toggle`, patterns. JavaScript: canvas, input, animation loop.
+- Expose a pointer to the cells so JS reads them without copying.
+@example rust: Wrap-around neighbour counting on a flat grid
+struct Grid { width: usize, height: usize, cells: Vec<u8> }
+
+impl Grid {
+    fn index(&self, row: usize, col: usize) -> usize { row * self.width + col }
+
+    fn live_neighbours(&self, row: usize, col: usize) -> u8 {
+        let mut count = 0;
+        for dr in [self.height - 1, 0, 1] {
+            for dc in [self.width - 1, 0, 1] {
+                if dr == 0 && dc == 0 { continue; }
+                let r = (row + dr) % self.height;              // wraps: row 0 - 1 becomes the last row
+                let c = (col + dc) % self.width;
+                count += self.cells[self.index(r, c)];
+            }
+        }
+        count
+    }
+}
+
+fn main() {
+    let (w, h) = (5, 4);
+    let mut g = Grid { width: w, height: h, cells: vec![0; w * h] };
+    for (r, c) in [(0, 0), (0, 4), (3, 0), (3, 4)] {               // one live cell in each corner
+        let i = g.index(r, c);
+        g.cells[i] = 1;
+    }
+    for r in 0..h {
+        let row: String = (0..w).map(|c| if g.cells[g.index(r, c)] == 1 { '#' } else { '.' }).collect();
+        let counts: Vec<u8> = (0..w).map(|c| g.live_neighbours(r, c)).collect();
+        println!("{row}   neighbours {counts:?}");
+    }
+    println!("cell (1, 2) lives at index {} of {}", g.index(1, 2), g.cells.len());
+}
+@note
+On a torus the four corners are mutual neighbours, so each corner cell sees three live neighbours and the cells beside the corners see one or two, even though they look far apart on the flat printout. Adding `height - 1` instead of subtracting 1 keeps the arithmetic in unsigned integers, so there's no underflow and no special case for edges.
+@example rust: What JavaScript sees: a pointer and a length
+struct Universe { width: u32, height: u32, cells: Vec<u8> }
+
+impl Universe {
+    fn cells_ptr(&self) -> *const u8 { self.cells.as_ptr() }      // exported to JS in the wasm build
+    fn width(&self) -> u32 { self.width }
+    fn height(&self) -> u32 { self.height }
+}
+
+fn main() {
+    let mut u = Universe { width: 8, height: 2, cells: vec![0; 16] };
+    for i in [1, 2, 3, 9, 10, 11] { u.cells[i] = 1; }
+    // In the browser:
+    //   const cells = new Uint8Array(memory.buffer, universe.cells_ptr(), width * height);
+    //   const alive = cells[row * width + col] === 1;
+    let len = (u.width() * u.height()) as usize;
+    let view = unsafe { std::slice::from_raw_parts(u.cells_ptr(), len) };   // the same view, from Rust
+    for row in view.chunks(u.width() as usize) {
+        println!("{}", row.iter().map(|&c| if c == 1 { "■" } else { "·" }).collect::<String>());
+    }
+    println!("{} bytes shared, {} alive, no copying", view.len(), view.iter().filter(|&&c| c == 1).count());
+}
+@note
+JavaScript builds a `Uint8Array` over WebAssembly memory at the address the pointer gives, so drawing reads Rust's buffer directly; the Rust `from_raw_parts` view here does the same thing to show it. One byte per cell keeps this simple; packing eight cells per byte would use less memory but make the drawing code more complex.
+@mistakes
+- **A `Vec<Vec<u8>>` grid.** Rows scattered in memory are slower and can't be shared with JS as one view.
+- **Bounds-checking edges with many `if`s.** Modular arithmetic handles wrap-around uniformly.
+- **Drawing from Rust through many JS calls.** Let JS read the buffer and draw in one pass.
+@keys
+- Three rules produce the whole Game of Life.
+- A flat buffer is fast and shareable with JavaScript.
+- Wrap-around edges via modular arithmetic.
+- Rust simulates; JavaScript draws and handles input.
+
+=== W3.2
+@idea
+The `Universe` type implements the simulation. **`tick`** computes the next generation into a **second buffer** and then swaps them: every cell's next state must be computed from the *current* generation, so updating in place would corrupt neighbours not yet visited. Keeping two buffers and swapping (`std::mem::swap`) avoids allocating a new vector every frame. **`toggle(row, col)`** flips a cell (for mouse clicks), and **`insert(pattern, row, col)`** stamps a known shape, often described in the community's **RLE** format (`bo$2bo$3o!` is a glider: `b` dead, `o` alive, `$` end of row, numbers repeat).
+
+**Test natively** before involving a browser: well-known patterns have exact, documented behaviour. A **blinker** (three in a row) oscillates with period 2; a **block** (2×2) never changes; a **glider** returns to its original shape after 4 generations, shifted one cell diagonally. These tests catch every off-by-one error in neighbour counting and wrap-around.
+
+Then add the **wasm-bindgen layer**: annotate the struct and an `impl` block with `#[wasm_bindgen]`, exposing `new`, `tick`, `toggle`, `width`, `height` and `cells_ptr`. Keeping the logic in plain methods and the annotations thin means `cargo test` keeps working on your machine while `wasm-pack build` produces the browser package.
+@how
+- Two buffers; compute next from current; `std::mem::swap` after each tick.
+- `toggle` and `insert` for interaction and patterns; parse RLE for real patterns.
+- Test with still lifes (block), oscillators (blinker) and spaceships (glider).
+- Compare a pattern after N generations with a shifted copy.
+- Thin `#[wasm_bindgen]` layer over tested methods.
+@example rust test: Known patterns prove the simulation correct
+pub struct Universe { pub width: usize, pub height: usize, cells: Vec<u8>, next: Vec<u8> }
+
+impl Universe {
+    pub fn new(width: usize, height: usize, live: &[(usize, usize)]) -> Self {
+        let mut cells = vec![0; width * height];
+        for &(r, c) in live { cells[r * width + c] = 1; }
+        Universe { width, height, next: cells.clone(), cells }
+    }
+
+    fn neighbours(&self, r: usize, c: usize) -> u8 {
+        let mut n = 0;
+        for dr in [self.height - 1, 0, 1] {
+            for dc in [self.width - 1, 0, 1] {
+                if (dr, dc) != (0, 0) {
+                    n += self.cells[((r + dr) % self.height) * self.width + (c + dc) % self.width];
+                }
+            }
+        }
+        n
+    }
+
+    pub fn tick(&mut self) {
+        for r in 0..self.height {
+            for c in 0..self.width {
+                let alive = self.cells[r * self.width + c] == 1;
+                self.next[r * self.width + c] = match (alive, self.neighbours(r, c)) {
+                    (true, 2) | (true, 3) | (false, 3) => 1,
+                    _ => 0,
+                };
+            }
+        }
+        std::mem::swap(&mut self.cells, &mut self.next);
+    }
+
+    pub fn live(&self) -> Vec<(usize, usize)> {
+        (0..self.cells.len()).filter(|&i| self.cells[i] == 1).map(|i| (i / self.width, i % self.width)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_is_still() {
+        let block = [(1, 1), (1, 2), (2, 1), (2, 2)];
+        let mut u = Universe::new(6, 6, &block);
+        u.tick();
+        assert_eq!(u.live(), block.to_vec());
+    }
+
+    #[test]
+    fn blinker_has_period_two() {
+        let mut u = Universe::new(5, 5, &[(2, 1), (2, 2), (2, 3)]);
+        u.tick();
+        assert_eq!(u.live(), vec![(1, 2), (2, 2), (3, 2)]);
+        u.tick();
+        assert_eq!(u.live(), vec![(2, 1), (2, 2), (2, 3)]);
+    }
+
+    #[test]
+    fn glider_moves_one_cell_diagonally_every_four_ticks() {
+        let glider = [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)];
+        let mut u = Universe::new(8, 8, &glider);
+        for _ in 0..4 { u.tick(); }
+        let shifted: Vec<_> = glider.iter().map(|&(r, c)| (r + 1, c + 1)).collect();
+        let mut live = u.live();
+        live.sort();
+        let mut expected = shifted;
+        expected.sort();
+        assert_eq!(live, expected);
+    }
+
+    #[test]
+    fn glider_wraps_around_the_edges() {
+        let glider = [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)];
+        let mut u = Universe::new(6, 6, &glider);
+        for _ in 0..24 { u.tick(); }                      // 6 cells diagonally = a full lap
+        let mut live = u.live();
+        live.sort();
+        assert_eq!(live, { let mut g = glider.to_vec(); g.sort(); g });
+    }
+}
+@note
+The block stayed still, the blinker flipped between horizontal and vertical, and the glider moved exactly one cell down and right every four generations. On a 6×6 torus, 24 generations carry the glider all the way around and back to its starting cells, which only works if wrap-around neighbour counting is right on every edge.
+@example rust: Inserting a pattern from RLE and watching it run
+fn parse_rle(rle: &str) -> Vec<(usize, usize)> {
+    let (mut live, mut row, mut col, mut run) = (Vec::new(), 0, 0, 0usize);
+    for ch in rle.chars() {
+        match ch {
+            '0'..='9' => run = run * 10 + ch.to_digit(10).unwrap() as usize,
+            'b' | 'o' | '$' => {
+                let n = run.max(1);
+                match ch {
+                    'b' => col += n,
+                    'o' => { for k in 0..n { live.push((row, col + k)); } col += n; }
+                    _ => { row += n; col = 0; }
+                }
+                run = 0;
+            }
+            '!' => break,
+            _ => {}
+        }
+    }
+    live
+}
+
+fn step(cells: &[u8], next: &mut [u8], w: usize, h: usize) {
+    for r in 0..h {
+        for c in 0..w {
+            let mut n = 0;
+            for dr in [h - 1, 0, 1] { for dc in [w - 1, 0, 1] {
+                if (dr, dc) != (0, 0) { n += cells[((r + dr) % h) * w + (c + dc) % w]; }
+            } }
+            next[r * w + c] = matches!((cells[r * w + c], n), (1, 2) | (_, 3)) as u8;
+        }
+    }
+}
+
+fn main() {
+    let (w, h) = (10, 6);
+    let mut cells = vec![0u8; w * h];
+    let mut next = cells.clone();
+    for (r, c) in parse_rle("bo$2bo$3o!") {                 // a glider in RLE
+        cells[(r + 1) * w + c + 1] = 1;                     // inserted at row 1, column 1
+    }
+    for generation in [0, 4] {
+        if generation == 4 {
+            for _ in 0..4 {
+                step(&cells, &mut next, w, h);
+                std::mem::swap(&mut cells, &mut next);         // no allocation per tick
+            }
+        }
+        println!("generation {generation}:");
+        for row in cells.chunks(w) {
+            println!("  {}", row.iter().map(|&c| if c == 1 { '■' } else { '·' }).collect::<String>());
+        }
+    }
+}
+@note
+The RLE string `bo$2bo$3o!` (dead-alive, two dead then alive, three alive) decoded into a glider and was stamped onto the grid. Four generations later the same shape sits one cell further down and right. The two buffers are swapped after every step, so the simulation allocates nothing while it runs, which matters at 60 frames per second.
+@mistakes
+- **Updating cells in place during a tick.** Neighbours then mix generations. Use a second buffer.
+- **Allocating a new Vec every tick.** Swap two buffers instead.
+- **Testing only in the browser.** Known patterns make precise native tests.
+@keys
+- Compute into a second buffer and swap each generation.
+- Toggle and RLE insertion make the universe interactive.
+- Still lifes, oscillators and gliders are exact test oracles.
+- A thin wasm-bindgen layer sits on tested methods.
+
+=== W3.3
+@idea
+Shipping lifewasm means a **live demo** anyone can open. Build with **`wasm-pack build --target web --release`**, which compiles to WebAssembly, runs wasm-bindgen and optimises with `wasm-opt`, producing `pkg/` with the `.wasm` module and its JavaScript glue. A static `index.html` imports it as an ES module, so no bundler is required.
+
+**Measure and shrink** the module, because size is load time. Release-profile settings make a large difference: `opt-level = "s"` or `"z"` (optimise for size), `lto = true` (link-time optimisation removes unused code across crates), `codegen-units = 1`, and `panic = "abort"` (drops unwinding machinery). Avoid pulling in heavy dependencies and formatting machinery in hot paths. `twiggy` shows what takes space in a `.wasm` file. A Game of Life core can be under 20 KB.
+
+**Deploy to GitHub Pages** with a workflow: on every push to `main`, install Rust and wasm-pack, build, and upload the site folder with `actions/upload-pages-artifact` and `actions/deploy-pages`. The README then leads with the **live demo link** and an animated GIF, followed by how it works (Rust computes, JS draws, shared memory), how to build locally, and what you'd add next (patterns library, speed control, bit-packed cells). It's a portfolio piece people can try in five seconds.
+@how
+- `wasm-pack build --target web --release`; serve `index.html` + `pkg/`.
+- `[profile.release] opt-level = "s"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`.
+- Inspect size with `ls -lh` and `twiggy top`.
+- GitHub Pages workflow: build, `upload-pages-artifact`, `deploy-pages`.
+- README: demo link and GIF first, then design, build steps and next ideas.
+@example yaml: Deploying the demo to GitHub Pages on every push
+# .github/workflows/pages.yml
+name: Deploy demo
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency: { group: pages, cancel-in-progress: true }
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - run: cargo test                          # native tests first: patterns must still pass
+      - run: wasm-pack build --target web --release
+      - run: mkdir site && cp index.html site/ && cp -r pkg site/ && rm site/pkg/.gitignore
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: site }
+      - id: deployment
+        uses: actions/deploy-pages@v4
+# Settings > Pages > Source: "GitHub Actions". The demo appears at https://<user>.github.io/lifewasm/
+@note
+The workflow runs the native pattern tests before building, so a broken simulation never gets deployed. It then copies only the page and the generated package into a `site` folder and publishes it; removing `pkg/.gitignore` (which wasm-pack creates) avoids confusion if the folder is ever committed. The Pages source must be set to "GitHub Actions" once in the repository settings.
+@example toml: Release settings for a small .wasm file
+[package]
+name = "lifewasm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+
+[profile.release]
+opt-level = "s"        # optimise for size ("z" is smaller still, sometimes slower)
+lto = true             # remove unused code across crates
+codegen-units = 1      # better optimisation, slower build
+panic = "abort"        # no unwinding tables
+
+# $ wasm-pack build --target web --dev && ls -lh pkg/*.wasm
+# -rw-r--r-- 1 kev kev 1.4M lifewasm_bg.wasm        <- debug build
+# $ wasm-pack build --target web --release && ls -lh pkg/*.wasm
+# -rw-r--r-- 1 kev kev  16K lifewasm_bg.wasm        <- release + size settings + wasm-opt
+# $ twiggy top -n 3 pkg/lifewasm_bg.wasm
+#  Shallow Bytes │ Item
+#           4873 │ lifewasm::Universe::tick
+#           2210 │ data[0]
+#           1532 │ wasm_bindgen::externref table
+@note
+The debug build is over a megabyte, mostly debug information and unoptimised code; the release build with size settings and wasm-opt shrinks to about 16 KB, small enough to load instantly on a phone. `twiggy` confirms that the simulation itself dominates what remains. (Sizes are typical; yours will vary slightly with versions.)
+@mistakes
+- **Deploying a debug build.** It's dozens of times larger. Always `--release` with size settings.
+- **A demo link buried at the bottom of the README.** Put the link and a GIF first.
+- **Deploying without running tests.** Run native tests in the same workflow first.
+@keys
+- wasm-pack builds a ready-to-serve package; no bundler needed.
+- Size settings and wasm-opt shrink the module dramatically.
+- GitHub Actions deploys the demo to Pages on every push.
+- Lead the README with a live link and a GIF.

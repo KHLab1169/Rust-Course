@@ -4617,5 +4617,748 @@
 "Close the channel first, then join.",
 "`Option` + `take()` moves owned fields out inside `drop`."
 ]
+},
+"Q1.1": {
+"idea": [
+"A load tester answers one question: **how does a service behave under a given amount of concurrent traffic?** Before writing code, decide what to measure. **Throughput** is completed requests per second. **Latency** is how long each request took, and it must be reported as **percentiles** (p50, p95, p99), not an average: the average hides the slow tail, and the tail is what users feel and what service-level objectives are written against. Also count **status codes** (a fast stream of 500s is not success) and **errors** (timeouts, refused connections), kept separate from HTTP responses.",
+"Then design the interface the way users will type it: `loadtest http://localhost:3000/health -n 1000 -c 50 --timeout 5s --json`. The number of requests, the concurrency, a timeout and an output format cover most needs; extras (custom headers, a request body, a duration-based mode) can wait for later versions.",
+"The key design decision is **separating the statistics and the scheduling from the network**. A `Target` trait with one method, \"perform one request and report the outcome\", lets the real app use reqwest while tests use a fake target that returns scripted outcomes instantly. The percentile code, the concurrency limiter and the report can then be tested exhaustively without a server, which is exactly how professional tools stay trustworthy."
+],
+"how": [
+"Measure throughput, latency percentiles (p50/p95/p99), status counts and errors.",
+"Model outcomes as an enum: a response with status and latency, or an error with a kind.",
+"Validate the plan up front: positive counts, concurrency ≤ requests, sane timeout.",
+"Hide the network behind a `Target` trait; fakes in tests, reqwest in the app.",
+"Sketch the CLI and the report before writing the core."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Why averages lie about latency",
+"code": "use std::time::Duration;\n\nfn percentile(sorted: &[Duration], p: f64) -> Duration {\n    let rank = ((p / 100.0) * sorted.len() as f64).ceil() as usize;\n    sorted[rank.clamp(1, sorted.len()) - 1]\n}\n\nfn main() {\n    // 1,000 requests: most are fast, 3% hit a slow database query\n    let mut lat: Vec<Duration> = (0..1000)\n        .map(|i| if i % 33 == 0 { Duration::from_millis(1200 + (i % 7) * 10) } else { Duration::from_millis(18 + (i % 9)) })\n        .collect();\n    lat.sort();\n    let mean = lat.iter().sum::<Duration>() / lat.len() as u32;\n    println!(\"mean   {:>6} ms   <- looks healthy\", mean.as_millis());\n    for p in [50.0, 95.0, 99.0, 99.9] {\n        println!(\"p{:<5} {:>6} ms\", p, percentile(&lat, p).as_millis());\n    }\n    let slow = lat.iter().filter(|d| **d > Duration::from_millis(500)).count();\n    println!(\"{slow} users in 1000 waited over half a second\");\n}",
+"note": "The mean of 59 ms suggests a healthy service, but the p99 shows that one request in a hundred took over a second. Percentiles describe what real users experience at each level of \"unluckiness\", which is why the tool reports them and why SLOs are written as \"p99 under 300 ms\".",
+"output": "mean       59 ms   <- looks healthy\np50        22 ms\np95        26 ms\np99      1240 ms\np99.9    1260 ms\n31 users in 1000 waited over half a second"
+},
+{
+"lang": "rust",
+"title": "Validating the plan before any request is sent",
+"code": "use std::time::Duration;\n\n#[derive(Debug)]\npub struct Plan {\n    pub url: String,\n    pub requests: usize,\n    pub concurrency: usize,\n    pub timeout: Duration,\n}\n\n#[derive(Debug, PartialEq)]\npub enum PlanError {\n    NoRequests,\n    TooConcurrent { concurrency: usize, requests: usize },\n    BadUrl(String),\n    TimeoutTooShort,\n}\n\nimpl Plan {\n    pub fn validate(self) -> Result<Plan, PlanError> {\n        if self.requests == 0 {\n            return Err(PlanError::NoRequests);\n        }\n        if self.concurrency == 0 || self.concurrency > self.requests {\n            return Err(PlanError::TooConcurrent { concurrency: self.concurrency, requests: self.requests });\n        }\n        if !(self.url.starts_with(\"http://\") || self.url.starts_with(\"https://\")) {\n            return Err(PlanError::BadUrl(self.url));\n        }\n        if self.timeout < Duration::from_millis(10) {\n            return Err(PlanError::TimeoutTooShort);\n        }\n        Ok(self)\n    }\n}\n\nfn main() {\n    let plans = [\n        Plan { url: \"http://localhost:3000/health\".into(), requests: 1000, concurrency: 50, timeout: Duration::from_secs(5) },\n        Plan { url: \"http://localhost:3000\".into(), requests: 10, concurrency: 50, timeout: Duration::from_secs(5) },\n        Plan { url: \"localhost:3000\".into(), requests: 10, concurrency: 2, timeout: Duration::from_secs(5) },\n        Plan { url: \"https://example.test\".into(), requests: 0, concurrency: 1, timeout: Duration::from_secs(1) },\n    ];\n    for p in plans {\n        match p.validate() {\n            Ok(plan) => println!(\"ok: {} x{} at concurrency {}\", plan.url, plan.requests, plan.concurrency),\n            Err(e) => println!(\"rejected: {e:?}\"),\n        }\n    }\n}",
+"note": "`validate` consumes the plan and gives it back only if it makes sense, so the rest of the program can assume a valid plan. Each mistake has its own error variant, which the CLI can turn into a precise message (\"concurrency 50 is higher than the 10 requests\") instead of failing halfway through a run.",
+"output": "ok: http://localhost:3000/health x1000 at concurrency 50\nrejected: TooConcurrent { concurrency: 50, requests: 10 }\nrejected: BadUrl(\"localhost:3000\")\nrejected: NoRequests"
+}
+],
+"mistakes": [
+"**Reporting average latency.** Report percentiles; the tail matters most.",
+"**Counting 500 responses as successes.** Track status codes separately from errors.",
+"**Testing the core against a real server.** Put the network behind a trait and use fakes."
+],
+"keys": [
+"Measure throughput, latency percentiles, statuses and errors.",
+"Validate plans before sending anything.",
+"A Target trait separates the core from the network.",
+"Design the CLI and report first."
+]
+},
+"Q1.2": {
+"idea": [
+"The core of the load tester has two parts: a **runner** that performs N requests with at most C in flight, and the **statistics** that turn outcomes into a summary. Both are pure logic once the network is behind the `Target` trait.",
+"The runner is a natural fit for Tokio: spawn the requests as tasks and cap how many run at once with a **`Semaphore`** of C permits (or, equivalently, keep a `JoinSet` topped up to C tasks). Each task records its own latency with `Instant::now()` around the call. Collect outcomes as they finish, and measure the **wall-clock** time of the whole run to compute throughput. With a fake target that sleeps for a scripted latency, tests can check precise properties: all N requests ran, concurrency never exceeded C, and the total time is about N/C × latency.",
+"For statistics, sort the successful latencies once and read percentiles by **nearest rank**; count statuses in a `BTreeMap` so reports list them in order. Edge cases matter for a tool people trust: no successful responses (percentiles are `None`), one request, all errors. Each gets a test."
+],
+"how": [
+"Share the target with `Arc`; spawn one task per request.",
+"Limit in-flight requests with `Semaphore::new(concurrency)`.",
+"Time each call with `Instant`; time the whole run for throughput.",
+"Sort latencies once; nearest-rank percentiles; `BTreeMap` for status counts.",
+"Test with a fake target: counts, peak concurrency, timing, edge cases."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A concurrency-limited runner, measured with a fake target",
+"code": "use std::sync::atomic::{AtomicUsize, Ordering};\nuse std::sync::Arc;\nuse std::time::{Duration, Instant};\nuse tokio::sync::Semaphore;\nuse tokio::task::JoinSet;\n\n#[derive(Debug, Clone)]\nenum Outcome {\n    Response { status: u16, latency: Duration },\n    Error { kind: String, latency: Duration },\n}\n\ntrait Target: Send + Sync + 'static {\n    fn hit(&self, n: usize) -> impl std::future::Future<Output = Result<u16, String>> + Send;\n}\n\nstruct FakeTarget { in_flight: AtomicUsize, peak: AtomicUsize }\n\nimpl Target for FakeTarget {\n    async fn hit(&self, n: usize) -> Result<u16, String> {\n        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;\n        self.peak.fetch_max(now, Ordering::SeqCst);\n        tokio::time::sleep(Duration::from_millis(20)).await;\n        self.in_flight.fetch_sub(1, Ordering::SeqCst);\n        match n % 25 {\n            0 => Err(\"timeout\".into()),\n            7 => Ok(503),\n            _ => Ok(200),\n        }\n    }\n}\n\nasync fn run<T: Target>(target: Arc<T>, requests: usize, concurrency: usize) -> (Vec<Outcome>, Duration) {\n    let limit = Arc::new(Semaphore::new(concurrency));\n    let started = Instant::now();\n    let mut set = JoinSet::new();\n    for n in 0..requests {\n        let (target, limit) = (Arc::clone(&target), Arc::clone(&limit));\n        set.spawn(async move {\n            let _permit = limit.acquire_owned().await.unwrap();\n            let t0 = Instant::now();\n            match target.hit(n).await {\n                Ok(status) => Outcome::Response { status, latency: t0.elapsed() },\n                Err(kind) => Outcome::Error { kind, latency: t0.elapsed() },\n            }\n        });\n    }\n    let mut outcomes = Vec::with_capacity(requests);\n    while let Some(o) = set.join_next().await {\n        outcomes.push(o.expect(\"request task panicked\"));\n    }\n    (outcomes, started.elapsed())\n}\n\n#[tokio::main]\nasync fn main() {\n    let target = Arc::new(FakeTarget { in_flight: AtomicUsize::new(0), peak: AtomicUsize::new(0) });\n    let (outcomes, wall) = run(Arc::clone(&target), 200, 10).await;\n    let errors = outcomes.iter().filter(|o| matches!(o, Outcome::Error { .. })).count();\n    let s503 = outcomes.iter().filter(|o| matches!(o, Outcome::Response { status: 503, .. })).count();\n    println!(\"completed {} requests: {errors} errors, {s503} responses with status 503\", outcomes.len());\n    println!(\"peak concurrency: {} (limit 10)\", target.peak.load(Ordering::SeqCst));\n    let ideal = Duration::from_millis(200 / 10 * 20);\n    println!(\"wall time close to 200/10 x 20 ms = {} ms: {}\", ideal.as_millis(), wall >= ideal && wall < ideal * 3);\n    println!(\"throughput above 150 req/s: {}\", 200.0 / wall.as_secs_f64() > 150.0);\n}",
+"note": "All 200 requests ran, never more than 10 at a time, and the run took about 20 rounds of 20 ms, as the arithmetic predicts. The fake target made these properties checkable in milliseconds, including the error and 503 paths. The real app swaps in a reqwest-based target with the same trait.",
+"output": "completed 200 requests: 8 errors, 8 responses with status 503\npeak concurrency: 10 (limit 10)\nwall time close to 200/10 x 20 ms = 400 ms: true\nthroughput above 150 req/s: true"
+},
+{
+"lang": "rust",
+"title": "Statistics tests for the edge cases",
+"code": "use std::collections::BTreeMap;\nuse std::time::Duration;\n\n#[derive(Debug, Clone)]\npub enum Outcome {\n    Response { status: u16, latency: Duration },\n    Error { kind: String, latency: Duration },\n}\n\n#[derive(Debug, PartialEq)]\npub struct Summary {\n    pub total: usize,\n    pub errors: usize,\n    pub p50: Option<Duration>,\n    pub p99: Option<Duration>,\n    pub statuses: BTreeMap<u16, usize>,\n}\n\nfn percentile(sorted: &[Duration], p: f64) -> Option<Duration> {\n    if sorted.is_empty() { return None; }\n    let rank = ((p / 100.0) * sorted.len() as f64).ceil() as usize;\n    Some(sorted[rank.clamp(1, sorted.len()) - 1])\n}\n\npub fn summarize(outcomes: &[Outcome]) -> Summary {\n    let mut lat = Vec::new();\n    let mut statuses = BTreeMap::new();\n    let mut errors = 0;\n    for o in outcomes {\n        match o {\n            Outcome::Response { status, latency } => { lat.push(*latency); *statuses.entry(*status).or_insert(0) += 1; }\n            Outcome::Error { .. } => errors += 1,\n        }\n    }\n    lat.sort();\n    Summary { total: outcomes.len(), errors, p50: percentile(&lat, 50.0), p99: percentile(&lat, 99.0), statuses }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    fn ok(ms: u64) -> Outcome { Outcome::Response { status: 200, latency: Duration::from_millis(ms) } }\n\n    #[test]\n    fn empty_run_has_no_percentiles() {\n        let s = summarize(&[]);\n        assert_eq!((s.total, s.p50, s.p99), (0, None, None));\n    }\n\n    #[test]\n    fn all_errors() {\n        let e = Outcome::Error { kind: \"refused\".into(), latency: Duration::ZERO };\n        let s = summarize(&[e.clone(), e]);\n        assert_eq!((s.errors, s.p50), (2, None));\n        assert!(s.statuses.is_empty());\n    }\n\n    #[test]\n    fn single_request_is_every_percentile() {\n        let s = summarize(&[ok(42)]);\n        assert_eq!((s.p50, s.p99), (Some(Duration::from_millis(42)), Some(Duration::from_millis(42))));\n    }\n\n    #[test]\n    fn nearest_rank_on_a_hundred_values() {\n        let outcomes: Vec<Outcome> = (1..=100).rev().map(ok).collect();      // unsorted input\n        let s = summarize(&outcomes);\n        assert_eq!((s.p50, s.p99), (Some(Duration::from_millis(50)), Some(Duration::from_millis(99))));\n    }\n\n    #[test]\n    fn statuses_are_counted_in_order() {\n        let mixed = [Outcome::Response { status: 503, latency: Duration::ZERO }, ok(1), ok(2)];\n        let s = summarize(&mixed);\n        assert_eq!(s.statuses.into_iter().collect::<Vec<_>>(), vec![(200, 2), (503, 1)]);\n    }\n}",
+"note": "Five small tests pin down the behaviour users rely on: no data means no percentiles rather than a panic, errors never count as latencies, one request is its own p50 and p99, input order doesn't matter, and status counts come out sorted. With these in place, the statistics can be refactored or optimised without fear.",
+"output": "running 5 tests\ntest tests::all_errors ... ok\ntest tests::empty_run_has_no_percentiles ... ok\ntest tests::nearest_rank_on_a_hundred_values ... ok\ntest tests::single_request_is_every_percentile ... ok\ntest tests::statuses_are_counted_in_order ... ok\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+}
+],
+"mistakes": [
+"**Spawning all requests without a limit.** That's a burst of N, not concurrency C. Use a Semaphore.",
+"**Timing from before acquiring the permit.** Queue time isn't request latency; start the clock after.",
+"**Untested edge cases.** Empty runs and all-error runs are exactly when users need correct output."
+],
+"keys": [
+"A Semaphore caps requests in flight; JoinSet collects outcomes.",
+"Time each request and the whole run separately.",
+"Nearest-rank percentiles over sorted latencies.",
+"Fake targets make the core fully testable."
+]
+},
+"Q1.3": {
+"idea": [
+"\"Shipping\" turns working code into a tool other people can install and trust. Three pieces matter. **The interface**: wire the clap struct to the core, print a readable **human report** by default and a **machine-readable JSON report** with `--json`, so the tool fits both terminals and CI pipelines. Use distinct **exit codes** (0 success, 1 thresholds missed, 2 usage error) so scripts can react.",
+"**Continuous integration**: a GitHub Actions workflow that runs `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` on every push and pull request, on Linux, macOS and Windows, catches regressions before users do. Caching (`Swatinem/rust-cache`) keeps it fast.",
+"**Releases**: tag a version (`git tag v0.1.0 && git push --tags`) and let a workflow build binaries for each platform and attach them to a GitHub Release, so users without Rust can download and run the tool; `cargo install --git ...` or publishing to crates.io serves Rust users. A README with an example command, a sample report, and an honest \"limitations\" section completes the portfolio piece: it shows you can deliver, not just code."
+],
+"how": [
+"Human report by default, `--json` for machines; exit codes for scripts.",
+"Optional thresholds: `--max-p99 300ms` fails the run (exit 1) when missed.",
+"CI: fmt, clippy with `-D warnings`, tests, on three OSes, with caching.",
+"Release on tags: build per-platform binaries and attach them to a GitHub Release.",
+"README: install, usage, sample output, limitations."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "One summary, two report formats, and a threshold",
+"code": "use serde::Serialize;\nuse std::collections::BTreeMap;\n\n#[derive(Serialize)]\nstruct Report {\n    url: String,\n    requests: usize,\n    errors: usize,\n    throughput_rps: f64,\n    p50_ms: u64,\n    p95_ms: u64,\n    p99_ms: u64,\n    statuses: BTreeMap<u16, usize>,\n}\n\nfn human(r: &Report) -> String {\n    let mut s = format!(\"Target      {}\\nRequests    {} ({} errors, {:.1}%)\\nThroughput  {:.1} req/s\\n\", r.url, r.requests, r.errors, 100.0 * r.errors as f64 / r.requests as f64, r.throughput_rps);\n    s += &format!(\"Latency     p50 {} ms | p95 {} ms | p99 {} ms\\nStatuses   \", r.p50_ms, r.p95_ms, r.p99_ms);\n    for (code, n) in &r.statuses {\n        s += &format!(\" {code}x{n}\");\n    }\n    s\n}\n\nfn exit_code(r: &Report, max_p99_ms: Option<u64>) -> u8 {\n    match max_p99_ms {\n        Some(limit) if r.p99_ms > limit => 1,\n        _ => 0,\n    }\n}\n\nfn main() {\n    let r = Report {\n        url: \"http://localhost:3000/health\".into(),\n        requests: 1000,\n        errors: 4,\n        throughput_rps: 812.4,\n        p50_ms: 11,\n        p95_ms: 38,\n        p99_ms: 412,\n        statuses: BTreeMap::from([(200, 990), (503, 6)]),\n    };\n    println!(\"{}\\n\", human(&r));\n    println!(\"{}\\n\", serde_json::to_string(&r).unwrap());\n    println!(\"--max-p99 300 -> exit code {}\", exit_code(&r, Some(300)));\n    println!(\"--max-p99 500 -> exit code {}\", exit_code(&r, Some(500)));\n}",
+"note": "The same `Report` struct prints as an aligned summary for people and as one line of JSON for machines (via derived `Serialize`). The threshold turns the tool into a CI gate: a p99 of 412 ms fails a 300 ms budget with exit code 1, which `main` would return as `ExitCode::from(1)`.",
+"output": "Target      http://localhost:3000/health\nRequests    1000 (4 errors, 0.4%)\nThroughput  812.4 req/s\nLatency     p50 11 ms | p95 38 ms | p99 412 ms\nStatuses    200x990 503x6\n\n{\"url\":\"http://localhost:3000/health\",\"requests\":1000,\"errors\":4,\"throughput_rps\":812.4,\"p50_ms\":11,\"p95_ms\":38,\"p99_ms\":412,\"statuses\":{\"200\":990,\"503\":6}}\n\n--max-p99 300 -> exit code 1\n--max-p99 500 -> exit code 0"
+},
+{
+"lang": "yaml",
+"title": "A release workflow that builds binaries on every tag",
+"code": "# .github/workflows/release.yml\nname: Release\non:\n  push:\n    tags: [\"v*\"]\npermissions:\n  contents: write\njobs:\n  build:\n    strategy:\n      matrix:\n        include:\n          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  ext: \"\" }\n          - { os: macos-latest,   target: aarch64-apple-darwin,      ext: \"\" }\n          - { os: windows-latest, target: x86_64-pc-windows-msvc,    ext: \".exe\" }\n    runs-on: ${{ matrix.os }}\n    steps:\n      - uses: actions/checkout@v4\n      - uses: dtolnay/rust-toolchain@stable\n        with: { targets: \"${{ matrix.target }}\" }\n      - run: cargo build --release --locked --target ${{ matrix.target }}\n      - run: mv target/${{ matrix.target }}/release/loadtest${{ matrix.ext }} loadtest-${{ matrix.target }}${{ matrix.ext }}\n      - uses: softprops/action-gh-release@v2\n        with:\n          files: loadtest-${{ matrix.target }}${{ matrix.ext }}\n# git tag v0.1.0 && git push origin v0.1.0  ->  a Release with three downloadable binaries",
+"note": "Pushing a tag such as `v0.1.0` triggers three parallel builds, one per platform, and each uploads its binary to the same GitHub Release. `--locked` makes the build use exactly the versions in Cargo.lock. Tools like `cargo-dist` can generate a more complete version of this workflow, including installers.",
+"output": ""
+}
+],
+"mistakes": [
+"**Only a human-readable report.** CI can't parse it; offer `--json`.",
+"**Exit code 0 when thresholds fail.** Pipelines need a non-zero code to stop.",
+"**Releases that require a Rust toolchain.** Attach prebuilt binaries for each platform."
+],
+"keys": [
+"Human and JSON reports from one struct; meaningful exit codes.",
+"CI runs fmt, clippy and tests on every change.",
+"Tagged releases publish binaries for each platform.",
+"A clear README turns the project into a portfolio piece."
+]
+},
+"Q2.1": {
+"idea": [
+"**testlens** analyses JUnit XML reports from many CI runs to find tests that can't be trusted. JUnit XML is the de facto interchange format: pytest, Jest, Maven, Gradle, Go and cargo-nextest can all emit it. A report contains `<testsuite>` elements holding `<testcase classname=\"..\" name=\"..\" time=\"..\">`, where a child `<failure>` or `<error>` means it failed and `<skipped/>` means it was skipped; no child means it passed.",
+"The analysis needs a precise definition of **flaky**: a test that both passed and failed **on the same code**. That rules out tests that started failing because of a real change, which is a regression, not a flake. In practice, comparing runs of the same commit is ideal; with mixed commits, looking at the **pattern** helps: `P P F P F P` (many flips) suggests flakiness, `P P P F F F` (one flip, then consistent failure) suggests a regression. Require a **minimum number of runs** before judging, so one failure on a brand-new test isn't labelled.",
+"Model it with types: a `Verdict` enum, a `CaseResult` with a stable id (`classname::name`), and a `Classification` enum (`Stable`, `Flaky`, `Broken`, `Regressed`, `NotEnoughData`) that the report and the exit code both use."
+],
+"how": [
+"Parse `testcase` elements; failure or error child = failed, skipped child = skipped.",
+"Id each test by `classname::name` so it matches across runs.",
+"Flaky = passed and failed on the same code; count flips to spot regressions.",
+"Require a minimum number of non-skipped runs before classifying.",
+"One `Classification` enum drives the report and the exit code."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Classifying a test from its history",
+"code": "#[derive(Debug, Clone, Copy, PartialEq)]\nenum Verdict { Passed, Failed, Skipped }\n\n#[derive(Debug, PartialEq)]\nenum Classification {\n    Stable,\n    Broken,\n    Flaky { pass_rate: u32, flips: usize },\n    Regressed { since_run: usize },\n    NotEnoughData,\n}\n\nfn classify(history: &[Verdict], min_runs: usize) -> Classification {\n    let ran: Vec<Verdict> = history.iter().copied().filter(|v| *v != Verdict::Skipped).collect();\n    if ran.len() < min_runs {\n        return Classification::NotEnoughData;\n    }\n    let passes = ran.iter().filter(|v| **v == Verdict::Passed).count();\n    let flips = ran.windows(2).filter(|w| w[0] != w[1]).count();\n    match (passes, flips) {\n        (p, _) if p == ran.len() => Classification::Stable,\n        (0, _) => Classification::Broken,\n        (_, 1) if *ran.last().unwrap() == Verdict::Failed => {\n            Classification::Regressed { since_run: ran.iter().position(|v| *v == Verdict::Failed).unwrap() + 1 }\n        }\n        _ => Classification::Flaky { pass_rate: (100 * passes / ran.len()) as u32, flips },\n    }\n}\n\nfn main() {\n    use Verdict::*;\n    let tests: [(&str, &[Verdict]); 6] = [\n        (\"login::valid_password\", &[Passed, Passed, Passed, Passed, Passed, Passed]),\n        (\"login::wrong_password\", &[Passed, Failed, Passed, Passed, Failed, Passed]),\n        (\"cart::apply_coupon\", &[Passed, Passed, Passed, Failed, Failed, Failed]),\n        (\"search::fuzzy\", &[Failed, Failed, Failed, Failed, Failed, Failed]),\n        (\"sso::okta\", &[Skipped, Skipped, Passed, Skipped, Failed, Skipped]),\n        (\"cart::new_feature\", &[Passed, Failed]),\n    ];\n    for (id, history) in tests {\n        println!(\"{id:24} {:?}\", classify(history, 5));\n    }\n}",
+"note": "The same \"it has both passes and failures\" observation splits into two very different findings: `wrong_password` flips back and forth (flaky, 66% pass rate, four flips), while `apply_coupon` passed and then failed consistently from run 4 onward (a regression to investigate, not to retry). Skipped runs don't count, so the SSO test and the two-run new test don't have enough data to be judged.",
+"output": "login::valid_password    Stable\nlogin::wrong_password    Flaky { pass_rate: 66, flips: 4 }\ncart::apply_coupon       Regressed { since_run: 4 }\nsearch::fuzzy            Broken\nsso::okta                NotEnoughData\ncart::new_feature        NotEnoughData"
+},
+{
+"lang": "rust",
+"title": "Stable ids across runs",
+"code": "fn case_id(classname: Option<&str>, name: &str) -> String {\n    let class = classname.unwrap_or(\"<no class>\");\n    let name = name.split(\" (attempt\").next().unwrap().trim();      // some runners suffix retries\n    format!(\"{class}::{name}\")\n}\n\nfn main() {\n    let seen = [\n        (Some(\"tests.test_login\"), \"test_valid_password\"),\n        (Some(\"tests.test_login\"), \"test_valid_password (attempt 2)\"),\n        (Some(\"tests.test_admin\"), \"test_valid_password\"),\n        (None, \"smoke\"),\n    ];\n    for (class, name) in seen {\n        println!(\"{:<32} {:<36} -> {}\", format!(\"{class:?}\"), name, case_id(class, name));\n    }\n}",
+"note": "Test names alone collide (two suites can both have `test_valid_password`), so the id combines class and name, and normalises the retry suffix some runners add so a retried test is still recognised as the same test. Getting identity right is what makes cross-run statistics meaningful.",
+"output": "Some(\"tests.test_login\")         test_valid_password                  -> tests.test_login::test_valid_password\nSome(\"tests.test_login\")         test_valid_password (attempt 2)      -> tests.test_login::test_valid_password\nSome(\"tests.test_admin\")         test_valid_password                  -> tests.test_admin::test_valid_password\nNone                             smoke                                -> <no class>::smoke"
+}
+],
+"mistakes": [
+"**Calling every intermittent failure \"flaky\".** A consistent failure after a change is a regression.",
+"**Judging tests with very few runs.** Require a minimum before classifying.",
+"**Using the test name alone as an id.** Names repeat across suites; include the class."
+],
+"keys": [
+"JUnit XML is the common format for test results.",
+"Flaky means passed and failed on the same code; flips reveal the pattern.",
+"Stable ids make results comparable across runs.",
+"One Classification enum drives every output."
+]
+},
+"Q2.2": {
+"idea": [
+"With the model defined, the work is parsing and aggregation. **roxmltree** is a fast, read-only XML parser that builds a tree you can query: `Document::parse(text)?` then `doc.descendants().filter(|n| n.has_tag_name(\"testcase\"))`, reading attributes with `node.attribute(\"name\")` and checking children for `failure`, `error` and `skipped`. It returns a descriptive error for malformed files (with a position for most syntax errors), which the tool should report with the file name and then **skip** rather than abort: one corrupted artefact shouldn't hide the other 49 runs.",
+"Aggregation folds every run into per-test statistics: a `HashMap<String, TestStats>` where each entry collects the verdict history (in run order), pass/fail counts and durations. From those, compute each test's classification, pass rate and **median duration**, and also suite-level facts a QA lead cares about, such as the slowest tests.",
+"Parsing must be robust to real-world variations: nested `<testsuites>`, missing `time` attributes, `time` values with commas in some locales, `<error>` used instead of `<failure>`, and `<system-out>` noise. Tests with small inline XML documents pin each variation down."
+],
+"how": [
+"`roxmltree::Document::parse(&text)?`; iterate `descendants()` for `testcase` nodes.",
+"`attribute(\"time\").and_then(|t| t.parse().ok()).unwrap_or(0.0)` for optional numbers.",
+"Report and skip malformed files; never abort the whole analysis.",
+"Fold runs into `HashMap<String, TestStats>` keeping history in order.",
+"Derive classifications, pass rates and medians from the stats."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Aggregating several CI runs into per-test statistics",
+"code": "use std::collections::BTreeMap;\n\n#[derive(Debug, Clone, Copy, PartialEq)]\nenum Verdict { Passed, Failed, Skipped }\n\n#[derive(Default, Debug)]\nstruct TestStats { history: Vec<Verdict>, seconds: Vec<f64> }\n\nfn parse(xml: &str) -> Result<Vec<(String, Verdict, f64)>, roxmltree::Error> {\n    let doc = roxmltree::Document::parse(xml)?;\n    Ok(doc.descendants().filter(|n| n.has_tag_name(\"testcase\")).map(|tc| {\n        let has = |t: &str| tc.children().any(|c| c.has_tag_name(t));\n        let v = if has(\"failure\") || has(\"error\") { Verdict::Failed } else if has(\"skipped\") { Verdict::Skipped } else { Verdict::Passed };\n        let id = format!(\"{}::{}\", tc.attribute(\"classname\").unwrap_or(\"?\"), tc.attribute(\"name\").unwrap_or(\"?\"));\n        let secs = tc.attribute(\"time\").and_then(|t| t.replace(',', \".\").parse().ok()).unwrap_or(0.0);\n        (id, v, secs)\n    }).collect())\n}\n\nfn main() {\n    let runs = [\n        r#\"<testsuites><testsuite name=\"login\"><testcase classname=\"login\" name=\"ok\" time=\"0.20\"/><testcase classname=\"login\" name=\"retry\" time=\"1.10\"/></testsuite></testsuites>\"#,\n        r#\"<testsuite name=\"login\"><testcase classname=\"login\" name=\"ok\" time=\"0,25\"/><testcase classname=\"login\" name=\"retry\" time=\"3.40\"><failure message=\"timeout\"/></testcase></testsuite>\"#,\n        r#\"<testsuite name=\"login\"><testcase classname=\"login\" name=\"ok\"/><testcase classname=\"login\" name=\"retry\" time=\"1.30\"><error type=\"ConnectionReset\"/></testcase>\"#,\n        r#\"<testsuite name=\"login\"><testcase classname=\"login\" name=\"ok\" time=\"0.21\"/><testcase classname=\"login\" name=\"retry\" time=\"1.20\"/></testsuite>\"#,\n    ];\n    let mut stats: BTreeMap<String, TestStats> = BTreeMap::new();\n    for (i, xml) in runs.iter().enumerate() {\n        match parse(xml) {\n            Ok(cases) => for (id, v, s) in cases {\n                let e = stats.entry(id).or_default();\n                e.history.push(v);\n                e.seconds.push(s);\n            },\n            Err(err) => println!(\"run {}: skipped, invalid XML ({err})\", i + 1),\n        }\n    }\n    for (id, s) in &stats {\n        let mut secs = s.seconds.clone();\n        secs.sort_by(f64::total_cmp);\n        let passed = s.history.iter().filter(|v| **v == Verdict::Passed).count();\n        println!(\"{id:12} {:?}  pass {}/{}  median {:.2}s\", s.history, passed, s.history.len(), secs[secs.len() / 2]);\n    }\n}",
+"note": "Run 3 was truncated (its `testsuite` never closes), so roxmltree reported why parsing failed and the tool skipped that run instead of giving up. The remaining runs aggregated into per-test histories: `login::retry` failed once out of three, a flaky candidate, and is also the slow one. The comma in `0,25` was normalised, and a missing `time` defaulted to zero.",
+"output": "run 3: skipped, invalid XML (the root node was opened but never closed)\nlogin::ok    [Passed, Passed, Passed]  pass 3/3  median 0.21s\nlogin::retry [Passed, Failed, Passed]  pass 2/3  median 1.20s"
+},
+{
+"lang": "rust",
+"title": "Parser tests for real-world variations",
+"code": "#[derive(Debug, Clone, Copy, PartialEq)]\npub enum Verdict { Passed, Failed, Skipped }\n\npub fn verdicts(xml: &str) -> Result<Vec<(String, Verdict)>, String> {\n    let doc = roxmltree::Document::parse(xml).map_err(|e| e.to_string())?;\n    Ok(doc.descendants().filter(|n| n.has_tag_name(\"testcase\")).map(|tc| {\n        let has = |t: &str| tc.children().any(|c| c.has_tag_name(t));\n        let v = if has(\"failure\") || has(\"error\") { Verdict::Failed } else if has(\"skipped\") { Verdict::Skipped } else { Verdict::Passed };\n        (tc.attribute(\"name\").unwrap_or(\"?\").to_string(), v)\n    }).collect())\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn error_counts_as_failure() {\n        let x = r#\"<testsuite><testcase name=\"a\"><error type=\"NPE\"/></testcase></testsuite>\"#;\n        assert_eq!(verdicts(x).unwrap(), vec![(\"a\".to_string(), Verdict::Failed)]);\n    }\n\n    #[test]\n    fn nested_suites_and_output_noise() {\n        let x = r#\"<testsuites><testsuite><testsuite><testcase name=\"deep\"><system-out>log</system-out></testcase></testsuite></testsuite></testsuites>\"#;\n        assert_eq!(verdicts(x).unwrap(), vec![(\"deep\".to_string(), Verdict::Passed)]);\n    }\n\n    #[test]\n    fn skipped_and_passed() {\n        let x = r#\"<testsuite><testcase name=\"s\"><skipped message=\"wip\"/></testcase><testcase name=\"p\"/></testsuite>\"#;\n        let v: Vec<Verdict> = verdicts(x).unwrap().into_iter().map(|(_, v)| v).collect();\n        assert_eq!(v, vec![Verdict::Skipped, Verdict::Passed]);\n    }\n\n    #[test]\n    fn malformed_xml_is_a_descriptive_error() {\n        let err = verdicts(\"<testsuite><testcase name=\\\"x\\\">\").unwrap_err();\n        assert!(err.contains(\"never closed\"), \"unexpected message: {err}\");\n    }\n}",
+"note": "Each test captures a variation seen in real CI artefacts: `<error>` instead of `<failure>`, suites nested inside suites with `<system-out>` noise, skipped tests next to passing ones, and truncated files. Because the parser is a pure function of a string, these tests need no files on disk.",
+"output": "running 4 tests\ntest tests::error_counts_as_failure ... ok\ntest tests::malformed_xml_is_a_descriptive_error ... ok\ntest tests::nested_suites_and_output_noise ... ok\ntest tests::skipped_and_passed ... ok\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+}
+],
+"mistakes": [
+"**Aborting on the first bad report.** Report it with its position and continue with the rest.",
+"**Treating only `<failure>` as failed.** `<error>` is a failure too.",
+"**Losing run order.** Classification depends on the sequence; keep histories ordered."
+],
+"keys": [
+"roxmltree parses XML into a queryable tree with descriptive errors.",
+"Be lenient with real-world variations and test each one.",
+"Aggregate runs into per-test histories, counts and durations.",
+"Skip bad inputs, never the whole analysis."
+]
+},
+"Q2.3": {
+"idea": [
+"testlens earns its place when it runs automatically. In CI, it becomes a **quality gate**: after the test step, download the last N reports, run testlens, and **fail the pipeline** when a new flaky test appears. That requires deliberate **exit codes** (0 clean, 1 new flaky or regressed tests, 2 bad input or usage) and an **allow-list** file of known flaky tests being worked on, so the gate catches new problems without blocking every build on old ones. Each allow-list entry should name an owner or ticket, so it doesn't become a graveyard.",
+"The CLI follows the usual pattern: a directory or glob of reports, `--min-runs` to require enough data, `--json` for dashboards and bots, and `--fail-on-flaky` to enable the gate. The human report should lead with what to act on: the number of flaky and regressed tests, then a table sorted by impact (lowest pass rate, most runs), then the slowest tests.",
+"Document the tool like a product: what problem it solves, a one-command quick start, the classification rules in plain words, the exit codes, and a GitHub Action snippet. That README is often the first thing a hiring manager reads."
+],
+"how": [
+"Exit codes: 0 clean, 1 actionable findings, 2 usage or input errors.",
+"Allow-list file for known flaky tests, with owners or tickets.",
+"`--min-runs`, `--json`, `--fail-on-flaky` flags.",
+"Report: summary line, impact-sorted table, slowest tests.",
+"README: problem, quick start, rules, exit codes, CI snippet."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The gate decision with an allow-list",
+"code": "use std::collections::HashSet;\n\n#[derive(Debug, PartialEq)]\nenum Finding { Flaky(u32), Regressed, Stable }\n\nfn parse_allow_list(text: &str) -> HashSet<String> {\n    text.lines()\n        .map(|l| l.split('#').next().unwrap().trim())           // allow comments\n        .filter(|l| !l.is_empty())\n        .map(String::from)\n        .collect()\n}\n\nfn gate(results: &[(&str, Finding)], allowed: &HashSet<String>) -> (u8, Vec<String>) {\n    let mut report = Vec::new();\n    let mut blocking = 0;\n    for (id, f) in results {\n        match f {\n            Finding::Stable => {}\n            _ if allowed.contains(*id) => report.push(format!(\"  known   {id} {f:?}\")),\n            _ => {\n                blocking += 1;\n                report.push(format!(\"  NEW     {id} {f:?}\"));\n            }\n        }\n    }\n    report.insert(0, format!(\"{blocking} new problem(s), {} allow-listed\", report.len() - blocking));\n    (if blocking > 0 { 1 } else { 0 }, report)\n}\n\nfn main() {\n    let allow = parse_allow_list(\"# known flaky tests, with tickets\\nlogin::sso_redirect   # QA-412 (Kev)\\n\\ncart::coupon_expiry  # QA-418\\n\");\n    let results = [\n        (\"login::valid_password\", Finding::Stable),\n        (\"login::sso_redirect\", Finding::Flaky(70)),\n        (\"cart::coupon_expiry\", Finding::Flaky(90)),\n        (\"search::fuzzy_match\", Finding::Flaky(55)),\n        (\"checkout::tax_rounding\", Finding::Regressed),\n    ];\n    let (code, lines) = gate(&results, &allow);\n    println!(\"{}\", lines.join(\"\\n\"));\n    println!(\"exit code {code}\");\n    let (code_ok, _) = gate(&results[..3], &allow);\n    println!(\"with only known problems: exit code {code_ok}\");\n}",
+"note": "Known flaky tests listed in the allow-list (with ticket numbers in comments) are reported but don't fail the build, while the new flaky test and the regression produce exit code 1 and stop the pipeline. When only known problems remain, the gate passes, so the team can adopt testlens without first fixing every historic flake.",
+"output": "2 new problem(s), 2 allow-listed\n  known   login::sso_redirect Flaky(70)\n  known   cart::coupon_expiry Flaky(90)\n  NEW     search::fuzzy_match Flaky(55)\n  NEW     checkout::tax_rounding Regressed\nexit code 1\nwith only known problems: exit code 0"
+},
+{
+"lang": "bash",
+"title": "What a CI run shows",
+"code": "$ testlens reports/ --min-runs 5 --fail-on-flaky --allow-list .testlens-allow\nAnalysed 20 runs, 412 tests (3 files skipped: invalid XML)\n\nFlaky (new)        pass rate   runs   flips   median\n  search::fuzzy        55%       20      9     0.84s\nRegressed\n  checkout::tax        since run 17          0.12s\nKnown flaky (allow-listed)\n  login::sso_redirect  70%       20      6     2.10s   QA-412\n\nSlowest tests: login::sso_redirect 2.10s, export::pdf 1.95s, search::fuzzy 0.84s\nerror: 2 new problems found (exit code 1)\n\n$ testlens reports/ --json | jq '.flaky[] | .id'\n\"search::fuzzy\"\n\"login::sso_redirect\"",
+"note": "The report leads with what needs action, shows the evidence (pass rate, runs, flips) and keeps allow-listed tests visible so they aren't forgotten. The JSON output feeds dashboards or a bot that comments on pull requests. This sample shows the shape the finished tool aims for.",
+"output": ""
+}
+],
+"mistakes": [
+"**A gate that fails on every known flake.** Teams disable it. Use an allow-list with owners.",
+"**Exit code 1 for both findings and crashes.** Distinguish actionable findings from input errors.",
+"**Reports that bury the action.** Lead with counts and the worst offenders."
+],
+"keys": [
+"Exit codes turn the analyser into a CI quality gate.",
+"Allow-lists separate new problems from known, owned ones.",
+"Human reports lead with actions; JSON feeds other tools.",
+"Document rules and exit codes clearly."
+]
+},
+"Q3.1": {
+"idea": [
+"**logwatch** reads authentication logs and raises an alert when one IP address fails to log in too often within a short time, a classic brute-force signal, like a minimal fail2ban. Start with one well-defined format: OpenSSH lines in `/var/log/auth.log` (Debian/Ubuntu) or `/var/log/secure` (RHEL), such as `Failed password for invalid user admin from 203.0.113.9 port 51240 ssh2`. On systemd machines the same lines are available from `journalctl -u ssh -o short`.",
+"The detection **rule** has two parameters: N failures from one IP within a window of W seconds. Use a **sliding window** (the last W seconds before each event), not fixed buckets (\"per minute\"), because a burst that straddles a bucket boundary would be missed. Decide the details explicitly: alert once per burst rather than on every further failure, and **reset** an IP's history after a successful login so a user who mistyped twice isn't flagged later. Timestamps need care: syslog lines omit the **year**, so the parser must assume the current year and handle the December-to-January rollover.",
+"There are **ethical and legal limits**: monitor only systems you own or are explicitly authorised to monitor, treat IP addresses as personal data where privacy law says so, and keep the tool detection-only (alerts, not automatic attacks back). Blocking, if added, should go through the system's firewall with allow-lists for your own addresses."
+],
+"how": [
+"Support one log format well; read files or `journalctl` output.",
+"Rule: N failures per IP within a sliding window of W seconds.",
+"Alert once per burst; reset an IP after a successful login.",
+"Parse syslog timestamps with an assumed year and handle rollover.",
+"Monitor only authorised systems; detection first, blocking via the firewall."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Syslog timestamps without a year",
+"code": "fn month_index(m: &str) -> Option<u32> {\n    [\"Jan\", \"Feb\", \"Mar\", \"Apr\", \"May\", \"Jun\", \"Jul\", \"Aug\", \"Sep\", \"Oct\", \"Nov\", \"Dec\"].iter().position(|x| *x == m).map(|i| i as u32)\n}\n\n/// Seconds since an arbitrary epoch, good enough for comparing nearby events.\nfn parse_ts(line: &str, year: i64) -> Option<i64> {\n    let mut parts = line.split_whitespace();\n    let month = month_index(parts.next()?)? as i64;\n    let day: i64 = parts.next()?.parse().ok()?;\n    let hms: Vec<i64> = parts.next()?.split(':').map(|p| p.parse().ok()).collect::<Option<_>>()?;\n    let [h, m, s] = hms[..] else { return None };\n    const DAYS: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];\n    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;\n    let doy = DAYS[month as usize] + day - 1 + if leap && month > 1 { 1 } else { 0 };\n    let days_before_year = (year - 1970) * 365 + (year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400;\n    Some(((days_before_year + doy) * 86_400) + h * 3600 + m * 60 + s)\n}\n\n/// Lines are in order; a jump backwards of months means the year changed.\nfn with_rollover(lines: &[&str], start_year: i64) -> Vec<i64> {\n    let mut year = start_year;\n    let mut last: Option<i64> = None;\n    lines.iter().filter_map(|l| {\n        let mut t = parse_ts(l, year)?;\n        if last.is_some_and(|prev| t < prev - 30 * 86_400) {\n            year += 1;\n            t = parse_ts(l, year)?;\n        }\n        last = Some(t);\n        Some(t)\n    }).collect()\n}\n\nfn main() {\n    let lines = [\n        \"Dec 31 23:59:58 web sshd[901]: Failed password for root from 203.0.113.9 port 4000 ssh2\",\n        \"Dec 31 23:59:59 web sshd[902]: Failed password for root from 203.0.113.9 port 4001 ssh2\",\n        \"Jan  1 00:00:01 web sshd[903]: Failed password for root from 203.0.113.9 port 4002 ssh2\",\n    ];\n    let ts = with_rollover(&lines, 2026);\n    println!(\"gaps between events: {:?} seconds\", ts.windows(2).map(|w| w[1] - w[0]).collect::<Vec<_>>());\n    let naive: Vec<i64> = lines.iter().filter_map(|l| parse_ts(l, 2026)).collect();\n    println!(\"without rollover handling the last gap is {} seconds\", naive[2] - naive[1]);\n    println!(\"garbage line parses to {:?}\", parse_ts(\"not a log line\", 2026));\n}",
+"note": "Three failures two seconds apart straddle midnight on New Year's Eve. With rollover handling the gaps are 1 and 2 seconds, so a burst rule would fire; parsed naively, January 1st lands in the same year as the December lines and the gap becomes almost minus a year, hiding the attack. Attackers don't stop for holidays, so this edge case is worth handling.",
+"output": "gaps between events: [1, 2] seconds\nwithout rollover handling the last gap is -31535998 seconds\ngarbage line parses to None"
+},
+{
+"lang": "rust",
+"title": "Sliding windows catch what fixed buckets miss",
+"code": "fn fixed_bucket_alert(times: &[u64], n: usize, w: u64) -> bool {\n    let mut counts = std::collections::HashMap::new();\n    times.iter().any(|t| {\n        let c = counts.entry(t / w).or_insert(0);\n        *c += 1;\n        *c >= n\n    })\n}\n\nfn sliding_alert(times: &[u64], n: usize, w: u64) -> bool {\n    times.windows(n).any(|win| win[n - 1] - win[0] < w)\n}\n\nfn main() {\n    let burst = [50, 52, 55, 58, 61, 63, 66];        // 7 failures in 16 seconds, across the 60 s boundary\n    println!(\"rule: 5 failures within 60 s\");\n    println!(\"fixed one-minute buckets alert? {}\", fixed_bucket_alert(&burst, 5, 60));\n    println!(\"sliding window alerts?          {}\", sliding_alert(&burst, 5, 60));\n    let slow = [0, 40, 80, 120, 160, 200];            // one failure every 40 s\n    println!(\"slow trickle, sliding window?   {}\", sliding_alert(&slow, 5, 60));\n}",
+"note": "The burst of seven failures in 16 seconds split into four in the first minute and three in the second, so per-minute buckets never reached five. The sliding window looks at any five consecutive failures and saw them within 11 seconds. A slow trickle of one failure every 40 seconds correctly doesn't trigger the rule.",
+"output": "rule: 5 failures within 60 s\nfixed one-minute buckets alert? false\nsliding window alerts?          true\nslow trickle, sliding window?   false"
+}
+],
+"mistakes": [
+"**Fixed time buckets.** Bursts across boundaries slip through; use sliding windows.",
+"**Ignoring the missing year in syslog.** New Year's Eve breaks naive parsing.",
+"**Monitoring systems you don't own.** Get authorisation; keep the tool detection-first."
+],
+"keys": [
+"One log format, parsed well, beats many parsed loosely.",
+"N failures within a sliding window of W seconds per IP.",
+"Alert once per burst; reset after successful logins.",
+"Handle syslog's missing year; stay within ethical and legal limits."
+]
+},
+"Q3.2": {
+"idea": [
+"The detector combines two parts. The **parser** turns lines into events with a regular expression compiled **once** (in a `LazyLock<Regex>` static), because compiling a regex is far more expensive than matching; with the `regex` crate, matching runs in linear time, so hostile input can't make it hang. Lines that don't match (other services, other messages) return `None` and are ignored.",
+"The **detector** keeps, for each IP, a `VecDeque<u64>` of recent failure timestamps: on each failure, push the new time to the back, pop times older than the window from the front, and alert when the queue holds N or more. This is a classic **sliding window**: each timestamp is pushed and popped once, so the work per event is constant on average. On a successful login from an IP, remove its history. Track which IPs are already **in alert** so a burst produces one alert, re-arming once the window has emptied.",
+"Memory must stay bounded on a long-running service: an attacker can rotate through thousands of addresses. Remove an IP's entry when its queue empties, and optionally cap the map size. Test the detector with event sequences rather than files: exactly-at-the-boundary timing, reset after success, re-alerting after a quiet period, and many IPs at once."
+],
+"how": [
+"`static RE: LazyLock<Regex>`; `RE.captures(line)?` → `Option<Event>`.",
+"Per IP: `VecDeque<u64>`; push back, pop expired from front, alert when `len() >= n`.",
+"Remove history on success; remove empty queues to bound memory.",
+"Alert once per burst; re-arm when the window clears.",
+"Test with sequences: boundaries, resets, re-alerts, many IPs."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Parser and sliding-window detector end to end",
+"code": "use regex::Regex;\nuse std::collections::{HashMap, HashSet, VecDeque};\nuse std::sync::LazyLock;\n\nstatic LINE: LazyLock<Regex> = LazyLock::new(|| {\n    Regex::new(r\"^\\S+ +\\d+ (\\d+):(\\d+):(\\d+) \\S+ sshd\\[\\d+\\]: (Failed|Accepted) \\S+ for (?:invalid user )?(\\S+) from (\\S+) port\").unwrap()\n});\n\n#[derive(Debug)]\nenum Event { Failed { ip: String, ts: u64 }, Accepted { ip: String } }\n\nfn parse(line: &str) -> Option<Event> {\n    let c = LINE.captures(line)?;\n    let ts = c[1].parse::<u64>().ok()? * 3600 + c[2].parse::<u64>().ok()? * 60 + c[3].parse::<u64>().ok()?;\n    let ip = c[6].to_string();\n    Some(if &c[4] == \"Failed\" { Event::Failed { ip, ts } } else { Event::Accepted { ip } })\n}\n\nstruct Detector { n: usize, window: u64, recent: HashMap<String, VecDeque<u64>>, alerting: HashSet<String> }\n\nimpl Detector {\n    fn feed(&mut self, e: Event) -> Option<String> {\n        match e {\n            Event::Accepted { ip } => {\n                self.recent.remove(&ip);\n                self.alerting.remove(&ip);\n                None\n            }\n            Event::Failed { ip, ts } => {\n                let q = self.recent.entry(ip.clone()).or_default();\n                q.push_back(ts);\n                while q.front().is_some_and(|&t| ts - t >= self.window) {\n                    q.pop_front();\n                }\n                if q.len() < self.n {\n                    self.alerting.remove(&ip);\n                    None\n                } else if self.alerting.insert(ip.clone()) {\n                    Some(format!(\"ALERT {ip}: {} failures in {} s\", q.len(), ts - q[0]))\n                } else {\n                    None\n                }\n            }\n        }\n    }\n}\n\nfn main() {\n    let log = \"\\\nNov  4 06:12:01 web sshd[1]: Failed password for root from 203.0.113.9 port 1 ssh2\nNov  4 06:12:03 web sshd[2]: Failed password for invalid user admin from 203.0.113.9 port 2 ssh2\nNov  4 06:12:04 web CRON[3]: pam_unix(cron:session): session opened for user root\nNov  4 06:12:05 web sshd[4]: Failed password for kev from 198.51.100.7 port 3 ssh2\nNov  4 06:12:06 web sshd[5]: Failed password for invalid user test from 203.0.113.9 port 4 ssh2\nNov  4 06:12:07 web sshd[6]: Accepted password for kev from 198.51.100.7 port 5 ssh2\nNov  4 06:12:09 web sshd[7]: Failed password for invalid user oracle from 203.0.113.9 port 6 ssh2\nNov  4 06:12:12 web sshd[8]: Failed password for root from 203.0.113.9 port 7 ssh2\nNov  4 06:12:15 web sshd[9]: Failed password for root from 203.0.113.9 port 8 ssh2\";\n    let mut d = Detector { n: 5, window: 60, recent: HashMap::new(), alerting: HashSet::new() };\n    let (mut parsed, mut ignored) = (0, 0);\n    for line in log.lines() {\n        match parse(line) {\n            Some(e) => {\n                parsed += 1;\n                if let Some(alert) = d.feed(e) { println!(\"{alert}\"); }\n            }\n            None => ignored += 1,\n        }\n    }\n    println!(\"{parsed} events, {ignored} ignored line; IPs still tracked: {:?}\", d.recent.keys().collect::<Vec<_>>());\n}",
+"note": "The attacker's fifth failure within the window raised exactly one alert, and the sixth was folded into the same burst. Kev's single mistyped password was cleared by his successful login, so his address isn't tracked any more, and the cron line didn't match the regex and was ignored.",
+"output": "ALERT 203.0.113.9: 5 failures in 11 s\n8 events, 1 ignored line; IPs still tracked: [\"203.0.113.9\"]"
+},
+{
+"lang": "rust",
+"title": "Detector tests built from event sequences",
+"code": "use std::collections::{HashMap, VecDeque};\n\npub struct Detector { n: usize, window: u64, recent: HashMap<String, VecDeque<u64>> }\n\nimpl Detector {\n    pub fn new(n: usize, window: u64) -> Self { Detector { n, window, recent: HashMap::new() } }\n\n    pub fn failed(&mut self, ip: &str, ts: u64) -> bool {\n        let q = self.recent.entry(ip.to_string()).or_default();\n        q.push_back(ts);\n        while q.front().is_some_and(|&t| ts - t >= self.window) { q.pop_front(); }\n        q.len() >= self.n\n    }\n\n    pub fn accepted(&mut self, ip: &str) { self.recent.remove(ip); }\n\n    pub fn tracked(&self) -> usize { self.recent.len() }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn window_boundary_is_exclusive() {\n        let mut d = Detector::new(3, 10);\n        assert!(!d.failed(\"a\", 0));\n        assert!(!d.failed(\"a\", 5));\n        assert!(!d.failed(\"a\", 10), \"the event at t=0 is exactly 10 s old and has expired\");\n        assert!(d.failed(\"a\", 11));\n    }\n\n    #[test]\n    fn success_resets_history() {\n        let mut d = Detector::new(3, 60);\n        d.failed(\"a\", 1);\n        d.failed(\"a\", 2);\n        d.accepted(\"a\");\n        assert!(!d.failed(\"a\", 3));\n        assert_eq!(d.tracked(), 1);\n    }\n\n    #[test]\n    fn ips_are_independent_including_ipv6() {\n        let mut d = Detector::new(2, 60);\n        assert!(!d.failed(\"2001:db8::1\", 1));\n        assert!(!d.failed(\"203.0.113.9\", 2));\n        assert!(d.failed(\"2001:db8::1\", 3));\n    }\n\n    #[test]\n    fn slow_attempts_never_alert() {\n        let mut d = Detector::new(3, 60);\n        assert!((0..20).all(|i| !d.failed(\"a\", i * 31)));\n    }\n}",
+"note": "The tests use plain timestamps instead of log files, so each scenario is one readable line per event. The boundary test documents a decision (an event exactly W seconds old has expired), and the others cover resets after success, independence between addresses (including IPv6) and a slow trickle that must never alert.",
+"output": "running 4 tests\ntest tests::ips_are_independent_including_ipv6 ... ok\ntest tests::slow_attempts_never_alert ... ok\ntest tests::success_resets_history ... ok\ntest tests::window_boundary_is_exclusive ... ok\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+}
+],
+"mistakes": [
+"**Compiling the regex inside the loop.** Compile once in a `LazyLock` static.",
+"**Unbounded per-IP state.** Remove empty or reset entries so memory stays bounded.",
+"**Alerting on every failure after the threshold.** One alert per burst; re-arm later."
+],
+"keys": [
+"A compiled regex turns lines into events; non-matching lines are ignored.",
+"A per-IP VecDeque implements the sliding window in constant time per event.",
+"Reset on success, de-duplicate alerts, bound memory.",
+"Test with event sequences, not files."
+]
+},
+"Q3.3": {
+"idea": [
+"A detector is only useful if it runs continuously. **Following** a log like `tail -f` means: open the file, seek to the end, read new lines as they're appended, and sleep briefly when there's nothing new. Real logs also **rotate**: logrotate renames `auth.log` to `auth.log.1` and creates a new file, or truncates the existing one. A robust follower notices when the file got **shorter** than its read position (truncation) or when the path now refers to a **different file** (its inode changed), and reopens from the start. Crates like `notify` replace polling with filesystem events.",
+"**Alerts** should be machine-readable: one JSON object per line on stdout (`{\"ts\":..,\"ip\":..,\"failures\":..}`) composes with `jq`, log shippers and systemd's journal; an optional webhook (Slack, Discord, Teams) uses reqwest with a timeout and must never block detection, so it runs in its own task or thread with a bounded queue. A **benchmark** on a large synthetic log (millions of lines) shows the parser and detector keep up with a busy server.",
+"Deploy it as a **systemd service** running as an unprivileged user with read access to the log (the `adm` group on Debian), with sandboxing options such as `ProtectSystem=strict` and `NoNewPrivileges=yes`, and `Restart=on-failure`. Document what it does, what it doesn't do, and that it should only watch systems you're authorised to monitor."
+],
+"how": [
+"Follow: seek to end, read new lines, sleep when idle.",
+"Detect truncation (file shorter than position) and rotation (inode changed); reopen.",
+"Alerts as JSON lines; webhooks off the detection path with timeouts.",
+"Benchmark with a synthetic log of millions of lines.",
+"systemd unit: dedicated user, `adm` group, sandboxing, restart policy."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Following a file through appends and a truncation",
+"code": "use std::fs::{File, OpenOptions};\nuse std::io::{BufRead, BufReader, Seek, SeekFrom, Write};\nuse std::thread;\nuse std::time::Duration;\n\nstruct Follower { path: std::path::PathBuf, reader: BufReader<File>, pos: u64 }\n\nimpl Follower {\n    fn open_at_end(path: &std::path::Path) -> std::io::Result<Self> {\n        let mut f = File::open(path)?;\n        let pos = f.seek(SeekFrom::End(0))?;\n        Ok(Follower { path: path.into(), reader: BufReader::new(f), pos })\n    }\n\n    /// Returns any complete new lines; reopens from the start if the file was truncated.\n    fn poll(&mut self) -> std::io::Result<Vec<String>> {\n        let len = std::fs::metadata(&self.path)?.len();\n        if len < self.pos {\n            println!(\"  (file truncated: reopening from the start)\");\n            let f = File::open(&self.path)?;\n            self.reader = BufReader::new(f);\n            self.pos = 0;\n        }\n        let mut lines = Vec::new();\n        let mut line = String::new();\n        while self.reader.read_line(&mut line)? > 0 {\n            if !line.ends_with('\\n') {                       // a partial line: wait for the rest\n                self.reader.seek(SeekFrom::Start(self.pos))?;\n                break;\n            }\n            self.pos += line.len() as u64;\n            lines.push(line.trim_end().to_string());\n            line.clear();\n        }\n        Ok(lines)\n    }\n}\n\nfn main() -> std::io::Result<()> {\n    let path = std::env::temp_dir().join(format!(\"logwatch-demo-{}.log\", std::process::id()));\n    std::fs::write(&path, \"old line, before we started\\n\")?;\n    let mut follower = Follower::open_at_end(&path)?;\n\n    let writer_path = path.clone();\n    let writer = thread::spawn(move || -> std::io::Result<()> {\n        let mut f = OpenOptions::new().append(true).open(&writer_path)?;\n        writeln!(f, \"Failed password for root from 203.0.113.9\")?;\n        write!(f, \"Failed password for adm\")?;                // half a line...\n        f.flush()?;\n        thread::sleep(Duration::from_millis(60));\n        writeln!(f, \"in from 203.0.113.9\")?;                // ...completed later\n        thread::sleep(Duration::from_millis(60));\n        std::fs::write(&writer_path, \"\")?;                  // logrotate-style truncation\n        let mut f = OpenOptions::new().append(true).open(&writer_path)?;\n        writeln!(f, \"Accepted publickey for kev from 198.51.100.7\")?;\n        Ok(())\n    });\n\n    for _ in 0..12 {\n        for line in follower.poll()? {\n            println!(\"new line: {line}\");\n        }\n        thread::sleep(Duration::from_millis(25));\n    }\n    writer.join().unwrap()?;\n    std::fs::remove_file(&path)?;\n    Ok(())\n}",
+"note": "The follower skipped the line that existed before it started, held back a half-written line until its newline arrived, and noticed when the file was truncated (as `logrotate` with `copytruncate` does), reopening from the start so the next line wasn't lost. The real tool polls forever and also compares inodes to catch rename-style rotation.",
+"output": "new line: Failed password for root from 203.0.113.9\nnew line: Failed password for admin from 203.0.113.9\n  (file truncated: reopening from the start)\nnew line: Accepted publickey for kev from 198.51.100.7"
+},
+{
+"lang": "ini",
+"title": "Running logwatch as a hardened systemd service",
+"code": "# /etc/systemd/system/logwatch.service\n[Unit]\nDescription=logwatch: SSH brute-force detector\nAfter=network-online.target\n\n[Service]\nExecStart=/usr/local/bin/logwatch /var/log/auth.log --failures 5 --window 60s --webhook-env LOGWATCH_WEBHOOK\nEnvironmentFile=-/etc/logwatch.env\nUser=logwatch\nGroup=adm\nRestart=on-failure\nRestartSec=5s\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nReadOnlyPaths=/var/log\nCapabilityBoundingSet=\n\n[Install]\nWantedBy=multi-user.target\n\n# $ sudo useradd --system --no-create-home logwatch\n# $ sudo systemctl enable --now logwatch\n# $ journalctl -u logwatch -f -o cat | jq .\n# {\"ts\":\"2026-11-04T06:12:06Z\",\"ip\":\"203.0.113.9\",\"failures\":5,\"window_s\":60}",
+"note": "The service runs as its own unprivileged user in the `adm` group, which can read the log but nothing else matters: the filesystem is read-only to it, home directories are hidden and it can't gain privileges. The webhook URL comes from an environment file rather than the command line, so it doesn't appear in process listings. Alerts go to the journal as JSON lines.",
+"output": ""
+}
+],
+"mistakes": [
+"**Assuming the log file never changes identity.** Handle truncation and rotation.",
+"**Sending webhooks inline.** A slow endpoint would stall detection; use a separate task with timeouts.",
+"**Running as root.** Use a dedicated user with read access and systemd sandboxing."
+],
+"keys": [
+"Follow files like `tail -f`, handling partial lines, truncation and rotation.",
+"Emit alerts as JSON lines; send webhooks asynchronously.",
+"Benchmark on synthetic logs to prove it keeps up.",
+"Deploy as a sandboxed, unprivileged systemd service."
+]
+},
+"W1.1": {
+"idea": [
+"**taskhub** is a REST API for tasks, built the way production services are. The first step is the **contract**: the resources (a task with id, title, done, due date, created time), the routes (`GET /tasks`, `POST /tasks`, `GET/PATCH/DELETE /tasks/{id}`, `GET /health`), the request and response shapes, the **status codes** (200 OK, 201 Created, 204 No Content, 404 Not Found, 422 for validation errors) and a single **error format** (`{\"error\": \"...\"}`) used everywhere. Writing this down first means the handlers, the tests and the README all agree, and a front-end developer could start before the server exists.",
+"**Pagination** is part of the contract from day one: `GET /tasks?page=2&per_page=20` returns `items` plus `page`, `per_page` and `total`, with defaults for missing parameters and a cap on `per_page` so one request can't ask for a million rows. Filtering (`?status=open`) follows the same pattern.",
+"Structure the code in **layers**: **routes** (HTTP only: extract, call, convert to responses), a **service** (business rules such as \"a title can't be empty\" or \"a done task can't be un-done after 30 days\") and a **repository** (SQL only). Each layer depends on the one below through plain functions or a trait, so the rules can be tested without HTTP and the SQL without the rules."
+],
+"how": [
+"Write the contract: routes, shapes, status codes, one error format.",
+"Paginate with `page`/`per_page`, defaults and a maximum; return `total`.",
+"Validate query parameters into a typed struct with defaults.",
+"Layers: routes → service → repository, each testable alone.",
+"Keep HTTP types out of the service and SQL out of the routes."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Pagination parameters parsed, defaulted and clamped",
+"code": "use serde::Deserialize;\n\n#[derive(Debug, Deserialize)]\n#[serde(default)]\nstruct ListQuery {\n    page: u32,\n    per_page: u32,\n    status: Option<Status>,\n}\n\n#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]\n#[serde(rename_all = \"lowercase\")]\nenum Status { Open, Done }\n\nimpl Default for ListQuery {\n    fn default() -> Self { ListQuery { page: 1, per_page: 20, status: None } }\n}\n\nimpl ListQuery {\n    const MAX_PER_PAGE: u32 = 100;\n    fn normalised(self) -> Self {\n        ListQuery { page: self.page.max(1), per_page: self.per_page.clamp(1, Self::MAX_PER_PAGE), ..self }\n    }\n    fn sql_window(&self) -> (u32, u32) {\n        (self.per_page, (self.page - 1) * self.per_page)          // LIMIT, OFFSET\n    }\n}\n\nfn pages(total: u32, per_page: u32) -> u32 { total.div_ceil(per_page).max(1) }\n\nfn main() {\n    for qs in [\"\", \"page=3\", \"page=0&per_page=5000\", \"status=done&per_page=10&page=2\", \"status=archived\"] {\n        match serde_urlencoded::from_str::<ListQuery>(qs) {\n            Ok(q) => {\n                let q = q.normalised();\n                let (limit, offset) = q.sql_window();\n                println!(\"{:34} -> page {} per_page {} status {:?}: LIMIT {limit} OFFSET {offset}\", format!(\"?{qs}\"), q.page, q.per_page, q.status);\n            }\n            Err(e) => println!(\"{:34} -> 422 {{\\\"error\\\":\\\"{e}\\\"}}\", format!(\"?{qs}\")),\n        }\n    }\n    println!(\"57 tasks at 20 per page = {} pages\", pages(57, 20));\n}",
+"note": "Missing parameters took their defaults, a page of 0 became 1, and a request for 5,000 items per page was capped at 100. An unknown status value was rejected with a clear message, which the API returns as a 422 in its standard error format. axum's `Query` extractor uses this same `serde_urlencoded` parsing.",
+"output": "?                                  -> page 1 per_page 20 status None: LIMIT 20 OFFSET 0\n?page=3                            -> page 3 per_page 20 status None: LIMIT 20 OFFSET 40\n?page=0&per_page=5000              -> page 1 per_page 100 status None: LIMIT 100 OFFSET 0\n?status=done&per_page=10&page=2    -> page 2 per_page 10 status Some(Done): LIMIT 10 OFFSET 10\n?status=archived                   -> 422 {\"error\":\"unknown variant `archived`, expected `open` or `done`\"}\n57 tasks at 20 per page = 3 pages"
+},
+{
+"lang": "rust",
+"title": "Layers you can test separately",
+"code": "use std::collections::BTreeMap;\n\n#[derive(Debug, Clone, PartialEq)]\nstruct Task { id: u64, title: String, done: bool }\n\ntrait TaskRepo {\n    fn insert(&mut self, title: &str) -> Task;\n    fn get(&self, id: u64) -> Option<Task>;\n    fn set_done(&mut self, id: u64, done: bool) -> Option<Task>;\n}\n\n#[derive(Default)]\nstruct MemoryRepo { rows: BTreeMap<u64, Task> }\n\nimpl TaskRepo for MemoryRepo {\n    fn insert(&mut self, title: &str) -> Task {\n        let id = self.rows.len() as u64 + 1;\n        let t = Task { id, title: title.into(), done: false };\n        self.rows.insert(id, t.clone());\n        t\n    }\n    fn get(&self, id: u64) -> Option<Task> { self.rows.get(&id).cloned() }\n    fn set_done(&mut self, id: u64, done: bool) -> Option<Task> {\n        let t = self.rows.get_mut(&id)?;\n        t.done = done;\n        Some(t.clone())\n    }\n}\n\n#[derive(Debug, PartialEq)]\nenum ServiceError { Validation(String), NotFound(u64) }\n\nstruct TaskService<R: TaskRepo> { repo: R }\n\nimpl<R: TaskRepo> TaskService<R> {\n    fn create(&mut self, title: &str) -> Result<Task, ServiceError> {\n        let title = title.trim();\n        if title.is_empty() {\n            return Err(ServiceError::Validation(\"title must not be empty\".into()));\n        }\n        if title.chars().count() > 200 {\n            return Err(ServiceError::Validation(\"title must be at most 200 characters\".into()));\n        }\n        Ok(self.repo.insert(title))\n    }\n    fn complete(&mut self, id: u64) -> Result<Task, ServiceError> {\n        self.repo.set_done(id, true).ok_or(ServiceError::NotFound(id))\n    }\n}\n\nfn main() {\n    let mut svc = TaskService { repo: MemoryRepo::default() };\n    println!(\"{:?}\", svc.create(\"  Write the README  \"));\n    println!(\"{:?}\", svc.create(\"   \"));\n    println!(\"{:?}\", svc.create(&\"x\".repeat(201)).map(|t| t.id));\n    println!(\"{:?}\", svc.complete(1));\n    println!(\"{:?}\", svc.complete(42));\n    println!(\"stored: {:?}\", svc.repo.get(1));\n}",
+"note": "The service enforces the rules (trimmed titles, non-empty, a length limit, existing ids) without knowing anything about HTTP or SQL, and here it runs on an in-memory repository. In the real app the routes translate `ServiceError::Validation` into 422 and `NotFound` into 404, and a SQLite repository implements the same trait.",
+"output": "Ok(Task { id: 1, title: \"Write the README\", done: false })\nErr(Validation(\"title must not be empty\"))\nErr(Validation(\"title must be at most 200 characters\"))\nOk(Task { id: 1, title: \"Write the README\", done: true })\nErr(NotFound(42))\nstored: Some(Task { id: 1, title: \"Write the README\", done: true })"
+}
+],
+"mistakes": [
+"**Designing the API while writing handlers.** Write the contract first; it keeps everything consistent.",
+"**Unbounded list endpoints.** Paginate with a maximum page size from the start.",
+"**Business rules inside handlers.** Put them in a service layer you can test without HTTP."
+],
+"keys": [
+"A written contract defines routes, shapes, status codes and errors.",
+"Paginate with defaults, caps and a total count.",
+"Routes, service and repository each have one job.",
+"Each layer is testable on its own."
+]
+},
+"W1.2": {
+"idea": [
+"The repository wraps SQLite. A `rusqlite::Connection` isn't `Sync`, so the simplest correct sharing for a small service is **`Arc<Mutex<Connection>>`** in the app state: each handler locks, runs a short query and unlocks. Because rusqlite is synchronous, heavier services move database calls into `spawn_blocking` or use a pool (r2d2, deadpool) or an async driver like sqlx; for a portfolio API with modest traffic, a mutex is honest and fast enough.",
+"Map rows to structs in one helper (`fn row_to_task(row) -> Result<Task>`) so every query returns the same shape. Use **parameters** everywhere, `LIMIT ?1 OFFSET ?2` for pagination and a separate `COUNT(*)` for the total. For **PATCH**, accept optional fields and update only those present: `UPDATE tasks SET title = COALESCE(?1, title), done = COALESCE(?2, done) WHERE id = ?3`, then check `changes()` (zero rows means 404).",
+"Errors flow through one type: `ApiError` with `From<rusqlite::Error>` so `?` works in handlers, and `IntoResponse` so each variant becomes the right status and the standard JSON body. Finally, test the whole stack with **`oneshot`**: build the router on an in-memory database and send real requests, asserting status codes and bodies."
+],
+"how": [
+"State: `Arc<Mutex<Connection>>`; lock briefly, never across `.await`.",
+"One `row_to_task` mapper; parameters for every value.",
+"Pagination: `LIMIT ?1 OFFSET ?2` plus `COUNT(*)`.",
+"PATCH with `COALESCE(?n, column)`; `changes() == 0` means not found.",
+"`ApiError`: `From<rusqlite::Error>` + `IntoResponse`; test with `oneshot` on `:memory:`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The SQLite repository with pagination and partial updates",
+"code": "use rusqlite::{params, Connection, OptionalExtension, Result, Row};\n\n#[derive(Debug)]\nstruct Task { id: i64, title: String, done: bool }\n\nfn row_to_task(row: &Row) -> Result<Task> {\n    Ok(Task { id: row.get(\"id\")?, title: row.get(\"title\")?, done: row.get(\"done\")? })\n}\n\nstruct Repo { conn: Connection }\n\nimpl Repo {\n    fn open_in_memory() -> Result<Self> {\n        let conn = Connection::open_in_memory()?;\n        conn.execute_batch(\"CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);\")?;\n        Ok(Repo { conn })\n    }\n    fn create(&self, title: &str) -> Result<Task> {\n        self.conn.execute(\"INSERT INTO tasks (title) VALUES (?1)\", params![title])?;\n        self.get(self.conn.last_insert_rowid()).map(|t| t.unwrap())\n    }\n    fn get(&self, id: i64) -> Result<Option<Task>> {\n        self.conn.query_row(\"SELECT id, title, done FROM tasks WHERE id = ?1\", params![id], row_to_task).optional()\n    }\n    fn list(&self, page: u32, per_page: u32) -> Result<(Vec<Task>, i64)> {\n        let mut stmt = self.conn.prepare(\"SELECT id, title, done FROM tasks ORDER BY id LIMIT ?1 OFFSET ?2\")?;\n        let items = stmt.query_map(params![per_page, (page - 1) * per_page], row_to_task)?.collect::<Result<Vec<_>>>()?;\n        let total = self.conn.query_row(\"SELECT COUNT(*) FROM tasks\", [], |r| r.get(0))?;\n        Ok((items, total))\n    }\n    fn patch(&self, id: i64, title: Option<&str>, done: Option<bool>) -> Result<Option<Task>> {\n        let changed = self.conn.execute(\n            \"UPDATE tasks SET title = COALESCE(?1, title), done = COALESCE(?2, done) WHERE id = ?3\",\n            params![title, done, id],\n        )?;\n        if changed == 0 { Ok(None) } else { self.get(id) }\n    }\n}\n\nfn main() -> Result<()> {\n    let repo = Repo::open_in_memory()?;\n    for t in [\"Write tests\", \"Add pagination\", \"Dockerfile\", \"README\", \"Release\"] {\n        repo.create(t)?;\n    }\n    let (page2, total) = repo.list(2, 2)?;\n    println!(\"page 2 of {total}: {page2:?}\");\n    println!(\"patch done only:  {:?}\", repo.patch(3, None, Some(true))?);\n    println!(\"patch title only: {:?}\", repo.patch(3, Some(\"Multi-stage Dockerfile\"), None)?);\n    println!(\"patch missing id: {:?}\", repo.patch(99, None, Some(true))?);\n    println!(\"get missing id:   {:?}\", repo.get(99)?);\n    Ok(())\n}",
+"note": "Page 2 with two items per page returned tasks 3 and 4 along with the total of five, which is all the API needs to build its pagination response. `COALESCE` let one PATCH statement update only the fields that were sent, and an update touching zero rows became `None`, which the handler turns into a 404. `.optional()` turns \"no rows\" into `None` for single-row lookups.",
+"output": "page 2 of 5: [Task { id: 3, title: \"Dockerfile\", done: false }, Task { id: 4, title: \"README\", done: false }]\npatch done only:  Some(Task { id: 3, title: \"Dockerfile\", done: true })\npatch title only: Some(Task { id: 3, title: \"Multi-stage Dockerfile\", done: true })\npatch missing id: None\nget missing id:   None"
+},
+{
+"lang": "rust",
+"title": "The full HTTP stack tested with oneshot on an in-memory database",
+"code": "use axum::{body::Body, extract::{Path, State}, http::{Request, StatusCode}, response::{IntoResponse, Response}, routing::{get, post}, Json, Router};\nuse http_body_util::BodyExt;\nuse rusqlite::{params, Connection, OptionalExtension};\nuse serde::{Deserialize, Serialize};\nuse serde_json::json;\nuse std::sync::{Arc, Mutex};\nuse tower::ServiceExt;\n\n#[derive(Serialize)]\nstruct Task { id: i64, title: String, done: bool }\n\n#[derive(Deserialize)]\nstruct NewTask { title: String }\n\nenum ApiError { NotFound(i64), Validation(String), Internal(String) }\n\nimpl From<rusqlite::Error> for ApiError {\n    fn from(e: rusqlite::Error) -> Self { ApiError::Internal(e.to_string()) }\n}\n\nimpl IntoResponse for ApiError {\n    fn into_response(self) -> Response {\n        let (status, msg) = match self {\n            ApiError::NotFound(id) => (StatusCode::NOT_FOUND, format!(\"task {id} not found\")),\n            ApiError::Validation(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),\n            ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, \"internal error\".into()),\n        };\n        (status, Json(json!({ \"error\": msg }))).into_response()\n    }\n}\n\ntype Db = Arc<Mutex<Connection>>;\n\nasync fn create(State(db): State<Db>, Json(new): Json<NewTask>) -> Result<(StatusCode, Json<Task>), ApiError> {\n    let title = new.title.trim().to_string();\n    if title.is_empty() {\n        return Err(ApiError::Validation(\"title must not be empty\".into()));\n    }\n    let conn = db.lock().unwrap();\n    conn.execute(\"INSERT INTO tasks (title) VALUES (?1)\", params![title])?;\n    Ok((StatusCode::CREATED, Json(Task { id: conn.last_insert_rowid(), title, done: false })))\n}\n\nasync fn show(State(db): State<Db>, Path(id): Path<i64>) -> Result<Json<Task>, ApiError> {\n    let conn = db.lock().unwrap();\n    conn.query_row(\"SELECT id, title, done FROM tasks WHERE id = ?1\", params![id], |r| Ok(Task { id: r.get(0)?, title: r.get(1)?, done: r.get(2)? }))\n        .optional()?\n        .map(Json)\n        .ok_or(ApiError::NotFound(id))\n}\n\nfn app() -> Router {\n    let conn = Connection::open_in_memory().unwrap();\n    conn.execute_batch(\"CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);\").unwrap();\n    Router::new()\n        .route(\"/health\", get(|| async { Json(json!({\"status\": \"ok\"})) }))\n        .route(\"/tasks\", post(create))\n        .route(\"/tasks/{id}\", get(show))\n        .with_state(Arc::new(Mutex::new(conn)))\n}\n\nasync fn send(app: &Router, method: &str, uri: &str, body: &str) -> (u16, String) {\n    let req = Request::builder().method(method).uri(uri).header(\"content-type\", \"application/json\").body(Body::from(body.to_string())).unwrap();\n    let resp = app.clone().oneshot(req).await.unwrap();\n    let status = resp.status().as_u16();\n    (status, String::from_utf8(resp.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap())\n}\n\n#[tokio::main]\nasync fn main() {\n    let app = app();\n    let checks = [\n        (\"GET\", \"/health\", \"\", 200),\n        (\"POST\", \"/tasks\", r#\"{\"title\":\"Write tests\"}\"#, 201),\n        (\"POST\", \"/tasks\", r#\"{\"title\":\"   \"}\"#, 422),\n        (\"GET\", \"/tasks/1\", \"\", 200),\n        (\"GET\", \"/tasks/9\", \"\", 404),\n    ];\n    for (method, uri, body, expected) in checks {\n        let (status, text) = send(&app, method, uri, body).await;\n        let mark = if status == expected { \"pass\" } else { \"FAIL\" };\n        println!(\"{mark} {method:4} {uri:9} {status} {text}\");\n    }\n}",
+"note": "Each request went through routing, extraction, the handler, SQLite and error conversion, without a network or a database file, so a test suite like this runs in milliseconds. Because `ApiError` converts from `rusqlite::Error`, handlers use `?` on database calls, and every error response shares the `{\"error\": ...}` format promised in the contract.",
+"output": "pass GET  /health   200 {\"status\":\"ok\"}\npass POST /tasks    201 {\"id\":1,\"title\":\"Write tests\",\"done\":false}\npass POST /tasks    422 {\"error\":\"title must not be empty\"}\npass GET  /tasks/1  200 {\"id\":1,\"title\":\"Write tests\",\"done\":false}\npass GET  /tasks/9  404 {\"error\":\"task 9 not found\"}"
+}
+],
+"mistakes": [
+"**Holding the Mutex across `.await`.** Lock, query, drop; or use `spawn_blocking` or a pool.",
+"**Reading the inserted row with a second query when not needed.** `last_insert_rowid()` gives the id.",
+"**Testing only the happy path.** Assert 404 and 422 bodies as well."
+],
+"keys": [
+"`Arc<Mutex<Connection>>` is a simple, correct start for SQLite.",
+"One row mapper; parameters, LIMIT/OFFSET and COUNT for pages.",
+"PATCH with COALESCE; zero changed rows means 404.",
+"`ApiError` unifies errors; `oneshot` tests the whole stack."
+]
+},
+"W1.3": {
+"idea": [
+"Shipping a web service adds operational features. **Configuration** comes from environment variables (`TASKHUB_ADDR`, `TASKHUB_DB`, `RUST_LOG`), the convention for containers and the twelve-factor app; parse them once at start-up into a typed `Config` with defaults, and **fail fast** with a clear message if a value is invalid, rather than discovering it on the first request.",
+"**Request logging** with `tower_http::trace::TraceLayer` records the method, path, status and latency of every request through `tracing`, and a request-id layer lets you follow one request through the logs. **Graceful shutdown** matters for deployments: on SIGTERM (what Docker and Kubernetes send), the server stops accepting new connections, lets in-flight requests finish, and exits; `axum::serve(listener, app).with_graceful_shutdown(signal)` does this.",
+"The **Dockerfile** uses a multi-stage build: compile in a full Rust image, then copy only the binary into a minimal runtime image (distroless or debian-slim) running as a non-root user, typically under 30 MB. CI builds and tests on every push, and an **OpenAPI-style README** documents each endpoint with example requests and responses. Together, they show employers you understand the whole life of a service, not just the handlers."
+],
+"how": [
+"Typed `Config` from env vars with defaults; exit early on invalid values.",
+"`TraceLayer::new_for_http()` for request logs; `RUST_LOG` filters them.",
+"`axum::serve(..).with_graceful_shutdown(shutdown_signal())` for SIGTERM/Ctrl+C.",
+"Multi-stage Dockerfile, minimal runtime image, non-root user, volume for the database.",
+"CI and a README with every endpoint, example requests and status codes."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Configuration from the environment, validated at start-up",
+"code": "use std::collections::HashMap;\nuse std::net::SocketAddr;\nuse std::path::PathBuf;\n\n#[derive(Debug)]\nstruct Config { addr: SocketAddr, db: PathBuf, max_body_kb: u32 }\n\nfn load<I: IntoIterator<Item = (String, String)>>(vars: I) -> Result<Config, String> {\n    let env: HashMap<String, String> = vars.into_iter().filter(|(k, _)| k.starts_with(\"TASKHUB_\")).collect();\n    let get = |k: &str, default: &str| env.get(k).cloned().unwrap_or_else(|| default.to_string());\n    let addr = get(\"TASKHUB_ADDR\", \"127.0.0.1:3000\");\n    let addr = addr.parse().map_err(|e| format!(\"TASKHUB_ADDR={addr:?} is not an address: {e}\"))?;\n    let max = get(\"TASKHUB_MAX_BODY_KB\", \"64\");\n    let max_body_kb: u32 = max.parse().map_err(|_| format!(\"TASKHUB_MAX_BODY_KB={max:?} must be a whole number\"))?;\n    if !(1..=10_240).contains(&max_body_kb) {\n        return Err(format!(\"TASKHUB_MAX_BODY_KB must be between 1 and 10240, got {max_body_kb}\"));\n    }\n    Ok(Config { addr, db: get(\"TASKHUB_DB\", \"taskhub.db\").into(), max_body_kb })\n}\n\nfn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {\n    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()\n}\n\nfn main() {\n    println!(\"{:?}\", load(vars(&[])));\n    println!(\"{:?}\", load(vars(&[(\"TASKHUB_ADDR\", \"0.0.0.0:8080\"), (\"TASKHUB_DB\", \"/data/taskhub.db\"), (\"PATH\", \"/usr/bin\")])));\n    println!(\"{:?}\", load(vars(&[(\"TASKHUB_ADDR\", \"localhost:http\")])));\n    println!(\"{:?}\", load(vars(&[(\"TASKHUB_MAX_BODY_KB\", \"0\")])));\n    // in main: let config = load(std::env::vars()).unwrap_or_else(|e| { eprintln!(\"config error: {e}\"); std::process::exit(2) });\n}",
+"note": "With no variables set, every setting took a sensible default; in a container, the variables override them. Invalid values produce one precise message naming the variable, so a misconfigured deployment fails immediately at start-up instead of misbehaving later. Taking the variables as an iterator (`std::env::vars()` in production) makes the loader testable without touching the real environment.",
+"output": "Ok(Config { addr: 127.0.0.1:3000, db: \"taskhub.db\", max_body_kb: 64 })\nOk(Config { addr: 0.0.0.0:8080, db: \"/data/taskhub.db\", max_body_kb: 64 })\nErr(\"TASKHUB_ADDR=\\\"localhost:http\\\" is not an address: invalid socket address syntax\")\nErr(\"TASKHUB_MAX_BODY_KB must be between 1 and 10240, got 0\")"
+},
+{
+"lang": "rust",
+"title": "Graceful shutdown lets in-flight requests finish",
+"code": "use axum::{routing::get, Router};\nuse std::time::{Duration, Instant};\nuse tokio::sync::oneshot;\n\n#[tokio::main]\nasync fn main() {\n    let app = Router::new().route(\"/report\", get(|| async {\n        tokio::time::sleep(Duration::from_millis(300)).await;      // a slow request\n        \"report ready\"\n    }));\n    let listener = tokio::net::TcpListener::bind(\"127.0.0.1:0\").await.unwrap();\n    let url = format!(\"http://{}/report\", listener.local_addr().unwrap());\n    let (stop_tx, stop_rx) = oneshot::channel::<()>();\n\n    let server = tokio::spawn(async move {\n        axum::serve(listener, app)\n            .with_graceful_shutdown(async { stop_rx.await.ok(); })   // real apps: tokio::signal::ctrl_c() or SIGTERM\n            .await\n            .unwrap();\n    });\n\n    let client = reqwest::Client::new();\n    let started = Instant::now();\n    let in_flight = tokio::spawn({\n        let (client, url) = (client.clone(), url.clone());\n        async move { client.get(url).send().await.unwrap().text().await.unwrap() }\n    });\n    tokio::time::sleep(Duration::from_millis(50)).await;\n    stop_tx.send(()).unwrap();                                       // shutdown requested mid-request\n    println!(\"in-flight request finished: {:?}\", in_flight.await.unwrap());\n    server.await.unwrap();\n    println!(\"server exited after the request completed: {}\", started.elapsed() >= Duration::from_millis(300));\n    println!(\"new connections refused: {}\", client.get(&url).send().await.is_err());\n}",
+"note": "Shutdown was requested 50 ms into a 300 ms request, yet the client still received \"report ready\": the server stopped accepting connections but waited for the in-flight request before exiting. After that, a new request failed to connect. Without graceful shutdown, every deployment would cut off requests in progress.",
+"output": "in-flight request finished: \"report ready\"\nserver exited after the request completed: true\nnew connections refused: true"
+}
+],
+"mistakes": [
+"**Reading environment variables all over the code.** Load one typed Config at start-up.",
+"**Killing the process on deploy.** Handle SIGTERM with graceful shutdown.",
+"**Shipping the build image.** Multi-stage builds give small, non-root runtime images."
+],
+"keys": [
+"Typed configuration from env vars, validated at start-up.",
+"TraceLayer gives per-request logs through tracing.",
+"Graceful shutdown finishes in-flight requests.",
+"Multi-stage Docker images, CI and a clear README complete the service."
+]
+},
+"W2.1": {
+"idea": [
+"**kvlog** is a persistent key-value store in the style of **Bitcask**, the engine behind Riak. Its core idea is simple: never modify data in place. Every `set` and `remove` is **appended** to a log file as a record, and an in-memory **index** maps each key to the position of its latest record. Reads are one index lookup plus one disk read; writes are one sequential append, which is the fastest thing a disk can do. Removes append a **tombstone** record.",
+"Because old values are never overwritten, the log grows with every update. **Compaction** fixes that: write the live records (the latest value of each key) to a new file, then atomically replace the old one. On start-up, **opening** the store replays the log from the beginning to rebuild the index.",
+"The on-disk **record format** must make crashes survivable. Each record carries a header with a **checksum** (CRC32) over its contents, the kind (set or remove) and the key and value lengths, followed by the bytes. If the machine loses power mid-write, the last record may be **torn** (incomplete) or corrupted; on replay, a record whose length runs past the end of the file or whose checksum doesn't match marks the end of the valid log, and the store truncates there. Durability depends on **fsync**: calling `file.sync_data()` after a write guarantees it reached the disk, at a cost, so stores often offer a choice between syncing every write and syncing periodically."
+],
+"how": [
+"Append-only log of set and tombstone records; in-memory index of key → position.",
+"Reads: index lookup then one read; writes: one append.",
+"Replay on open to rebuild the index; compact to reclaim space.",
+"Record = `[crc32][kind][key_len][val_len][key][value]`, little-endian.",
+"On replay, stop at a torn or corrupted record and truncate; `sync_data()` for durability."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "A real CRC32 and why it catches corruption",
+"code": "fn crc32_table() -> [u32; 256] {\n    let mut table = [0u32; 256];\n    for (i, entry) in table.iter_mut().enumerate() {\n        let mut c = i as u32;\n        for _ in 0..8 {\n            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };\n        }\n        *entry = c;\n    }\n    table\n}\n\nfn crc32(table: &[u32; 256], bytes: &[u8]) -> u32 {\n    !bytes.iter().fold(!0u32, |c, &b| table[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8))\n}\n\nfn encode_set(table: &[u32; 256], key: &[u8], value: &[u8]) -> Vec<u8> {\n    let mut body = vec![1u8];\n    body.extend((key.len() as u32).to_le_bytes());\n    body.extend((value.len() as u32).to_le_bytes());\n    body.extend(key);\n    body.extend(value);\n    let mut rec = crc32(table, &body).to_le_bytes().to_vec();\n    rec.extend(body);\n    rec\n}\n\nfn verify(table: &[u32; 256], rec: &[u8]) -> bool {\n    let stored = u32::from_le_bytes(rec[..4].try_into().unwrap());\n    stored == crc32(table, &rec[4..])\n}\n\nfn main() {\n    let t = crc32_table();\n    println!(\"crc32(\\\"123456789\\\") = {:08x} (the standard check value is cbf43926)\", crc32(&t, b\"123456789\"));\n    let rec = encode_set(&t, b\"user:1\", b\"Ada\");\n    println!(\"record: {} bytes, valid: {}\", rec.len(), verify(&t, &rec));\n    let mut flipped = rec.clone();\n    flipped[15] ^= 0b0000_0100;                                   // one bit flips on disk\n    println!(\"one flipped bit detected: {}\", !verify(&t, &flipped));\n    let mut swapped = rec.clone();\n    swapped.swap(16, 17);                                          // two bytes swap places\n    println!(\"swapped bytes detected: {}\", !verify(&t, &swapped));\n}",
+"note": "The implementation reproduces the standard CRC32 check value, so it matches zlib and the `crc32fast` crate (which a real project would use for speed). A single flipped bit or two swapped bytes changes the checksum, so a corrupted record is recognised on replay instead of being returned as a wrong value. The simple rotate-and-xor checksum from the original sketch would miss some of these errors.",
+"output": "crc32(\"123456789\") = cbf43926 (the standard check value is cbf43926)\nrecord: 22 bytes, valid: true\none flipped bit detected: true\nswapped bytes detected: true"
+},
+{
+"lang": "rust",
+"title": "Recovering from a torn final record",
+"code": "fn records(log: &[u8]) -> (Vec<(String, String)>, usize) {\n    let mut out = Vec::new();\n    let mut pos = 0;\n    while pos + 8 <= log.len() {\n        let klen = u32::from_le_bytes(log[pos..pos + 4].try_into().unwrap()) as usize;\n        let vlen = u32::from_le_bytes(log[pos + 4..pos + 8].try_into().unwrap()) as usize;\n        let end = pos + 8 + klen + vlen;\n        if end > log.len() {\n            break;                                                 // torn: the write never finished\n        }\n        let key = String::from_utf8_lossy(&log[pos + 8..pos + 8 + klen]).into_owned();\n        let value = String::from_utf8_lossy(&log[pos + 8 + klen..end]).into_owned();\n        out.push((key, value));\n        pos = end;\n    }\n    (out, pos)\n}\n\nfn append(log: &mut Vec<u8>, k: &str, v: &str) {\n    log.extend((k.len() as u32).to_le_bytes());\n    log.extend((v.len() as u32).to_le_bytes());\n    log.extend(k.as_bytes());\n    log.extend(v.as_bytes());\n}\n\nfn main() {\n    let mut log = Vec::new();\n    append(&mut log, \"a\", \"apple\");\n    append(&mut log, \"b\", \"banana\");\n    append(&mut log, \"c\", \"cherry\");\n    let full = log.len();\n    log.truncate(full - 4);                                        // power lost mid-write\n    let (recovered, valid_len) = records(&log);\n    println!(\"recovered {recovered:?}\");\n    println!(\"file is {} bytes; truncate to {valid_len} and carry on\", log.len());\n    log.truncate(valid_len);\n    append(&mut log, \"c\", \"cranberry\");\n    println!(\"after the next write: {:?}\", records(&log).0);\n}",
+"note": "The last record was cut off four bytes short, as if the power failed during the write. Replay kept the two complete records, reported where the valid log ends, and after truncating there, new writes appended cleanly. Without truncation, the next record would be glued to the torn bytes and the log would be unreadable from that point.",
+"output": "recovered [(\"a\", \"apple\"), (\"b\", \"banana\")]\nfile is 40 bytes; truncate to 29 and carry on\nafter the next write: [(\"a\", \"apple\"), (\"b\", \"banana\"), (\"c\", \"cranberry\")]"
+}
+],
+"mistakes": [
+"**Updating values in place.** A crash mid-write corrupts data; append instead.",
+"**No checksums.** Corruption is returned as data; verify every record.",
+"**Assuming a write is durable when `write` returns.** It's in the OS cache until `sync_data`."
+],
+"keys": [
+"Append-only log plus an in-memory index: fast writes and reads.",
+"Tombstones record removals; compaction reclaims space.",
+"Checksums and length checks detect torn and corrupted records.",
+"Durability needs fsync; trade it off deliberately."
+]
+},
+"W2.2": {
+"idea": [
+"The engine turns the record format into a working store. **`open`** reads the file from the start, decoding records one by one: a set inserts `key → (offset, length)` into the index, a tombstone removes the key, and a torn or corrupted tail is truncated. Storing positions rather than values keeps memory proportional to the number of keys, not the data size; small stores may keep values in memory, as the original sketch does.",
+"**`set`** appends a record and updates the index; **`get`** looks up the position, seeks and reads the value; **`remove`** appends a tombstone and removes the key (returning whether it existed). Track **stale bytes**, the space taken by superseded records, so the store knows when compaction is worthwhile (for example when more than half the file is stale).",
+"**Compaction** writes every live record to a new file (`data.compact`), calls `sync_all`, then **atomically renames** it over the old file, so a crash leaves either the old file or the new one, never a mix; the index is rebuilt with the new offsets. Tests prove persistence by **reopening**: set values, drop the store, open it again from the same path, and check everything is still there, including removals and the result of a compaction."
+],
+"how": [
+"Index `HashMap<Vec<u8>, (u64, u32)>`: key → offset and length of the value.",
+"`set`: append, then update the index; count superseded bytes as stale.",
+"`get`: index lookup, `seek`, `read_exact`.",
+"Compact: write live records to a temp file, `sync_all`, `rename` over the original.",
+"Test by dropping and reopening the store."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "An engine with an offset index and atomic compaction",
+"code": "use std::collections::HashMap;\nuse std::fs::{self, File, OpenOptions};\nuse std::io::{self, Read, Seek, SeekFrom, Write};\nuse std::path::{Path, PathBuf};\n\nconst TOMBSTONE: u32 = u32::MAX;\n\nstruct KvStore { path: PathBuf, file: File, index: HashMap<Vec<u8>, (u64, u32)>, stale: u64, end: u64 }\n\nimpl KvStore {\n    fn open(path: &Path) -> io::Result<Self> {\n        let mut file = OpenOptions::new().read(true).append(true).create(true).open(path)?;\n        let mut buf = Vec::new();\n        file.read_to_end(&mut buf)?;\n        let (mut index, mut stale, mut pos) = (HashMap::new(), 0u64, 0usize);\n        while pos + 8 <= buf.len() {\n            let klen = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;\n            let vlen = u32::from_le_bytes(buf[pos + 4..pos + 8].try_into().unwrap());\n            let vbytes = if vlen == TOMBSTONE { 0 } else { vlen as usize };\n            let end = pos + 8 + klen + vbytes;\n            if end > buf.len() { break; }\n            let key = buf[pos + 8..pos + 8 + klen].to_vec();\n            let old = if vlen == TOMBSTONE { stale += (end - pos) as u64; index.remove(&key) }\n                      else { index.insert(key, ((pos + 8 + klen) as u64, vlen)) };\n            if let Some((_, l)) = old { stale += 8 + klen as u64 + l as u64; }\n            pos = end;\n        }\n        file.set_len(pos as u64)?;                                   // drop a torn tail\n        Ok(KvStore { path: path.into(), file, index, stale, end: pos as u64 })\n    }\n\n    fn append(&mut self, key: &[u8], value: Option<&[u8]>) -> io::Result<u64> {\n        let vlen = value.map_or(TOMBSTONE, |v| v.len() as u32);\n        let mut rec = (key.len() as u32).to_le_bytes().to_vec();\n        rec.extend(vlen.to_le_bytes());\n        rec.extend(key);\n        rec.extend(value.unwrap_or(&[]));\n        self.file.write_all(&rec)?;\n        let value_at = self.end + 8 + key.len() as u64;\n        self.end += rec.len() as u64;\n        Ok(value_at)\n    }\n\n    fn set(&mut self, key: &[u8], value: &[u8]) -> io::Result<()> {\n        let at = self.append(key, Some(value))?;\n        if let Some((_, l)) = self.index.insert(key.to_vec(), (at, value.len() as u32)) {\n            self.stale += 8 + key.len() as u64 + l as u64;\n        }\n        Ok(())\n    }\n\n    fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {\n        let Some(&(at, len)) = self.index.get(key) else { return Ok(None) };\n        let mut f = File::open(&self.path)?;\n        f.seek(SeekFrom::Start(at))?;\n        let mut v = vec![0; len as usize];\n        f.read_exact(&mut v)?;\n        Ok(Some(v))\n    }\n\n    fn remove(&mut self, key: &[u8]) -> io::Result<bool> {\n        let Some((_, l)) = self.index.remove(key) else { return Ok(false) };\n        self.append(key, None)?;\n        self.stale += 2 * (8 + key.len() as u64) + l as u64;\n        Ok(true)\n    }\n\n    fn compact(&mut self) -> io::Result<()> {\n        let tmp = self.path.with_extension(\"compact\");\n        let mut out = File::create(&tmp)?;\n        let mut keys: Vec<Vec<u8>> = self.index.keys().cloned().collect();\n        keys.sort();\n        for k in keys {\n            let v = self.get(&k)?.unwrap();\n            out.write_all(&(k.len() as u32).to_le_bytes())?;\n            out.write_all(&(v.len() as u32).to_le_bytes())?;\n            out.write_all(&k)?;\n            out.write_all(&v)?;\n        }\n        out.sync_all()?;\n        fs::rename(&tmp, &self.path)?;                                // atomic replace\n        *self = KvStore::open(&self.path)?;\n        Ok(())\n    }\n}\n\nfn main() -> io::Result<()> {\n    let path = std::env::temp_dir().join(format!(\"kvlog-demo-{}.data\", std::process::id()));\n    let _ = fs::remove_file(&path);\n    let mut kv = KvStore::open(&path)?;\n    for i in 0..50 {\n        kv.set(b\"counter\", i.to_string().as_bytes())?;              // 50 versions of one key\n    }\n    kv.set(b\"name\", b\"Ada\")?;\n    kv.set(b\"temp\", b\"to be removed\")?;\n    kv.remove(b\"temp\")?;\n    println!(\"before compaction: {} bytes, {} stale, {} live keys\", kv.end, kv.stale, kv.index.len());\n    kv.compact()?;\n    println!(\"after compaction:  {} bytes, {} stale\", kv.end, kv.stale);\n    drop(kv);\n    let mut kv = KvStore::open(&path)?;\n    println!(\"reopened: counter={:?} name={:?} temp={:?}\", kv.get(b\"counter\")?.map(|v| String::from_utf8(v).unwrap()), kv.get(b\"name\")?.map(|v| String::from_utf8(v).unwrap()), kv.get(b\"temp\")?);\n    fs::remove_file(&path)?;\n    Ok(())\n}",
+"note": "Fifty overwrites of `counter` plus a removed key left most of the file stale. Compaction rewrote only the two live records into a new file and renamed it over the old one, shrinking the log to a few dozen bytes. Reopening from disk restored exactly the latest values, and the removed key stayed removed.",
+"output": "before compaction: 892 bytes, 860 stale, 2 live keys\nafter compaction:  32 bytes, 0 stale\nreopened: counter=Some(\"49\") name=Some(\"Ada\") temp=None"
+},
+{
+"lang": "rust",
+"title": "Persistence tests that reopen the store",
+"code": "use std::collections::HashMap;\nuse std::fs::{File, OpenOptions};\nuse std::io::{self, Read, Write};\nuse std::path::Path;\n\npub struct Kv { file: File, map: HashMap<String, String> }\n\nimpl Kv {\n    pub fn open(path: &Path) -> io::Result<Kv> {\n        let mut file = OpenOptions::new().read(true).append(true).create(true).open(path)?;\n        let mut text = String::new();\n        file.read_to_string(&mut text)?;\n        let mut map = HashMap::new();\n        for line in text.lines() {                       // a text log keeps the test readable\n            match line.split_once('\\t') {\n                Some((\"-\", k)) => { map.remove(k); }\n                Some((k, v)) => { map.insert(k.to_string(), v.to_string()); }\n                None => {}\n            }\n        }\n        Ok(Kv { file, map })\n    }\n    pub fn set(&mut self, k: &str, v: &str) -> io::Result<()> {\n        writeln!(self.file, \"{k}\\t{v}\")?;\n        self.map.insert(k.into(), v.into());\n        Ok(())\n    }\n    pub fn remove(&mut self, k: &str) -> io::Result<bool> {\n        writeln!(self.file, \"-\\t{k}\")?;\n        Ok(self.map.remove(k).is_some())\n    }\n    pub fn get(&self, k: &str) -> Option<&str> { self.map.get(k).map(|s| s.as_str()) }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    fn temp(name: &str) -> std::path::PathBuf {\n        let p = std::env::temp_dir().join(format!(\"kv-test-{}-{name}\", std::process::id()));\n        let _ = std::fs::remove_file(&p);\n        p\n    }\n\n    #[test]\n    fn values_survive_reopen() -> io::Result<()> {\n        let p = temp(\"reopen\");\n        { let mut kv = Kv::open(&p)?; kv.set(\"a\", \"1\")?; kv.set(\"b\", \"2\")?; kv.set(\"a\", \"3\")?; }\n        let kv = Kv::open(&p)?;\n        assert_eq!((kv.get(\"a\"), kv.get(\"b\")), (Some(\"3\"), Some(\"2\")));\n        Ok(())\n    }\n\n    #[test]\n    fn removals_survive_reopen() -> io::Result<()> {\n        let p = temp(\"remove\");\n        { let mut kv = Kv::open(&p)?; kv.set(\"a\", \"1\")?; assert!(kv.remove(\"a\")?); assert!(!kv.remove(\"zz\")?); }\n        assert_eq!(Kv::open(&p)?.get(\"a\"), None);\n        Ok(())\n    }\n\n    #[test]\n    fn set_after_remove_wins() -> io::Result<()> {\n        let p = temp(\"resurrect\");\n        { let mut kv = Kv::open(&p)?; kv.set(\"a\", \"1\")?; kv.remove(\"a\")?; kv.set(\"a\", \"2\")?; }\n        assert_eq!(Kv::open(&p)?.get(\"a\"), Some(\"2\"));\n        Ok(())\n    }\n}",
+"note": "Each test writes through one store, lets it go out of scope (closing the file), and checks the data through a freshly opened store, which is the only way to prove that what's in memory also reached the log. The cases cover overwrites, removals of present and absent keys, and a key set again after removal, where replay order must decide.",
+"output": "running 3 tests\ntest tests::removals_survive_reopen ... ok\ntest tests::set_after_remove_wins ... ok\ntest tests::values_survive_reopen ... ok\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+}
+],
+"mistakes": [
+"**Writing compaction output over the live file directly.** A crash mid-compaction loses data. Write elsewhere, sync, rename.",
+"**Testing without reopening.** In-memory state can hide a broken replay.",
+"**Counting stale space wrongly.** Superseded sets and tombstones both count; test the numbers."
+],
+"keys": [
+"Open replays the log into an index of positions.",
+"Set and remove append; get reads one value from disk.",
+"Compaction rewrites live data and atomically renames.",
+"Reopen in tests to prove persistence."
+]
+},
+"W2.3": {
+"idea": [
+"A storage engine becomes a product with a **command-line client** and honest documentation. The CLI uses clap subcommands (`set`, `get`, `rm`, `compact`, `stats`) and conventional behaviour: values print to stdout, errors to stderr, a missing key exits with code 1 so scripts can test for it (`if kvlog get user:1 >/dev/null; then ...`), and `stats` reports keys, file size, stale bytes and whether compaction is recommended.",
+"**Benchmarks** with criterion measure what users care about: writes per second (with and without `sync_data` per write, which can differ by a factor of a hundred or more), random reads, and open time for a large log. Publish the numbers with the hardware they were measured on.",
+"**Document the guarantees and limits** plainly: single process only (no file locking yet, so two writers would corrupt the log), the index must fit in memory, durability depends on the sync setting, keys and values up to 4 GB each. Then publish: fill in Cargo.toml metadata (description, license, repository, keywords), run `cargo publish --dry-run` to check the package, and `cargo publish`. A crate on crates.io with docs on docs.rs is a strong portfolio signal."
+],
+"how": [
+"clap subcommands; stdout for values, stderr for messages, exit 1 for missing keys.",
+"`stats` reports size, live keys, stale bytes and a compaction hint.",
+"criterion benchmarks for writes (synced and not), reads and open time.",
+"README: guarantees, limits, benchmark results with hardware.",
+"Cargo metadata, `cargo publish --dry-run`, then `cargo publish`."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "The CLI dispatching to a store, with script-friendly exit codes",
+"code": "use clap::{Parser, Subcommand};\nuse std::collections::BTreeMap;\n\n#[derive(Parser, Debug)]\n#[command(name = \"kvlog\", color = clap::ColorChoice::Never)]\nstruct Cli {\n    #[command(subcommand)]\n    cmd: Cmd,\n}\n\n#[derive(Subcommand, Debug)]\nenum Cmd {\n    Set { key: String, value: String },\n    Get { key: String },\n    Rm { key: String },\n    Stats,\n}\n\nstruct Store { map: BTreeMap<String, String>, file_bytes: u64, stale: u64 }\n\n/// Returns (stdout, stderr, exit code) so the dispatch is testable.\nfn run(store: &mut Store, cli: Cli) -> (String, String, u8) {\n    match cli.cmd {\n        Cmd::Set { key, value } => {\n            let rec = 8 + key.len() as u64 + value.len() as u64;\n            if let Some(old) = store.map.insert(key.clone(), value) { store.stale += 8 + key.len() as u64 + old.len() as u64; }\n            store.file_bytes += rec;\n            (String::new(), String::new(), 0)\n        }\n        Cmd::Get { key } => match store.map.get(&key) {\n            Some(v) => (v.clone(), String::new(), 0),\n            None => (String::new(), format!(\"kvlog: key {key:?} not found\"), 1),\n        },\n        Cmd::Rm { key } => match store.map.remove(&key) {\n            Some(_) => (String::new(), String::new(), 0),\n            None => (String::new(), format!(\"kvlog: key {key:?} not found\"), 1),\n        },\n        Cmd::Stats => {\n            let pct = if store.file_bytes == 0 { 0 } else { 100 * store.stale / store.file_bytes };\n            let hint = if pct > 50 { \"  (run `kvlog compact`)\" } else { \"\" };\n            (format!(\"keys {}  file {} B  stale {} B ({pct}%){hint}\", store.map.len(), store.file_bytes, store.stale), String::new(), 0)\n        }\n    }\n}\n\nfn main() {\n    let mut store = Store { map: BTreeMap::new(), file_bytes: 0, stale: 0 };\n    let script = [\"set user:1 Ada\", \"set user:1 Ada_Lovelace\", \"set user:1 Countess\", \"get user:1\", \"get user:2\", \"rm user:2\", \"stats\"];\n    for line in script {\n        let args = std::iter::once(\"kvlog\").chain(line.split(' '));\n        let (out, err, code) = run(&mut store, Cli::try_parse_from(args).unwrap());\n        println!(\"$ kvlog {line:24} exit {code}  {}{}\", out, if err.is_empty() { String::new() } else { format!(\"[stderr] {err}\") });\n    }\n}",
+"note": "Values went to stdout and \"not found\" messages to stderr with exit code 1, which is what lets shell scripts use the tool in conditions and pipes. After three writes to the same key most of the file was stale, so `stats` suggested compaction. Returning `(stdout, stderr, code)` from `run` keeps the dispatch testable; `main` would print them and return the exit code.",
+"output": "$ kvlog set user:1 Ada           exit 0  \n$ kvlog set user:1 Ada_Lovelace  exit 0  \n$ kvlog set user:1 Countess      exit 0  \n$ kvlog get user:1               exit 0  Countess\n$ kvlog get user:2               exit 1  [stderr] kvlog: key \"user:2\" not found\n$ kvlog rm user:2                exit 1  [stderr] kvlog: key \"user:2\" not found\n$ kvlog stats                    exit 0  keys 1  file 65 B  stale 43 B (66%)  (run `kvlog compact`)"
+},
+{
+"lang": "bash",
+"title": "Benchmarks, a dry run and publishing",
+"code": "$ cargo bench\nset (no sync)           time:   [1.21 µs 1.23 µs 1.26 µs]\nset (sync_data)         time:   [212.7 µs 218.3 µs 224.9 µs]\nget (random, 100k keys) time:   [2.94 µs 2.98 µs 3.03 µs]\nopen (100k records)     time:   [18.41 ms 18.66 ms 18.93 ms]\n# measured on a Ryzen 7 5800X with an NVMe SSD; numbers vary by disk\n\n$ cargo publish --dry-run\n   Packaging kvlog v0.1.0\n   Verifying kvlog v0.1.0\n   Compiling kvlog v0.1.0 (target/package/kvlog-0.1.0)\n    Finished `dev` profile [unoptimized + debuginfo] target(s)\n   Uploading kvlog v0.1.0\nwarning: aborting upload due to dry run\n\n$ cargo publish\n   Published kvlog v0.1.0 at registry `crates-io`\n# docs appear on docs.rs/kvlog a few minutes later",
+"note": "The benchmark makes the durability trade-off concrete: syncing every write costs about 200 times more than leaving it to the OS cache, which is why the store should let users choose. The dry run builds the packaged crate exactly as crates.io would, catching missing files or metadata before anything is published; publishing is permanent (versions can be yanked but not deleted).",
+"output": ""
+}
+],
+"mistakes": [
+"**Printing errors to stdout.** Scripts capture stdout; send messages to stderr.",
+"**Hiding limits.** Say clearly that the store is single-process and needs the index in RAM.",
+"**Benchmark numbers without context.** State the hardware and whether writes were synced."
+],
+"keys": [
+"A clap CLI with stdout/stderr discipline and exit codes.",
+"`stats` exposes the engine's health.",
+"criterion quantifies the cost of durability.",
+"Document guarantees and limits; publish after a dry run."
+]
+},
+"W3.1": {
+"idea": [
+"**lifewasm** runs Conway's **Game of Life** in the browser, with the simulation in Rust compiled to WebAssembly. The rules are tiny: on a grid of cells, each alive or dead, the next generation is computed from each cell's eight neighbours. A live cell with two or three live neighbours survives; a dead cell with exactly three becomes alive; every other cell is dead next turn. Simple rules produce rich behaviour: still lifes, oscillators, gliders that travel across the grid.",
+"Represent the grid as a **flat `Vec<u8>`** of `width × height` cells, indexed by `row * width + col`. A flat buffer is cache-friendly and, crucially, JavaScript can read it **directly from WebAssembly memory** without copying, which is what makes large grids fast. Make the edges **wrap around** (a torus), so a glider leaving the right edge reappears on the left: neighbour coordinates are computed with `(row + height - 1) % height` and similar, avoiding bounds checks and special cases.",
+"Split the work between the languages by strength: **Rust** owns the state and computes generations (`tick`), plus mutations like toggling a cell or inserting a pattern; **JavaScript** draws cells on a `<canvas>`, handles clicks and buttons, and drives the animation with `requestAnimationFrame`. The boundary stays narrow: a few calls per frame and a pointer to the cell buffer."
+],
+"how": [
+"Rules: survive with 2 or 3 neighbours; birth with exactly 3; otherwise dead.",
+"Flat `Vec<u8>`: index `row * width + col`.",
+"Wrap-around neighbours with modular arithmetic.",
+"Rust: state, `tick`, `toggle`, patterns. JavaScript: canvas, input, animation loop.",
+"Expose a pointer to the cells so JS reads them without copying."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Wrap-around neighbour counting on a flat grid",
+"code": "struct Grid { width: usize, height: usize, cells: Vec<u8> }\n\nimpl Grid {\n    fn index(&self, row: usize, col: usize) -> usize { row * self.width + col }\n\n    fn live_neighbours(&self, row: usize, col: usize) -> u8 {\n        let mut count = 0;\n        for dr in [self.height - 1, 0, 1] {\n            for dc in [self.width - 1, 0, 1] {\n                if dr == 0 && dc == 0 { continue; }\n                let r = (row + dr) % self.height;              // wraps: row 0 - 1 becomes the last row\n                let c = (col + dc) % self.width;\n                count += self.cells[self.index(r, c)];\n            }\n        }\n        count\n    }\n}\n\nfn main() {\n    let (w, h) = (5, 4);\n    let mut g = Grid { width: w, height: h, cells: vec![0; w * h] };\n    for (r, c) in [(0, 0), (0, 4), (3, 0), (3, 4)] {               // one live cell in each corner\n        let i = g.index(r, c);\n        g.cells[i] = 1;\n    }\n    for r in 0..h {\n        let row: String = (0..w).map(|c| if g.cells[g.index(r, c)] == 1 { '#' } else { '.' }).collect();\n        let counts: Vec<u8> = (0..w).map(|c| g.live_neighbours(r, c)).collect();\n        println!(\"{row}   neighbours {counts:?}\");\n    }\n    println!(\"cell (1, 2) lives at index {} of {}\", g.index(1, 2), g.cells.len());\n}",
+"note": "On a torus the four corners are mutual neighbours, so each corner cell sees three live neighbours and the cells beside the corners see one or two, even though they look far apart on the flat printout. Adding `height - 1` instead of subtracting 1 keeps the arithmetic in unsigned integers, so there's no underflow and no special case for edges.",
+"output": "#...#   neighbours [3, 2, 0, 2, 3]\n.....   neighbours [2, 1, 0, 1, 2]\n.....   neighbours [2, 1, 0, 1, 2]\n#...#   neighbours [3, 2, 0, 2, 3]\ncell (1, 2) lives at index 7 of 20"
+},
+{
+"lang": "rust",
+"title": "What JavaScript sees: a pointer and a length",
+"code": "struct Universe { width: u32, height: u32, cells: Vec<u8> }\n\nimpl Universe {\n    fn cells_ptr(&self) -> *const u8 { self.cells.as_ptr() }      // exported to JS in the wasm build\n    fn width(&self) -> u32 { self.width }\n    fn height(&self) -> u32 { self.height }\n}\n\nfn main() {\n    let mut u = Universe { width: 8, height: 2, cells: vec![0; 16] };\n    for i in [1, 2, 3, 9, 10, 11] { u.cells[i] = 1; }\n    // In the browser:\n    //   const cells = new Uint8Array(memory.buffer, universe.cells_ptr(), width * height);\n    //   const alive = cells[row * width + col] === 1;\n    let len = (u.width() * u.height()) as usize;\n    let view = unsafe { std::slice::from_raw_parts(u.cells_ptr(), len) };   // the same view, from Rust\n    for row in view.chunks(u.width() as usize) {\n        println!(\"{}\", row.iter().map(|&c| if c == 1 { \"■\" } else { \"·\" }).collect::<String>());\n    }\n    println!(\"{} bytes shared, {} alive, no copying\", view.len(), view.iter().filter(|&&c| c == 1).count());\n}",
+"note": "JavaScript builds a `Uint8Array` over WebAssembly memory at the address the pointer gives, so drawing reads Rust's buffer directly; the Rust `from_raw_parts` view here does the same thing to show it. One byte per cell keeps this simple; packing eight cells per byte would use less memory but make the drawing code more complex.",
+"output": "·■■■····\n·■■■····\n16 bytes shared, 6 alive, no copying"
+}
+],
+"mistakes": [
+"**A `Vec<Vec<u8>>` grid.** Rows scattered in memory are slower and can't be shared with JS as one view.",
+"**Bounds-checking edges with many `if`s.** Modular arithmetic handles wrap-around uniformly.",
+"**Drawing from Rust through many JS calls.** Let JS read the buffer and draw in one pass."
+],
+"keys": [
+"Three rules produce the whole Game of Life.",
+"A flat buffer is fast and shareable with JavaScript.",
+"Wrap-around edges via modular arithmetic.",
+"Rust simulates; JavaScript draws and handles input."
+]
+},
+"W3.2": {
+"idea": [
+"The `Universe` type implements the simulation. **`tick`** computes the next generation into a **second buffer** and then swaps them: every cell's next state must be computed from the *current* generation, so updating in place would corrupt neighbours not yet visited. Keeping two buffers and swapping (`std::mem::swap`) avoids allocating a new vector every frame. **`toggle(row, col)`** flips a cell (for mouse clicks), and **`insert(pattern, row, col)`** stamps a known shape, often described in the community's **RLE** format (`bo$2bo$3o!` is a glider: `b` dead, `o` alive, `$` end of row, numbers repeat).",
+"**Test natively** before involving a browser: well-known patterns have exact, documented behaviour. A **blinker** (three in a row) oscillates with period 2; a **block** (2×2) never changes; a **glider** returns to its original shape after 4 generations, shifted one cell diagonally. These tests catch every off-by-one error in neighbour counting and wrap-around.",
+"Then add the **wasm-bindgen layer**: annotate the struct and an `impl` block with `#[wasm_bindgen]`, exposing `new`, `tick`, `toggle`, `width`, `height` and `cells_ptr`. Keeping the logic in plain methods and the annotations thin means `cargo test` keeps working on your machine while `wasm-pack build` produces the browser package."
+],
+"how": [
+"Two buffers; compute next from current; `std::mem::swap` after each tick.",
+"`toggle` and `insert` for interaction and patterns; parse RLE for real patterns.",
+"Test with still lifes (block), oscillators (blinker) and spaceships (glider).",
+"Compare a pattern after N generations with a shifted copy.",
+"Thin `#[wasm_bindgen]` layer over tested methods."
+],
+"examples": [
+{
+"lang": "rust",
+"title": "Known patterns prove the simulation correct",
+"code": "pub struct Universe { pub width: usize, pub height: usize, cells: Vec<u8>, next: Vec<u8> }\n\nimpl Universe {\n    pub fn new(width: usize, height: usize, live: &[(usize, usize)]) -> Self {\n        let mut cells = vec![0; width * height];\n        for &(r, c) in live { cells[r * width + c] = 1; }\n        Universe { width, height, next: cells.clone(), cells }\n    }\n\n    fn neighbours(&self, r: usize, c: usize) -> u8 {\n        let mut n = 0;\n        for dr in [self.height - 1, 0, 1] {\n            for dc in [self.width - 1, 0, 1] {\n                if (dr, dc) != (0, 0) {\n                    n += self.cells[((r + dr) % self.height) * self.width + (c + dc) % self.width];\n                }\n            }\n        }\n        n\n    }\n\n    pub fn tick(&mut self) {\n        for r in 0..self.height {\n            for c in 0..self.width {\n                let alive = self.cells[r * self.width + c] == 1;\n                self.next[r * self.width + c] = match (alive, self.neighbours(r, c)) {\n                    (true, 2) | (true, 3) | (false, 3) => 1,\n                    _ => 0,\n                };\n            }\n        }\n        std::mem::swap(&mut self.cells, &mut self.next);\n    }\n\n    pub fn live(&self) -> Vec<(usize, usize)> {\n        (0..self.cells.len()).filter(|&i| self.cells[i] == 1).map(|i| (i / self.width, i % self.width)).collect()\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn block_is_still() {\n        let block = [(1, 1), (1, 2), (2, 1), (2, 2)];\n        let mut u = Universe::new(6, 6, &block);\n        u.tick();\n        assert_eq!(u.live(), block.to_vec());\n    }\n\n    #[test]\n    fn blinker_has_period_two() {\n        let mut u = Universe::new(5, 5, &[(2, 1), (2, 2), (2, 3)]);\n        u.tick();\n        assert_eq!(u.live(), vec![(1, 2), (2, 2), (3, 2)]);\n        u.tick();\n        assert_eq!(u.live(), vec![(2, 1), (2, 2), (2, 3)]);\n    }\n\n    #[test]\n    fn glider_moves_one_cell_diagonally_every_four_ticks() {\n        let glider = [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)];\n        let mut u = Universe::new(8, 8, &glider);\n        for _ in 0..4 { u.tick(); }\n        let shifted: Vec<_> = glider.iter().map(|&(r, c)| (r + 1, c + 1)).collect();\n        let mut live = u.live();\n        live.sort();\n        let mut expected = shifted;\n        expected.sort();\n        assert_eq!(live, expected);\n    }\n\n    #[test]\n    fn glider_wraps_around_the_edges() {\n        let glider = [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)];\n        let mut u = Universe::new(6, 6, &glider);\n        for _ in 0..24 { u.tick(); }                      // 6 cells diagonally = a full lap\n        let mut live = u.live();\n        live.sort();\n        assert_eq!(live, { let mut g = glider.to_vec(); g.sort(); g });\n    }\n}",
+"note": "The block stayed still, the blinker flipped between horizontal and vertical, and the glider moved exactly one cell down and right every four generations. On a 6×6 torus, 24 generations carry the glider all the way around and back to its starting cells, which only works if wrap-around neighbour counting is right on every edge.",
+"output": "running 4 tests\ntest tests::blinker_has_period_two ... ok\ntest tests::block_is_still ... ok\ntest tests::glider_moves_one_cell_diagonally_every_four_ticks ... ok\ntest tests::glider_wraps_around_the_edges ... ok\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+"label": "cargo test output"
+},
+{
+"lang": "rust",
+"title": "Inserting a pattern from RLE and watching it run",
+"code": "fn parse_rle(rle: &str) -> Vec<(usize, usize)> {\n    let (mut live, mut row, mut col, mut run) = (Vec::new(), 0, 0, 0usize);\n    for ch in rle.chars() {\n        match ch {\n            '0'..='9' => run = run * 10 + ch.to_digit(10).unwrap() as usize,\n            'b' | 'o' | '$' => {\n                let n = run.max(1);\n                match ch {\n                    'b' => col += n,\n                    'o' => { for k in 0..n { live.push((row, col + k)); } col += n; }\n                    _ => { row += n; col = 0; }\n                }\n                run = 0;\n            }\n            '!' => break,\n            _ => {}\n        }\n    }\n    live\n}\n\nfn step(cells: &[u8], next: &mut [u8], w: usize, h: usize) {\n    for r in 0..h {\n        for c in 0..w {\n            let mut n = 0;\n            for dr in [h - 1, 0, 1] { for dc in [w - 1, 0, 1] {\n                if (dr, dc) != (0, 0) { n += cells[((r + dr) % h) * w + (c + dc) % w]; }\n            } }\n            next[r * w + c] = matches!((cells[r * w + c], n), (1, 2) | (_, 3)) as u8;\n        }\n    }\n}\n\nfn main() {\n    let (w, h) = (10, 6);\n    let mut cells = vec![0u8; w * h];\n    let mut next = cells.clone();\n    for (r, c) in parse_rle(\"bo$2bo$3o!\") {                 // a glider in RLE\n        cells[(r + 1) * w + c + 1] = 1;                     // inserted at row 1, column 1\n    }\n    for generation in [0, 4] {\n        if generation == 4 {\n            for _ in 0..4 {\n                step(&cells, &mut next, w, h);\n                std::mem::swap(&mut cells, &mut next);         // no allocation per tick\n            }\n        }\n        println!(\"generation {generation}:\");\n        for row in cells.chunks(w) {\n            println!(\"  {}\", row.iter().map(|&c| if c == 1 { '■' } else { '·' }).collect::<String>());\n        }\n    }\n}",
+"note": "The RLE string `bo$2bo$3o!` (dead-alive, two dead then alive, three alive) decoded into a glider and was stamped onto the grid. Four generations later the same shape sits one cell further down and right. The two buffers are swapped after every step, so the simulation allocates nothing while it runs, which matters at 60 frames per second.",
+"output": "generation 0:\n  ··········\n  ··■·······\n  ···■······\n  ·■■■······\n  ··········\n  ··········\ngeneration 4:\n  ··········\n  ··········\n  ···■······\n  ····■·····\n  ··■■■·····\n  ··········"
+}
+],
+"mistakes": [
+"**Updating cells in place during a tick.** Neighbours then mix generations. Use a second buffer.",
+"**Allocating a new Vec every tick.** Swap two buffers instead.",
+"**Testing only in the browser.** Known patterns make precise native tests."
+],
+"keys": [
+"Compute into a second buffer and swap each generation.",
+"Toggle and RLE insertion make the universe interactive.",
+"Still lifes, oscillators and gliders are exact test oracles.",
+"A thin wasm-bindgen layer sits on tested methods."
+]
+},
+"W3.3": {
+"idea": [
+"Shipping lifewasm means a **live demo** anyone can open. Build with **`wasm-pack build --target web --release`**, which compiles to WebAssembly, runs wasm-bindgen and optimises with `wasm-opt`, producing `pkg/` with the `.wasm` module and its JavaScript glue. A static `index.html` imports it as an ES module, so no bundler is required.",
+"**Measure and shrink** the module, because size is load time. Release-profile settings make a large difference: `opt-level = \"s\"` or `\"z\"` (optimise for size), `lto = true` (link-time optimisation removes unused code across crates), `codegen-units = 1`, and `panic = \"abort\"` (drops unwinding machinery). Avoid pulling in heavy dependencies and formatting machinery in hot paths. `twiggy` shows what takes space in a `.wasm` file. A Game of Life core can be under 20 KB.",
+"**Deploy to GitHub Pages** with a workflow: on every push to `main`, install Rust and wasm-pack, build, and upload the site folder with `actions/upload-pages-artifact` and `actions/deploy-pages`. The README then leads with the **live demo link** and an animated GIF, followed by how it works (Rust computes, JS draws, shared memory), how to build locally, and what you'd add next (patterns library, speed control, bit-packed cells). It's a portfolio piece people can try in five seconds."
+],
+"how": [
+"`wasm-pack build --target web --release`; serve `index.html` + `pkg/`.",
+"`[profile.release] opt-level = \"s\"`, `lto = true`, `codegen-units = 1`, `panic = \"abort\"`.",
+"Inspect size with `ls -lh` and `twiggy top`.",
+"GitHub Pages workflow: build, `upload-pages-artifact`, `deploy-pages`.",
+"README: demo link and GIF first, then design, build steps and next ideas."
+],
+"examples": [
+{
+"lang": "yaml",
+"title": "Deploying the demo to GitHub Pages on every push",
+"code": "# .github/workflows/pages.yml\nname: Deploy demo\non:\n  push:\n    branches: [main]\npermissions:\n  contents: read\n  pages: write\n  id-token: write\nconcurrency: { group: pages, cancel-in-progress: true }\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    environment: { name: github-pages, url: \"${{ steps.deployment.outputs.page_url }}\" }\n    steps:\n      - uses: actions/checkout@v4\n      - uses: dtolnay/rust-toolchain@stable\n        with: { targets: wasm32-unknown-unknown }\n      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh\n      - run: cargo test                          # native tests first: patterns must still pass\n      - run: wasm-pack build --target web --release\n      - run: mkdir site && cp index.html site/ && cp -r pkg site/ && rm site/pkg/.gitignore\n      - uses: actions/upload-pages-artifact@v3\n        with: { path: site }\n      - id: deployment\n        uses: actions/deploy-pages@v4\n# Settings > Pages > Source: \"GitHub Actions\". The demo appears at https://<user>.github.io/lifewasm/",
+"note": "The workflow runs the native pattern tests before building, so a broken simulation never gets deployed. It then copies only the page and the generated package into a `site` folder and publishes it; removing `pkg/.gitignore` (which wasm-pack creates) avoids confusion if the folder is ever committed. The Pages source must be set to \"GitHub Actions\" once in the repository settings.",
+"output": ""
+},
+{
+"lang": "toml",
+"title": "Release settings for a small .wasm file",
+"code": "[package]\nname = \"lifewasm\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\ncrate-type = [\"cdylib\", \"rlib\"]\n\n[dependencies]\nwasm-bindgen = \"0.2\"\n\n[profile.release]\nopt-level = \"s\"        # optimise for size (\"z\" is smaller still, sometimes slower)\nlto = true             # remove unused code across crates\ncodegen-units = 1      # better optimisation, slower build\npanic = \"abort\"        # no unwinding tables\n\n# $ wasm-pack build --target web --dev && ls -lh pkg/*.wasm\n# -rw-r--r-- 1 kev kev 1.4M lifewasm_bg.wasm        <- debug build\n# $ wasm-pack build --target web --release && ls -lh pkg/*.wasm\n# -rw-r--r-- 1 kev kev  16K lifewasm_bg.wasm        <- release + size settings + wasm-opt\n# $ twiggy top -n 3 pkg/lifewasm_bg.wasm\n#  Shallow Bytes │ Item\n#           4873 │ lifewasm::Universe::tick\n#           2210 │ data[0]\n#           1532 │ wasm_bindgen::externref table",
+"note": "The debug build is over a megabyte, mostly debug information and unoptimised code; the release build with size settings and wasm-opt shrinks to about 16 KB, small enough to load instantly on a phone. `twiggy` confirms that the simulation itself dominates what remains. (Sizes are typical; yours will vary slightly with versions.)",
+"output": ""
+}
+],
+"mistakes": [
+"**Deploying a debug build.** It's dozens of times larger. Always `--release` with size settings.",
+"**A demo link buried at the bottom of the README.** Put the link and a GIF first.",
+"**Deploying without running tests.** Run native tests in the same workflow first."
+],
+"keys": [
+"wasm-pack builds a ready-to-serve package; no bundler needed.",
+"Size settings and wasm-opt shrink the module dramatically.",
+"GitHub Actions deploys the demo to Pages on every push.",
+"Lead the README with a live link and a GIF."
+]
 }
 }
