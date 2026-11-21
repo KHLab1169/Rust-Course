@@ -1,0 +1,311 @@
+- id: a13
+  n: A13
+  t: 'Career toolkit: Rust in QA, CI and Python'
+  lv: 3
+  goal: 'Turn Rust skills into job-ready evidence: a CI pipeline employers recognise, Rust speed inside Python test tooling, the wider testing toolbox, flaky-test diagnosis, and interview practice.'
+  res: 'GitHub Actions for Rust (rust-toolchain) | https://github.com/dtolnay/rust-toolchain
+
+    The PyO3 user guide | https://pyo3.rs/
+
+    maturin | https://www.maturin.rs/
+
+    cargo-mutants | https://mutants.rs/
+
+    cargo-nextest | https://nexte.st/
+
+    cargo-llvm-cov | https://github.com/taiki-e/cargo-llvm-cov
+
+    Comprehensive Rust (Google) | https://google.github.io/comprehensive-rust/'
+  quiz:
+  - q: Which command makes a CI job fail on any clippy warning?
+    o:
+    - cargo clippy -- -D warnings
+    - cargo clippy --fix
+    - cargo check --warnings
+    - cargo fmt --check
+    a: 0
+    x: -D warnings turns every warning into an error, so the step fails.
+  - q: Why run cargo fmt and clippy once, but the tests on Linux, macOS and Windows?
+    o:
+    - Formatting and lints don't depend on the platform, but behaviour such as paths and line endings can
+    - clippy only works on Linux
+    - Tests are faster on Windows
+    - GitHub requires it
+    a: 0
+    x: It keeps CI fast without missing platform-specific bugs.
+  - q: In a PyO3 project, where should the logic you want to test live?
+    o:
+    - 'In plain Rust functions, with the #[pyfunction] wrapper only converting types and errors'
+    - 'Inside the #[pymodule] function'
+    - In Python, calling Rust only for printing
+    - In build.rs
+    a: 0
+    x: Then cargo test covers the logic and pytest covers the boundary.
+  - q: What does PyO3 do with a Rust Err converted by PyValueError::new_err?
+    o:
+    - Raises a ValueError in Python
+    - Returns None to Python
+    - Crashes the Python interpreter
+    - Prints a warning and continues
+    a: 0
+    x: PyResult errors become Python exceptions.
+  - q: Which tool answers "would my tests notice if this line were wrong?"
+    o:
+    - cargo-mutants
+    - cargo-llvm-cov
+    - cargo-nextest
+    - rustfmt
+    a: 0
+    x: Mutation testing changes the code and checks that some test fails.
+    pool: exam
+  - q: What does proptest do when a property fails?
+    o:
+    - Shrinks the input to a minimal failing case and saves it for later runs
+    - Retries until the test passes
+    - Skips the test
+    - Reports only that some input failed
+    a: 0
+    x: Shrunk cases are stored in proptest-regressions/.
+  - q: Two tests pass alone but fail together sometimes. Which experiment best points to shared state?
+    o:
+    - The failures disappear with cargo test -- --test-threads=1
+    - The failures disappear in release mode
+    - The tests pass on macOS
+    - Adding println! changes the output
+    a: 0
+    x: Serial runs removing the failure means the tests interfere with each other.
+    pool: exam
+  - q: Why is waiting for a condition with a timeout better than a fixed sleep in a test?
+    o:
+    - It waits only as long as needed and still fails clearly if the condition never comes
+    - It uses less memory
+    - Sleeps are not allowed in Rust tests
+    - It makes the test run in parallel
+    a: 0
+    x: Fixed sleeps are either too short (flaky) or too long (slow).
+  - q: Why does pushing to a Vec while holding a reference to one of its items fail to compile?
+    o:
+    - push may reallocate and move the items, which would leave the reference dangling
+    - Vec items are always copied
+    - References can't point into a Vec
+    - push needs the Vec to be empty
+    a: 0
+    x: The borrow checker prevents a use-after-free.
+  - q: Which are good habits in a live-coding interview?
+    type: multi
+    o:
+    - Say your test cases, including edge cases, before writing code
+    - Explain trade-offs between approaches
+    - Stay silent until the code compiles
+    - Run through an example by hand at the end
+    a:
+    - 0
+    - 1
+    - 3
+    x: Interviewers assess reasoning as much as the final code.
+    pool: exam
+  recap:
+    summary:
+    - A recognisable Rust CI runs fmt --check, clippy with -D warnings and tests on several platforms, with caching, and its checks are required before merging.
+    - 'PyO3 and maturin put fast Rust behind a Python API: keep logic in plain Rust and let a thin #[pyfunction] convert types and errors.'
+    - 'Different tools answer different questions: proptest finds breaking inputs, coverage finds untested code, mutation testing finds weak assertions.'
+    - Flaky Rust tests usually share files, environment variables or ports between parallel tests, or depend on real time and randomness; isolate and inject instead of serialising.
+    - In interviews, explain the rule behind a fix, state test cases before coding, and tell STAR stories with measurable results.
+    functions: 'cargo clippy --all-targets -- -D warnings || Lint and fail on any warning.
+
+      cargo fmt --all --check || Fail if code isn''t formatted.
+
+      #[pyfunction] / #[pymodule] || Expose Rust functions to Python with PyO3.
+
+      maturin develop --release || Build and install the extension into the current virtual environment.
+
+      proptest! { fn p(x in strategy) } || A property-based test.
+
+      cargo llvm-cov --html || A line coverage report.
+
+      cargo mutants || Find mutants your tests miss.
+
+      cargo nextest run --retries 2 || Run tests and flag ones that only pass on retry.'
+    next: 'Take these into the Track 3 projects: each should ship with this CI, and testlens is a natural place for the flaky-test detector and a Python binding.'
+  items:
+  - id: A13.1
+    t: CI for a Rust project
+    min: 45
+    learn: 'Build the GitHub Actions pipeline Rust teams expect: formatting, clippy with warnings as errors, tests on several platforms, caching, a minimum supported Rust version, dependency audits and coverage, and make the checks required before merging.'
+    example:
+      title: Summarise cargo test output for a CI report
+      code: "/// Turn the summary lines of `cargo test` into one status line for a CI job or chat message.\nfn summarise(output: &str) -> String {\n    let (mut passed, mut failed, mut ignored) = (0, 0, 0);\n    let mut failures = Vec::new();\n    for line in output.lines() {\n        if let Some(rest) = line.strip_prefix(\"test result: \") {\n            // \"FAILED. 1 passed; 1 failed; ...\" -> drop the \"FAILED. \" or \"ok. \" prefix\n            let counts = rest.split_once(\". \").map_or(rest, |(_, r)| r);\n            for part in counts.split(';') {\n                let mut words = part.split_whitespace();\n                let (Some(n), Some(kind)) = (words.next(), words.next()) else { continue };\n                let n: u32 = n.parse().unwrap_or(0);\n                match kind {\n                    \"passed\" => passed += n,\n                    \"failed\" => failed += n,\n                    \"ignored\" => ignored += n,\n                    _ => {}\n                }\n            }\n        } else if let Some(name) = line.strip_prefix(\"test \").and_then(|l| l.strip_suffix(\" ... FAILED\")) {\n            failures.push(name.to_string());\n        }\n    }\n    let status = if failed == 0 { \"PASS\" } else { \"FAIL\" };\n    let mut s = format!(\"{status}: {passed} passed, {failed} failed, {ignored} ignored\");\n    if !failures.is_empty() {\n        s += &format!(\" (failing: {})\", failures.join(\", \"));\n    }\n    s\n}\n\nfn main() {\n    let unit = \"running 3 tests\\ntest parse::ok ... ok\\ntest parse::empty ... FAILED\\ntest slow ... ignored\\n\\ntest result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out\";\n    let integration = \"running 2 tests\\ntest cli_help ... ok\\ntest cli_version ... ok\\n\\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\";\n    println!(\"{}\", summarise(unit));\n    println!(\"{}\", summarise(&format!(\"{unit}\\n{integration}\")));\n}\n"
+      note: cargo test prints one result line per test binary (unit tests, each integration test file, doc tests), so a report has to add them up. In CI you'd normally let the job's exit code decide pass or fail; a summary like this is for the human reading the run, or for posting to a chat channel.
+      lang: rust
+      output: 'FAIL: 1 passed, 1 failed, 1 ignored (failing: parse::empty)
+
+        FAIL: 3 passed, 1 failed, 1 ignored (failing: parse::empty)'
+      check: run
+    ex:
+    - id: A13.1b
+      t: Write the workflow for one of your repositories
+      p: Add .github/workflows/ci.yml to your minigrep repository (or any Rust project of yours). It should check formatting, run clippy with warnings as errors, and run the tests on Linux, macOS and Windows, with dependency caching. Push it, open a pull request with a deliberate clippy warning, and watch the check fail.
+      lang: yaml
+      check: none
+      hints:
+      - 'Use dtolnay/rust-toolchain@stable with components: clippy, rustfmt.'
+      - 'A matrix of os: [ubuntu-latest, macos-latest, windows-latest] runs the job three times.'
+      - Swatinem/rust-cache@v2 caches the target folder and registry between runs.
+      solution: "name: CI\non:\n  push:\n    branches: [main]\n  pull_request:\n\nenv:\n  CARGO_TERM_COLOR: always\n\njobs:\n  check:\n    name: fmt and clippy\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: dtolnay/rust-toolchain@stable\n        with:\n          components: clippy, rustfmt\n      - uses: Swatinem/rust-cache@v2\n      - run: cargo fmt --all --check\n      - run: cargo clippy --all-targets --all-features -- -D warnings\n\n  test:\n    name: test (${{ matrix.os }})\n    needs: check\n    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n    runs-on: ${{ matrix.os }}\n    steps:\n      - uses: actions/checkout@v4\n      - uses: dtolnay/rust-toolchain@stable\n      - uses: Swatinem/rust-cache@v2\n      - run: cargo test --all-features\n"
+      explain: 'Running fmt and clippy once on Linux and tests on all three systems keeps CI fast while still catching platform differences (paths, line endings). fail-fast: false lets every platform finish, so one failure doesn''t hide another. Then make both jobs required status checks in the repository''s branch protection settings, so nothing merges red.'
+      chk:
+      - The workflow runs on pull requests and on pushes to main
+      - cargo fmt --check and cargo clippy -- -D warnings both run
+      - Tests run on Linux, macOS and Windows
+      - You saw the check fail on a pull request with a warning, then pass after the fix
+      - The checks are required before merging
+  - id: A13.2
+    t: Rust inside Python with PyO3 and maturin
+    min: 60
+    learn: 'Speed up a slow Python helper by writing it in Rust: keep the logic in plain Rust, expose it with PyO3''s #[pyfunction] and #[pymodule], build and install it with maturin, convert errors to Python exceptions, and test it from both cargo test and pytest.'
+    example:
+      title: A PyO3 module around a plain Rust function
+      lang: rust
+      check: none
+      code: "// Cargo.toml\n// [lib]\n// name = \"flaky_tools\"\n// crate-type = [\"cdylib\"]\n//\n// [dependencies]\n// pyo3 = { version = \"0.25\", features = [\"extension-module\"] }\n\nuse pyo3::exceptions::PyValueError;\nuse pyo3::prelude::*;\n\n/// The real logic: plain Rust, tested with cargo test.\npub fn failure_rate(results: &[bool]) -> Result<f64, String> {\n    if results.is_empty() {\n        return Err(String::from(\"no results\"));\n    }\n    let failed = results.iter().filter(|&&passed| !passed).count();\n    Ok(failed as f64 / results.len() as f64)\n}\n\n/// The thin wrapper Python sees: flaky_tools.failure_rate([True, False, True]).\n#[pyfunction]\n#[pyo3(name = \"failure_rate\")]\nfn py_failure_rate(results: Vec<bool>) -> PyResult<f64> {\n    failure_rate(&results).map_err(PyValueError::new_err)\n}\n\n#[pymodule]\nfn flaky_tools(m: &Bound<'_, PyModule>) -> PyResult<()> {\n    m.add_function(wrap_pyfunction!(py_failure_rate, m)?)?;\n    Ok(())\n}\n\n// In a virtual environment:\n//   pip install maturin\n//   maturin develop --release\n//   python -c \"import flaky_tools; print(flaky_tools.failure_rate([True, False, True, True]))\"\n//   0.25\n"
+      note: 'PyO3 converts arguments and return values for you: a Python list of bools arrives as Vec<bool>, and a Rust Err becomes a ValueError in Python. maturin builds the extension and installs it into the active virtual environment; maturin build --release makes a wheel you can publish. Check PyO3''s guide for the current version number before you start, since its API moves quickly.'
+    ex:
+    - id: A13.2b
+      t: Ship your edit distance to Python
+      p: Wrap the edit_distance and closest functions from the previous exercise in a PyO3 module named testnames, build it with maturin develop, and write a pytest file that checks both functions from Python, including the error when closest gets an empty list. Then time it against a pure-Python version on 2,000 test names.
+      lang: rust
+      check: none
+      hints:
+      - Create the project with maturin new --bindings pyo3 testnames.
+      - closest returns Option in Rust; turn None into a ValueError so Python callers get a clear error.
+      - Use time.perf_counter() around a loop of calls for a rough comparison, and build with --release.
+      solution: "// src/lib.rs\nuse pyo3::exceptions::PyValueError;\nuse pyo3::prelude::*;\n\nmod core; // edit_distance and closest from the previous exercise, unchanged\n\n#[pyfunction]\nfn edit_distance(a: &str, b: &str) -> usize {\n    core::edit_distance(a, b)\n}\n\n#[pyfunction]\nfn closest(name: &str, candidates: Vec<String>) -> PyResult<String> {\n    let refs: Vec<&str> = candidates.iter().map(String::as_str).collect();\n    core::closest(name, &refs)\n        .map(String::from)\n        .ok_or_else(|| PyValueError::new_err(\"candidates must not be empty\"))\n}\n\n#[pymodule]\nfn testnames(m: &Bound<'_, PyModule>) -> PyResult<()> {\n    m.add_function(wrap_pyfunction!(edit_distance, m)?)?;\n    m.add_function(wrap_pyfunction!(closest, m)?)?;\n    Ok(())\n}\n\n# tests/test_testnames.py\nimport pytest\nimport testnames\n\ndef test_distance():\n    assert testnames.edit_distance(\"kitten\", \"sitting\") == 3\n\ndef test_closest():\n    assert testnames.closest(\"test_login\", [\"test_logout\", \"test_signup\"]) == \"test_logout\"\n\ndef test_closest_needs_candidates():\n    with pytest.raises(ValueError, match=\"must not be empty\"):\n        testnames.closest(\"x\", [])\n"
+      explain: 'The wrapper only converts types and errors; everything worth testing stays in core, where cargo test covers it. pytest then checks the boundary: names, argument types and the exception. On thousands of names the Rust version is typically tens of times faster than a pure-Python double loop, a concrete result for a CV bullet if you measure it yourself.'
+      chk:
+      - maturin develop builds the module and Python can import it
+      - pytest passes, including a test for the ValueError
+      - cargo test still covers the core functions
+      - You measured the speed difference on the same input and wrote down the numbers
+  - id: A13.3
+    t: The Rust testing toolbox
+    min: 60
+    learn: 'Go beyond #[test]: property-based tests with proptest, snapshot tests with insta, fuzzing with cargo-fuzz, coverage with cargo-llvm-cov, mutation testing with cargo-mutants and faster runs with cargo-nextest, and know which one answers which question.'
+    example:
+      title: A property test by hand, with a seeded generator
+      code: "/// Run-length encoding: \"aaab\" becomes [('a', 3), ('b', 1)].\nfn encode(s: &str) -> Vec<(char, usize)> {\n    let mut out: Vec<(char, usize)> = Vec::new();\n    for c in s.chars() {\n        match out.last_mut() {\n            Some((last, n)) if *last == c => *n += 1,\n            _ => out.push((c, 1)),\n        }\n    }\n    out\n}\n\nfn decode(runs: &[(char, usize)]) -> String {\n    runs.iter().map(|&(c, n)| c.to_string().repeat(n)).collect()\n}\n\n/// A tiny seeded generator, so every run tries the same inputs.\nstruct Lcg(u64);\nimpl Lcg {\n    fn next(&mut self) -> u64 {\n        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);\n        self.0 >> 33\n    }\n    fn word(&mut self) -> String {\n        let len = self.next() % 12;\n        (0..len).map(|_| ['a', 'b', 'é'][(self.next() % 3) as usize]).collect()\n    }\n}\n\nfn main() {\n    let mut rng = Lcg(2024);\n    let mut checked = 0;\n    for _ in 0..1000 {\n        let s = rng.word();\n        let runs = encode(&s);\n        assert_eq!(decode(&runs), s, \"round trip failed for {s:?}\");\n        assert!(runs.windows(2).all(|w| w[0].0 != w[1].0), \"neighbouring runs must differ: {runs:?}\");\n        checked += 1;\n    }\n    println!(\"{checked} random inputs: round trip and run properties hold\");\n    println!(\"example: {:?} -> {:?}\", \"aaébb\", encode(\"aaébb\"));\n}\n"
+      note: 'A property says something about every input: decoding an encoding gives the original back, and two neighbouring runs never have the same character. proptest does this properly: it generates smarter inputs, shrinks a failure to the smallest case and saves it in proptest-regressions/ so it''s tried again on every run. The seed here makes failures reproducible, which matters just as much.'
+      lang: rust
+      output: '1000 random inputs: round trip and run properties hold
+
+        example: "aaébb" -> [(''a'', 2), (''é'', 1), (''b'', 2)]'
+      check: run
+    ex:
+    - id: A13.3b
+      t: Add two new kinds of test to a project
+      p: In one of your own crates, add a proptest property test for a function that has a natural property (a round trip, an invariant, or agreement with a simpler version), and run cargo llvm-cov to find one important line no test covers. Add a test for it. If you have time, run cargo mutants and fix one surviving mutant.
+      lang: rust
+      check: none
+      hints:
+      - cargo add --dev proptest, then use proptest::prelude::*; and the proptest! macro.
+      - cargo install cargo-llvm-cov, then cargo llvm-cov --html opens a coverage report.
+      - cargo install cargo-mutants, then cargo mutants lists the mutants your tests missed.
+      solution: "// tests/properties.rs\nuse proptest::prelude::*;\nuse rle::{decode, encode};\n\nproptest! {\n    #[test]\n    fn round_trip(s in \"[ab\\u{e9}]{0,40}\") {\n        prop_assert_eq!(decode(&encode(&s)), s);\n    }\n\n    #[test]\n    fn neighbouring_runs_differ(s in \"[ab]{0,40}\") {\n        let runs = encode(&s);\n        prop_assert!(runs.windows(2).all(|w| w[0].0 != w[1].0));\n    }\n}\n\n// Coverage, then mutants:\n//   cargo llvm-cov --html        # target/llvm-cov/html/index.html\n//   cargo mutants                # lists \"MISSED\" mutants with the line and change\n"
+      explain: 'Each tool answers a different question: proptest asks "is there any input that breaks this rule?", coverage asks "which code did no test run?", and mutation testing asks "would my tests notice if this line were wrong?". Coverage alone can be 100% with weak assertions; mutants expose that.'
+      chk:
+      - A proptest test runs with cargo test
+      - You read a coverage report and added a test for an uncovered line
+      - You can explain the difference between coverage and mutation testing in one sentence each
+  - id: A13.4
+    t: Flaky tests in Rust
+    min: 45
+    learn: Recognise the usual causes of flaky Rust tests (shared files and environment variables between parallel tests, real time and sleeps, unseeded randomness, HashMap order, fixed ports) and fix each with isolation, injection and waiting on conditions; detect flakiness by rerunning tests many times.
+    example:
+      title: A rerun detector for one flaky test
+      code: "/// A pretend test that fails when a simulated response takes longer than its fixed timeout.\nfn flaky_test(latency_ms: u64) -> bool {\n    let fixed_timeout_ms = 200;\n    latency_ms <= fixed_timeout_ms\n}\n\nstruct Lcg(u64);\nimpl Lcg {\n    fn next(&mut self) -> u64 {\n        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);\n        self.0 >> 33\n    }\n    /// Latency that is usually around 120 ms, with a slow tail like a busy CI machine.\n    fn latency(&mut self) -> u64 {\n        let base = 80 + self.next() % 80;\n        if self.next() % 10 == 0 { base + 150 } else { base }\n    }\n}\n\nfn main() {\n    let mut rng = Lcg(7);\n    let runs = 200;\n    let failures = (0..runs).filter(|_| !flaky_test(rng.latency())).count();\n    let rate = failures as f64 / runs as f64 * 100.0;\n    println!(\"{failures} of {runs} runs failed ({rate:.1}%)\");\n    let verdict = match failures {\n        0 => \"stable\",\n        f if f == runs => \"always failing (a real bug, not flakiness)\",\n        _ => \"FLAKY: passes and fails with the same code\",\n    };\n    println!(\"verdict: {verdict}\");\n}\n"
+      note: 'Running the same test many times with no code change is the simplest flakiness detector: a test that sometimes passes and sometimes fails is flaky by definition. In a real project, cargo nextest run --retries 2 reports tests that only passed on a retry, and a loop like for i in $(seq 50); do cargo test name || break; done reproduces a flake locally.'
+      lang: rust
+      output: '23 of 200 runs failed (11.5%)
+
+        verdict: FLAKY: passes and fails with the same code'
+      check: run
+    ex:
+    - id: A13.4b
+      t: Write up a flaky test diagnosis
+      p: 'Two tests in one crate both write to target/tmp/config.json and pass on their own, but fail together about one run in five on CI. Write a short diagnosis: the cause, how you''d prove it, and the fix. Then name two other common causes of flaky Rust tests and the fix for each.'
+      lang: text
+      check: none
+      hints:
+      - cargo test runs tests in parallel threads by default.
+      - cargo test -- --test-threads=1 making the failure disappear is strong evidence of shared state.
+      - Give each test its own temporary directory (the tempfile crate) instead of a shared path.
+      solution: 'Cause: cargo test runs tests in parallel, and both tests write and read the same file, so one test sometimes reads the other''s data.
+
+
+        Proof: run the pair 50 times with the default settings and note the failures, then 50 times with cargo test -- --test-threads=1. If the failures disappear when tests run one at a time, they share state.
+
+
+        Fix: give each test its own directory with tempfile::tempdir() and pass the path into the code under test, so the tests can''t touch each other''s files. Don''t fix it with --test-threads=1 in CI: that hides the problem and slows every run.
+
+
+        Other causes:
+
+        1. Environment variables: std::env::set_var changes the whole process, so parallel tests see each other''s values. Pass configuration in as a parameter or a map, as minigrep''s IGNORE_CASE exercise did.
+
+        2. Real time and sleeps: a test that sleeps 100 ms and expects work to be done fails on a slow machine. Inject a clock, or poll for the condition with a timeout instead of sleeping.
+
+        '
+      explain: 'A good diagnosis has three parts: the mechanism, evidence that it''s really the cause, and a fix that removes the cause rather than hiding the symptom. Forcing tests to run one at a time is a useful experiment but a poor fix.'
+      chk:
+      - The cause names parallel tests sharing a file
+      - The proof is an experiment you could actually run
+      - The fix isolates the tests instead of serialising them
+      - Two other causes, each with a matching fix
+  - id: A13.5
+    t: Rust interview preparation
+    min: 45
+    learn: 'Prepare for Rust and QA-automation interviews: explain ownership, borrowing, lifetimes, Send and Sync, smart pointers and error handling in plain words; read a compiler error aloud and fix it; approach a live-coding question by stating test cases first; and tell STAR stories about quality work.'
+    example:
+      title: Explaining a borrow error, then fixing it
+      code: "// The question: \"Why doesn't this compile, and how would you fix it?\"\n//\n//     let mut scores = vec![90, 70, 85];\n//     let best = &scores[0];      // immutable borrow starts here\n//     scores.push(60);            // error[E0502]: cannot borrow `scores` as mutable\n//     println!(\"{best}\");         // ...because the immutable borrow is still used here\n//\n// The answer: push may reallocate the vector and move its items, which would leave\n// `best` pointing at freed memory. Rust refuses while the borrow is still alive.\n\nfn main() {\n    let mut scores = vec![90, 70, 85];\n\n    // Fix 1: copy the value out (i32 is Copy), so no borrow is held.\n    let best = scores[0];\n    scores.push(60);\n    println!(\"fix 1: best = {best}, scores = {scores:?}\");\n\n    // Fix 2: finish using the borrow before changing the vector.\n    let top = scores.iter().max().copied();\n    scores.push(100);\n    println!(\"fix 2: top before push = {top:?}, len = {}\", scores.len());\n\n    // Fix 3: keep an index instead of a reference.\n    let i = scores.iter().position(|&s| s == 85).unwrap();\n    scores.push(75);\n    println!(\"fix 3: scores[{i}] = {}\", scores[i]);\n}\n"
+      note: 'Interviewers listen for the why, not just a fix that compiles: the borrow checker is preventing a dangling reference after the vector reallocates. Offering several fixes and saying when you''d choose each (copy small values, shorten the borrow, store indexes) shows you understand the rule rather than fighting it.'
+      lang: rust
+      output: 'fix 1: best = 90, scores = [90, 70, 85, 60]
+
+        fix 2: top before push = Some(90), len = 5
+
+        fix 3: scores[2] = 85'
+      check: run
+    ex:
+    - id: A13.5b
+      t: Model answers for five classic questions
+      p: 'Write a two- or three-sentence answer to each, as you would say it in an interview: (1) What''s the difference between String and &str? (2) When would you use Rc, Arc and Box? (3) What do Send and Sync mean? (4) When should a function return Result, and when should it panic? (5) Generics or trait objects: how do you choose? Then write one STAR story (situation, task, action, result) about catching a bug before release.'
+      lang: text
+      check: none
+      hints:
+      - Answer the question first, then give one concrete example.
+      - 'Mention the trade-off in each: ownership, cost, flexibility.'
+      - For STAR, spend most of the time on Action and finish with a measurable Result.
+      solution: '1. String owns its text on the heap and can grow; &str is a borrowed view into text owned by someone else, such as a String or a literal. Functions usually take &str so they accept both.
+
+
+        2. Box puts one value on the heap with a single owner, for recursive types or large values. Rc shares ownership inside one thread; Arc does the same across threads using atomic counts, so it costs a little more.
+
+
+        3. Send means a value can be moved to another thread; Sync means it can be shared between threads by reference. Rc is neither, Arc<Mutex<T>> is both, and the compiler checks this when you spawn threads.
+
+
+        4. Return Result for failures a caller can expect and handle, such as bad input or a missing file. Panic for bugs, where continuing would be wrong, such as a broken invariant inside your own code.
+
+
+        5. Generics are resolved at compile time and are fastest, but every item must have the same type. Trait objects allow mixing types in one collection at the cost of an indirect call, so I use them for plugin lists and generics elsewhere.
+
+
+        STAR: Situation: a release candidate passed every functional test. Task: I owned the final regression pass. Action: I added a test that ran the import with a file twice the usual size and found the progress screen froze; I reduced it to a minimal case, filed it with the steps and a timing comparison, and worked with the developer to confirm the fix. Result: the fix shipped before release, and the large-file test became part of the regression suite.
+
+        '
+      explain: 'Short answers with one example and one trade-off sound confident and leave room for follow-up questions. The STAR story is deliberately generic: replace it with your own real examples and real numbers before an interview.'
+      chk:
+      - Each answer is two or three sentences, with an example or trade-off
+      - You can say each answer aloud in under a minute
+      - The STAR story ends with a concrete result
+      - You've replaced the model story with one of your own

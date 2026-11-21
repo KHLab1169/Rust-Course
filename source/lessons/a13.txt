@@ -1,0 +1,358 @@
+=== A13.1
+@idea
+Continuous integration (CI) runs the same checks on every push and pull request, so a mistake is caught minutes after it's made instead of weeks later. For Rust, employers expect a recognisable set: **cargo fmt --check** (layout), **cargo clippy -- -D warnings** (lints, with warnings treated as errors), and **cargo test** on each platform you support. A red check on a pull request is the cheapest bug report there is.
+
+Speed matters, because a slow pipeline gets ignored. **Swatinem/rust-cache** keeps compiled dependencies between runs, a **matrix** runs the test job on Linux, macOS and Windows in parallel, and `needs:` lets the cheap checks fail fast before the expensive ones start. A **minimum supported Rust version** (MSRV) job proves the crate still builds on the oldest compiler you promise, and **cargo audit** or **cargo deny** flags dependencies with known security advisories.
+
+A pipeline only protects the main branch if its checks are **required**: in the repository's branch protection settings, mark the jobs as required status checks so nothing merges red.
+@how
+- Steps: `actions/checkout`, `dtolnay/rust-toolchain@stable` (with `components: clippy, rustfmt`), `Swatinem/rust-cache@v2`.
+- Quality gate: `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`.
+- `strategy.matrix.os` for platforms; `fail-fast: false` so every platform reports.
+- Extra jobs worth adding: MSRV (`rust-version` in Cargo.toml), `cargo audit`, coverage with `cargo llvm-cov`.
+- Make the jobs required in branch protection.
+@example rust: Decide which checks a change needs
+/// Cheap rules a CI script can use to skip work: docs-only changes don't need the full test matrix.
+fn checks_for(changed: &[&str]) -> Vec<&'static str> {
+    let code = changed.iter().any(|f| f.ends_with(".rs") || f.ends_with("Cargo.toml") || f.ends_with("Cargo.lock"));
+    let docs = changed.iter().any(|f| f.ends_with(".md"));
+    let ci = changed.iter().any(|f| f.starts_with(".github/"));
+    let mut checks = Vec::new();
+    if code || ci {
+        checks.extend(["fmt", "clippy", "test (linux)", "test (macos)", "test (windows)"]);
+    }
+    if docs && !code {
+        checks.push("markdown links");
+    }
+    if changed.iter().any(|f| f.ends_with("Cargo.lock")) {
+        checks.push("cargo audit");
+    }
+    checks
+}
+
+fn main() {
+    println!("{:?}", checks_for(&["README.md"]));
+    println!("{:?}", checks_for(&["src/lib.rs", "README.md"]));
+    println!("{:?}", checks_for(&["Cargo.lock"]).len());
+}
+@note
+Path filters like this (GitHub's `paths:` and `paths-ignore:` keys do the same declaratively) keep CI fast on documentation changes. Notice that any change to the workflow files themselves runs everything: a CI change must prove it still works.
+@example rust: A pre-push check that mirrors CI
+use std::process::Command;
+
+/// The commands CI runs, in order. Running them locally before pushing avoids a red build.
+const GATE: &[(&str, &[&str])] = &[
+    ("format", &["fmt", "--all", "--check"]),
+    ("lint", &["clippy", "--all-targets", "--", "-D", "warnings"]),
+    ("test", &["test", "--quiet"]),
+];
+
+fn main() {
+    for (name, args) in GATE {
+        let shown = format!("cargo {}", args.join(" "));
+        // In a real hook: let ok = Command::new("cargo").args(*args).status()?.success();
+        let _command = Command::new("cargo").args(*args);
+        println!("{name:<7} {shown}");
+    }
+    println!("{} steps, stop at the first failure", GATE.len());
+}
+@note
+Save the real version as a Git pre-push hook or a `cargo xtask` command so your machine runs exactly what CI runs. Keeping the list in one place means the local check and the pipeline can't drift apart.
+@mistakes
+- **Running `cargo clippy` without `-D warnings`.** Warnings print, the job still passes, and they pile up.
+- **Testing on one platform only.** Path separators, line endings and file locking differ on Windows.
+- **No cache.** Every run recompiles every dependency, and a 2-minute pipeline becomes 12.
+- **Checks that aren't required.** A red pipeline that can still be merged protects nothing.
+@keys
+- The Rust quality bar: fmt --check, clippy -D warnings, tests on each platform.
+- Cache dependencies; let cheap jobs fail first.
+- Add MSRV, audit and coverage jobs as the project grows.
+- Make the checks required before merging.
+
+=== A13.2
+@idea
+Python is the language of most test automation, and Rust can make its slowest parts fast without asking anyone to leave Python. **PyO3** is the crate that connects the two: it converts Python values to Rust types and back, turns a Rust `Err` into a Python exception, and lets you mark functions with **`#[pyfunction]`** and group them in a **`#[pymodule]`**. **maturin** builds the result into a Python extension: `maturin develop` installs it into your virtual environment, and `maturin build --release` makes a wheel you can publish to PyPI.
+
+The design rule that keeps this maintainable is a **thin wrapper**: put the real logic in ordinary Rust functions that know nothing about Python, test them with `cargo test`, and make each `#[pyfunction]` a few lines that convert types and errors. Then pytest only needs to check the boundary: names, argument types and exceptions.
+
+Pick the right work to move. Rust pays off for CPU-heavy loops (parsing large logs, comparing thousands of names, hashing files) where Python spends its time in the interpreter. It doesn't help code that mostly waits on a browser, a network or a database.
+@how
+- Start with `maturin new --bindings pyo3 NAME`; `crate-type = ["cdylib"]` in Cargo.toml.
+- `#[pyfunction] fn f(x: Vec<bool>) -> PyResult<f64>`; register with `m.add_function(wrap_pyfunction!(f, m)?)?`.
+- Errors: `.map_err(PyValueError::new_err)` turns a `String` error into a `ValueError`.
+- Build: `maturin develop --release`; test with `cargo test` and `pytest`.
+- Measure before and after with the same input, in release builds.
+@example rust: Keep the core free of PyO3
+/// The part of a log parser worth moving to Rust: scan many lines, count failures per test.
+/// No PyO3 here, so cargo test covers it and the wrapper stays tiny.
+use std::collections::BTreeMap;
+
+pub fn failures_per_test(log: &str) -> BTreeMap<&str, u32> {
+    let mut counts = BTreeMap::new();
+    for line in log.lines() {
+        if let Some(rest) = line.strip_prefix("FAIL ") {
+            let name = rest.split_whitespace().next().unwrap_or(rest);
+            *counts.entry(name).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn main() {
+    let log = "PASS test_login\nFAIL test_cart 2.1s\nPASS test_cart\nFAIL test_cart 1.9s\nFAIL test_search 0.4s";
+    for (name, n) in failures_per_test(log) {
+        println!("{name}: {n} failure(s)");
+    }
+}
+@note
+The PyO3 wrapper for this would take `&str` and return a `BTreeMap<String, u32>`, which PyO3 turns into a Python dict. Returning `&str` keys borrowed from the input works in Rust but not across the boundary, so the wrapper converts them to owned Strings.
+@example rust: Errors that make sense on both sides
+#[derive(Debug, PartialEq)]
+pub enum ParseError {
+    Empty,
+    BadLine { number: usize, text: String },
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ParseError::Empty => write!(f, "the log is empty"),
+            ParseError::BadLine { number, text } => write!(f, "line {number}: can't read {text:?}"),
+        }
+    }
+}
+
+pub fn durations(log: &str) -> Result<Vec<f64>, ParseError> {
+    if log.trim().is_empty() {
+        return Err(ParseError::Empty);
+    }
+    log.lines()
+        .enumerate()
+        .map(|(i, l)| {
+            l.trim_end_matches('s').parse().map_err(|_| ParseError::BadLine { number: i + 1, text: l.to_string() })
+        })
+        .collect()
+}
+
+fn main() {
+    println!("{:?}", durations("1.5s\n0.25s"));
+    match durations("1.5s\nslow") {
+        Ok(v) => println!("{v:?}"),
+        Err(e) => println!("error: {e}"),
+    }
+}
+@note
+With a Display implementation, the wrapper can raise `PyValueError::new_err(e.to_string())` and Python users see the same clear message Rust users do. A typed error enum keeps the Rust side testable: tests can match on `ParseError::BadLine { number: 2, .. }` instead of comparing strings.
+@mistakes
+- **Putting logic inside `#[pyfunction]`.** It can only be tested through Python; keep the wrapper thin.
+- **Measuring a debug build.** `maturin develop` without `--release` can be slower than Python.
+- **Moving I/O-bound code to Rust.** Waiting on a browser or network doesn't get faster.
+- **Panicking across the boundary.** Return `PyResult` so Python gets an exception, not a crash report.
+@keys
+- PyO3 converts types and errors; maturin builds and installs the extension.
+- Keep a plain Rust core and a thin wrapper.
+- Test the core with cargo test, the boundary with pytest.
+- Move CPU-heavy loops, and measure in release mode.
+
+=== A13.3
+@idea
+`#[test]` with `assert_eq!` checks examples you thought of. The rest of the toolbox finds the cases you didn't. **Property-based testing** (the **proptest** crate) states a rule for every input, such as "decoding an encoding gives back the original", then generates hundreds of inputs and **shrinks** any failure to the smallest one. **Snapshot testing** (**insta**) stores a known-good output, such as a formatted report, and shows a readable diff when it changes. **Fuzzing** (**cargo-fuzz**) feeds random and mutated bytes into a parser for minutes or hours, looking for panics.
+
+Two more tools measure the tests themselves. **Coverage** (**cargo llvm-cov**) shows which lines no test ran. **Mutation testing** (**cargo mutants**) changes your code (flips a `<`, replaces a return value) and reports every change that no test noticed: a stricter measure than coverage, because a line can be covered by a test that asserts nothing about it. **cargo nextest** runs tests faster, one process per test, with retries that expose flaky tests.
+
+A QA engineer's value is knowing which question each tool answers, and picking the cheapest one that answers yours.
+@how
+- proptest: `proptest! { #[test] fn p(s in "[a-z]{0,20}") { prop_assert_eq!(...) } }`; regressions saved in `proptest-regressions/`.
+- insta: `insta::assert_snapshot!(report)`; review changes with `cargo insta review`.
+- cargo-fuzz: `cargo fuzz init`, `cargo fuzz run target` (nightly).
+- Coverage: `cargo llvm-cov --html`. Mutants: `cargo mutants`. Faster runs: `cargo nextest run`.
+- Good first properties: round trips, invariants, and agreement with a slow but obviously correct version.
+@example rust: Compare a fast function with a simple oracle
+/// Fast: counts set bits with a trick. Oracle: obviously correct, but slow.
+fn popcount_fast(mut x: u32) -> u32 {
+    let mut n = 0;
+    while x != 0 {
+        x &= x - 1;
+        n += 1;
+    }
+    n
+}
+
+fn popcount_oracle(x: u32) -> u32 {
+    (0..32).filter(|i| x >> i & 1 == 1).count() as u32
+}
+
+fn main() {
+    let mut x: u32 = 1;
+    let mut checked = 0;
+    for _ in 0..10_000 {
+        x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        assert_eq!(popcount_fast(x), popcount_oracle(x), "they disagree on {x:#x}");
+        checked += 1;
+    }
+    for edge in [0, 1, u32::MAX, 0x8000_0000] {
+        assert_eq!(popcount_fast(edge), popcount_oracle(edge));
+    }
+    println!("{checked} random values and 4 edge cases agree");
+    println!("popcount(0xFF) = {}", popcount_fast(0xFF));
+}
+@note
+The oracle pattern is the easiest property to write when you're optimising: keep the slow version as the specification and check the fast one against it. Edge cases (0, all ones, the top bit) are listed explicitly, because random inputs rarely hit them.
+@example rust: What a surviving mutant looks like
+/// The code under test.
+fn discount(total_cents: u32) -> u32 {
+    if total_cents >= 5000 { total_cents / 10 } else { 0 }
+}
+
+/// What cargo mutants might try: change >= to >.
+fn discount_mutant(total_cents: u32) -> u32 {
+    if total_cents > 5000 { total_cents / 10 } else { 0 }
+}
+
+fn main() {
+    let weak_tests = [(1000, 0), (8000, 800)];
+    let strong_tests = [(1000, 0), (8000, 800), (5000, 500)];
+    for (label, tests) in [("weak", &weak_tests[..]), ("strong", &strong_tests[..])] {
+        let real_ok = tests.iter().all(|&(t, want)| discount(t) == want);
+        let mutant_caught = tests.iter().any(|&(t, want)| discount_mutant(t) != want);
+        println!("{label}: pass on real code = {real_ok}, mutant caught = {mutant_caught}");
+    }
+}
+@note
+Both suites cover every line of `discount`, so coverage can't tell them apart. Only the strong suite tests the boundary value 5000, which is where `>=` and `>` disagree. That's the case mutation testing pushes you to add.
+@mistakes
+- **Treating coverage as the goal.** 100% coverage with weak assertions catches little; mutants show it.
+- **Random tests without a seed or shrinking.** A failure you can't reproduce is a failure you can't fix.
+- **Snapshots nobody reviews.** Accepting every change with `cargo insta accept` turns them into rubber stamps.
+- **Properties that restate the code.** Test a rule (round trip, invariant, oracle), not the same formula twice.
+@keys
+- proptest: rules for all inputs, with shrinking and saved regressions.
+- insta: readable diffs of known-good output; fuzzing: panics in parsers.
+- Coverage finds untested lines; mutation testing finds weak tests.
+- Choose the tool by the question you need answered.
+
+=== A13.4
+@idea
+A **flaky test** passes and fails with the same code. It's worse than a missing test, because people learn to rerun and ignore red builds. Rust removes many causes (no data races in safe code), but `cargo test` runs tests **in parallel threads of one process**, which creates its own: two tests writing the same file, one test's `std::env::set_var` changing another's environment, or two tests binding the same port.
+
+The other usual causes are the same as in any language: **real time** (a sleep that's long enough on a laptop and too short on a loaded CI machine, a date check around midnight), **randomness** without a fixed seed, **ordering** (iterating a `HashMap`, whose order changes between runs, then comparing with a list), and **external services** that are slow or down.
+
+The fixes follow one principle: make the test control everything it depends on. Give each test its own temporary directory, pass configuration in instead of reading the environment, inject clocks and random generators, sort before comparing, and **wait for a condition** with a timeout instead of sleeping. To detect flakiness, rerun: `cargo nextest run --retries 2` reports tests that only passed on a retry.
+@how
+- Isolate: `tempfile::tempdir()` per test; bind to port 0 and read the chosen port back.
+- Inject: pass config maps, clocks and seeded RNGs as parameters.
+- Order: compare sorted Vecs or use BTreeMap when order matters.
+- Wait: poll a condition with a timeout instead of `thread::sleep`.
+- Detect: rerun loops, `cargo nextest run --retries N`, `-- --test-threads=1` as an experiment.
+@example rust: HashMap order versus a stable comparison
+use std::collections::{BTreeMap, HashMap};
+
+fn tags(text: &str) -> HashMap<&str, usize> {
+    let mut m = HashMap::new();
+    for w in text.split_whitespace().filter(|w| w.starts_with('#')) {
+        *m.entry(w).or_insert(0) += 1;
+    }
+    m
+}
+
+fn main() {
+    let t = tags("#rust is #fast and #rust is #safe");
+    // Flaky: `t.keys().collect::<Vec<_>>() == vec!["#rust", "#fast", "#safe"]` depends on hash order.
+    let mut keys: Vec<_> = t.keys().copied().collect();
+    keys.sort();
+    println!("sorted keys: {keys:?}");
+    let ordered: BTreeMap<_, _> = t.into_iter().collect();
+    println!("as BTreeMap: {ordered:?}");
+}
+@note
+Rust deliberately randomises `HashMap` iteration order between runs to resist denial-of-service attacks, so a test that compares keys in their iteration order can pass for a week and then fail. Sorting, or collecting into a `BTreeMap`, makes the comparison deterministic.
+@example rust: Port 0 instead of a fixed port
+use std::net::TcpListener;
+
+fn main() -> std::io::Result<()> {
+    // Two tests both binding 127.0.0.1:8080 fail at random when they run at the same time.
+    // Binding port 0 asks the operating system for any free port.
+    let a = TcpListener::bind("127.0.0.1:0")?;
+    let b = TcpListener::bind("127.0.0.1:0")?;
+    let (pa, pb) = (a.local_addr()?.port(), b.local_addr()?.port());
+    println!("two servers, two different ports: {}", pa != pb && pa != 0 && pb != 0);
+    Ok(())
+}
+@note
+The test then passes the real address (from `local_addr`) to the client it's testing. The same idea, "let each test get its own resource", applies to temporary directories, database schemas and environment configuration.
+@mistakes
+- **Fixing flakiness with `--test-threads=1` in CI.** It hides shared state and slows every run.
+- **Adding retries and moving on.** Retries are a detector, not a fix; track and remove the cause.
+- **Longer sleeps.** They make the suite slower and only move the failure to a busier machine.
+- **Comparing HashMap iteration order.** Sort first, or use BTreeMap.
+@keys
+- Parallel tests in one process share files, environment variables and ports.
+- Time, randomness, ordering and external services are the other usual causes.
+- Isolate and inject; wait on conditions; sort before comparing.
+- Rerun to detect, then fix the cause.
+
+=== A13.5
+@idea
+Rust interviews, and QA-automation interviews where Rust is a plus, tend to test three things. First, **concepts in plain words**: ownership and moves, borrowing (any number of `&T` or exactly one `&mut T`), lifetimes as "how long a reference is valid", `Box`/`Rc`/`Arc`, `Send`/`Sync`, and `Result` versus `panic!`. A clear two-sentence answer with an example beats a long one.
+
+Second, **reading the compiler**. You may be shown code that doesn't compile and asked why. Read the error aloud: its code (`E0502`), the two places it points to, and the rule behind it. Then offer more than one fix and say when you'd choose each.
+
+Third, **live coding**. Before typing, restate the problem and list test cases, including edge cases (empty input, one element, duplicates, very large values). That's where a testing background shows. Then write the simplest correct version, run your cases by hand, and only then improve it. For behavioural questions, prepare **STAR** stories (situation, task, action, result) about quality work, with your actions and a measurable result.
+@how
+- Concepts: answer first, then one example, then the trade-off.
+- Compiler errors: code, the two spans, the rule, two fixes.
+- Live coding: restate, list test cases, simplest version, walk through, improve.
+- STAR: short situation and task, most time on action, end with a number.
+- Practise aloud; time yourself to about a minute per answer.
+@example rust: Ownership in one screen
+fn take(v: Vec<i32>) -> usize {
+    v.len()
+} // v is dropped here
+
+fn borrow(v: &[i32]) -> usize {
+    v.len()
+}
+
+fn main() {
+    let a = vec![1, 2, 3];
+    let n = borrow(&a); // a is lent out and still usable afterwards
+    println!("borrowed: {n}, a still has {} items", a.len());
+    let m = take(a); // a moves into take; using a after this won't compile
+    println!("moved: {m}");
+    let b = vec![4, 5];
+    let c = b.clone(); // an explicit deep copy: both are usable
+    println!("cloned: {:?} and {:?}", b, c);
+}
+@note
+This covers the three ways to pass a value: lend it (`&`), give it away (move), or copy it explicitly (`clone`). Saying "the compiler inserts the drop when the owner goes out of scope" answers the follow-up about memory without mentioning a garbage collector.
+@example rust: A kata done the interview way
+/// Question: return the first character that appears only once, or None.
+/// Test cases stated first: "" -> None, "a" -> 'a', "aabbc" -> 'c', "abab" -> None, "éaé" -> 'a'.
+use std::collections::HashMap;
+
+fn first_unique(s: &str) -> Option<char> {
+    let mut counts = HashMap::new();
+    for c in s.chars() {
+        *counts.entry(c).or_insert(0) += 1;
+    }
+    s.chars().find(|c| counts[c] == 1)
+}
+
+fn main() {
+    for (input, want) in [("", None), ("a", Some('a')), ("aabbc", Some('c')), ("abab", None), ("éaé", Some('a'))] {
+        let got = first_unique(input);
+        println!("{input:?} -> {got:?} {}", if got == want { "ok" } else { "WRONG" });
+    }
+}
+@note
+Two passes over the string (count, then find) is O(n) and easy to explain; finding the first unique character by searching the rest of the string for each one is O(n²). The test cases written as a table at the top, including an accented character, are exactly what an interviewer hopes to hear before any code.
+@mistakes
+- **Answering with definitions only.** Add an example and a trade-off.
+- **Coding before stating test cases.** Edge cases found late cost time and look careless.
+- **Fighting the borrow checker with `clone()` everywhere.** Explain the rule, then choose the right fix.
+- **STAR stories about the team.** Interviewers want your actions and your results.
+@keys
+- Plain-word answers: answer, example, trade-off.
+- Read compiler errors aloud: code, spans, rule, fixes.
+- Test cases first in live coding; simplest correct version, then improve.
+- STAR stories centred on your actions, ending with a measurable result.

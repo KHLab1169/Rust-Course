@@ -2,14 +2,25 @@
 
 My self-study Rust course, as a standalone app that runs on my own computer.
 
-- **Track 1** follows [The Rust Programming Language](https://doc.rust-lang.org/book/) (2024 edition), all 21 chapters
-- **Track 2** follows [roadmap.sh/rust](https://roadmap.sh/rust), 12 modules
+- **Track 1** follows [The Rust Programming Language](https://doc.rust-lang.org/book/), all 21 chapters (the online book;
+  printed as the 3rd edition by No Starch Press, covering the Rust 2024 edition)
+- **Track 2** follows [roadmap.sh/rust](https://roadmap.sh/rust), 12 modules, plus **RS295 Career toolkit**: CI for Rust,
+  Rust inside Python with PyO3 and maturin, the testing toolbox (proptest, insta, cargo-fuzz, coverage, cargo-mutants),
+  flaky tests, and interview drills
 - **Track 3** is six portfolio projects (load tester, flaky-test detector, intrusion detector, axum API, key-value store, WebAssembly)
 
-129 lessons and 258 exercises with worked examples, hints, solutions and explanations, plus chapter quizzes, midterms, finals and grades.
+134 lessons and 342 exercises with worked examples, hints, solutions and explanations, plus chapter quizzes, midterms, finals and grades.
 
 ## Features
 
+- **Autograded practice**: every Track 1 lesson ends with a practice problem written as a specification
+  (examples and edge cases), with hidden tests. In this app, **Run tests** compiles your answer with the Rust
+  installed on your computer and runs them; failures show what was called, what was expected and what you got.
+  A few exercises turn it round: you write the tests, and they must catch planted bugs (mutation testing).
+- **Style notes** (not graded) from Clippy and the compiler beside the test results.
+- **Points** per module: one per test passed, two per finished exercise without tests, one per quick check.
+- **Test in Playground** opens your code with the tests attached, and **Copy tests** gives you the test module
+  to paste under your code in your IDE (then `cargo test`).
 - **Code editor**: Rust colours, line numbers, auto-indent after `{` and unindent on `}`, Tab / Shift+Tab,
   Ctrl+/ to comment with `//`, adjustable text size, drag the corner to resize, Copy button.
   Ctrl+Enter opens your code in the Rust Playground.
@@ -34,7 +45,11 @@ Your browser opens at **http://127.0.0.1:8766**. Keep the small window open whil
 
 ## Writing and running the code
 
-Do the exercises in your own Rust IDE. A handy setup is one Cargo project with one file per
+Autograded exercises can be done right in the page: with Rust installed (see [rustup.rs](https://rustup.rs)),
+**Run tests** compiles and tests them locally (the start script prints "Autograding: on"). Only the course page
+can ask the start script to compile code; other websites are refused.
+
+For the rest, do the exercises in your own Rust IDE. A handy setup is one Cargo project with one file per
 exercise in `src/bin/` (run with `cargo run --bin NAME`) and tests run with `cargo test`.
 Each exercise also has an **Open in Rust Playground** button when you are away from your IDE.
 
@@ -55,6 +70,14 @@ Each exercise also has an **Open in Rust Playground** button when you are away f
 
 (needs Rust and PyYAML; snippets that use crates are built with Cargo).
 
+The autograded exercises are in `source/specs/` (practice sets for chapters 1 to 21 and the career module), each
+with a model solution, starter code, tests and wrong answers that must fail. `rs_harness.py` checks every one:
+the solution passes, each wrong answer fails a test, the starter compiles, and the solution has no Clippy notes.
+`rsgrade.py` is the grader the app uses, and `career_rs.py` writes the career module's lessons:
+
+    cd source && python3 rs_harness.py specs/rs_*.py
+    python3 career_rs.py                        # writes content/a4.yaml
+
 The expanded lessons (the idea, worked examples 2 and 3, common mistakes, key points) are in
 `source/lessons/*.txt`, and the quick check for each new example is in `source/checks/*.txt`.
 `deep_build_rs.py` compiles and runs every example for its real output, and `checks_build.py`
@@ -66,5 +89,7 @@ attaches the quick checks, failing if a "predict" answer isn't really in the out
 ## What's different from the online version
 
 - No cloud sync: progress lives in the browser on this computer (use Export/Import).
+- Tests run only here: the online page can't compile Rust, so there you use Test in Playground and tick the
+  exercise yourself.
 - The "Ask the TA" feedback panel needs Claude, so it only appears in the online version.
   Here each lesson shows a *Stuck?* panel with next steps and related lessons instead.

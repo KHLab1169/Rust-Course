@@ -1,0 +1,74 @@
+=== A13.1/2 pick
+Q: A pull request changes only README.md. Which line is printed for it?
++ `["markdown links"]`
+- `["fmt", "clippy", "test (linux)", "test (macos)", "test (windows)"]`
+- `[]`
+WHY: No code, Cargo files or workflow files changed, so only the documentation check runs. That's the point of path filters: fast CI for docs-only changes.
+
+=== A13.1/3
+Q: Why keep the list of commands in one place for both the pre-push check and CI?
++ So the local check and the pipeline can't drift apart and give different answers.
+- Because Git hooks can only run three commands.
+- Because cargo refuses to run clippy twice.
+- So the CI job doesn't need a cache.
+WHY: If your machine runs the same gate as CI, a green local run predicts a green build, and you don't push code that fails formatting or lints.
+
+=== A13.2/2 pick
+Q: The log has two FAIL lines for test_cart. Which line reports it?
++ `test_cart: 2 failure(s)`
+- `test_search: 1 failure(s)`
+- `test_login: 0 failure(s)`
+WHY: Each FAIL line adds one to that test's count, so test_cart reports 2. test_search failed once, and test_login never failed, so it isn't in the map at all.
+
+=== A13.2/3 predict
+Q: The second call gets "1.5s" then "slow". What does the last line print?
++ `error: line 2: can't read "slow"`
+- `[1.5]`
+- `error: the log is empty`
+WHY: "slow" doesn't parse as a number, so collecting into a Result stops at line 2 with a BadLine error, and Display formats it.
+
+=== A13.3/2
+Q: Why list 0, u32::MAX and 0x8000_0000 explicitly when 10,000 random values are already checked?
++ Random inputs rarely hit edge values, and edges are where bugs hide.
+- The oracle only works on those values.
+- Random values can't be negative.
+- To make the program run longer.
+WHY: Property tests and explicit edge cases complement each other: randomness explores broadly, and the listed values make sure the boundaries are always tried.
+
+=== A13.3/3 predict
+Q: Which line is printed for the weak suite?
++ `weak: pass on real code = true, mutant caught = false`
+- `weak: pass on real code = true, mutant caught = true`
+- `weak: pass on real code = false, mutant caught = false`
+WHY: Neither 1000 nor 8000 sits at the 5000 boundary, where >= and > disagree, so the mutant survives even though every line is covered.
+
+=== A13.4/2
+Q: Why is comparing a HashMap's keys in iteration order a flaky test?
++ Rust randomises HashMap iteration order between runs.
+- HashMap loses keys under load.
+- Keys are only sorted in release builds.
+- The test runs too fast.
+WHY: The order is deliberately unpredictable. Sort the keys or use a BTreeMap when the test depends on order.
+
+=== A13.4/3
+Q: What does binding to 127.0.0.1:0 do?
++ Asks the operating system for any free port, so parallel tests don't collide.
+- Binds every port at once.
+- Turns the listener off.
+- Uses port 8080 by default.
+WHY: Port 0 means "pick one for me". The test reads the real port back with local_addr and passes it to the client.
+
+=== A13.5/2
+Q: After `let m = take(a);`, what happens if the next line uses `a.len()`?
++ It doesn't compile: a was moved into take.
+- It prints 0, because take emptied the vector.
+- It prints 3.
+- It panics at run time.
+WHY: Passing a Vec by value moves ownership; the compiler rejects any later use of a. Borrowing with &a would have kept it usable.
+
+=== A13.5/3 predict
+Q: What does the line for the input "abab" print?
++ `"abab" -> None ok`
+- `"abab" -> Some('a') ok`
+- `"abab" -> None WRONG`
+WHY: Both characters appear twice, so no character is unique and find returns None, which matches the expected value.
