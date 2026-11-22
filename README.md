@@ -15,7 +15,8 @@ My self-study Rust course, as a standalone app that runs on my own computer.
 
 ## Features
 
-- **Map** (the first tab): a progress infographic and a roadmap-style tree of every module and lesson, per track. Each box opens that lesson in the
+- **Map** (the first tab): a graphic-syllabus style poster of your progress (stats, a module donut,
+  ringed module badges) and a roadmap timeline of every module and lesson, per track. Each box opens that lesson in the
   curriculum and fills in as you complete lessons (next lesson highlighted, reviews due marked).
 - **Autograded practice**: every Track 1 lesson ends with a practice problem written as a specification
   (examples and edge cases), with hidden tests. In this app, **Run tests** compiles your answer with the Rust
