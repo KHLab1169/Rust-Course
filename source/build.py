@@ -201,7 +201,7 @@ rep("<title>Python Course</title>", "<title>Rust Course</title>")
 n_ex_all = sum(len(i["ex"]) for t in mods.values() for m in t for i in m["items"])
 rep('<span class="bname">Python Course</span>', '<span class="bname">Rust Course</span>')
 rep('aria-label="Python Course, overview"', 'aria-label="Rust Course, overview"')
-rep('Self-paced &middot; three tracks &middot; 446 exercises', 'Self-paced &middot; three tracks &middot; %d exercises' % n_ex_all)
+rep('Self-paced &middot; three tracks &middot; 514 exercises', 'Self-paced &middot; three tracks &middot; %d exercises' % n_ex_all)
 # languages and labels
 rep('var LANG={', 'var LANG={rust:"rust",text:"plaintext",')
 rep('var l=LANG[lang||"python"]||"plaintext";', 'var l=LANG[lang||"rust"]||"plaintext";')
