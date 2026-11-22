@@ -1,0 +1,57 @@
+=== A14.1/2
+Q: The secret is "s3cr3t-token". Which guess takes the most steps with the early-exit comparison?
++ "s3cr3t-tokex", because its first 11 bytes are right
+- "x3cr3t-token", because it is longest
+- All guesses take the same number of steps
+- "s3cr9t-token", because it differs in the middle
+WHY: Early exit stops at the first wrong byte, so more correct leading bytes means more time. That timing difference is the leak; the constant-time version takes 12 steps for every guess.
+
+=== A14.2/2 predict
+Q: The request is /tasks/42?verbose=true&page=1. What does the program print?
++ `task 42 (full details)`
+- `task 42`
+- `task 0 (full details)`
+WHY: The path extractor gives 42 and the query extractor finds verbose=true, so get_task gets both typed arguments, just as a framework's extractors would supply them.
+
+=== A14.3/2 pick
+Q: The program's output is captured rather than shown in a terminal. Which line is printed last?
++ `colour on: false`
+- `colour on: true`
+- `exit 0: 3 matches`
+WHY: is_terminal() is false when output is captured, so no escape codes are written and the last line reports colour off.
+
+=== A14.4/2 pick
+Q: Three datagrams "one", "two" and "three" are sent. Which line reports the second one?
++ `datagram of 3 bytes: two`
+- `datagram of 6 bytes: onetwo`
+- `datagram of 5 bytes: three`
+WHY: Each recv_from returns exactly one datagram, so message boundaries are kept. With TCP the bytes could arrive merged.
+
+=== A14.5/2 predict
+Q: What does the first line print?
++ `poll 1: pending`
+- `poll 1: ready with "data arrived"`
+- `poll 2: pending`
+WHY: The first poll sets polled and returns Pending after asking to be woken; the second poll returns Ready.
+
+=== A14.6/2
+Q: Why does the simulation use a fixed dt of 1/60 instead of the real time since the last frame?
++ So the result is the same on every machine and tests can assert exact values.
+- Because Rust can't measure time.
+- To make the ball fall faster.
+- Because Bevy requires it.
+WHY: With a fixed step, step() is a pure function of its input; variable frame times make results depend on machine speed, a common source of flaky tests.
+
+=== A14.7/2 predict
+Q: show_error_code(3) runs on the recording pin. What does the program print?
++ `pulses: 3, edges recorded: 6`
+- `pulses: 6, edges recorded: 6`
+- `pulses: 3, edges recorded: 3`
+WHY: Each pulse sets the pin high then low, so three pulses record six edges, three of them high.
+
+=== A14.8/2 pick
+Q: Search is sent first with an empty query. Which line is printed for it?
++ `Some("type something to search")`
+- `None`
+- `["tea", "teapot"] None`
+WHY: The guarded Search arm catches the empty query and sets an error instead of searching. The later search for "tea" prints the results with no error.

@@ -1,0 +1,443 @@
+=== A14.1
+@idea
+The first rule of cryptography in any language is **don't invent it**. Rust's ecosystem has two well-reviewed families of crates. **RustCrypto** is a set of small pure-Rust crates, one per algorithm: `sha2` for hashing, `hmac` for keyed signatures, `aes-gcm` and `chacha20poly1305` for authenticated encryption, `argon2` for password hashing. **ring** bundles a curated set of primitives in one audited crate with a deliberately small API. **sodiumoxide**, the libsodium binding listed on the roadmap, was archived by its maintainers; `dryoc` offers a libsodium-compatible API in pure Rust.
+
+Knowing which primitive answers which question matters more than any API. A **hash** (SHA-256) detects accidental changes: anyone can recompute it. An **HMAC** proves a message came from someone with the shared key, which is how webhook signatures work. **Authenticated encryption** keeps data secret *and* detects tampering. **Password hashing** (argon2) is deliberately slow so stolen hashes are expensive to crack.
+
+One habit applies everywhere secrets are compared: use a **constant-time** comparison, because `==` stops at the first different byte and the time it takes leaks information.
+@how
+- Hash: `Sha256::digest(data)`; incremental: `Sha256::new()`, `update`, `finalize`.
+- HMAC: `Hmac::<Sha256>::new_from_slice(key)`, `update`, `finalize`; verify with `verify_slice` (constant time).
+- Encrypt: `aes-gcm` or `chacha20poly1305` with a fresh random nonce per message.
+- Passwords: `argon2`, never a plain or salted SHA-256.
+- Compare secrets with constant-time functions (`subtle`, `ring::constant_time`, `verify_slice`).
+@example rust: Why early-exit comparison leaks
+/// Counts how many byte comparisons each strategy performs: a stand-in for time.
+fn early_exit_steps(a: &[u8], b: &[u8]) -> usize {
+    let mut steps = 0;
+    for (x, y) in a.iter().zip(b) {
+        steps += 1;
+        if x != y {
+            break;
+        }
+    }
+    steps
+}
+
+fn constant_time_steps(a: &[u8], b: &[u8]) -> usize {
+    let mut diff = 0u8;
+    let mut steps = 0;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+        steps += 1;
+    }
+    let _ = diff;
+    steps
+}
+
+fn main() {
+    let secret = b"s3cr3t-token";
+    for guess in [&b"x3cr3t-token"[..], b"s3cr9t-token", b"s3cr3t-tokex"] {
+        println!(
+            "{:<14} early exit: {:>2} steps, constant time: {:>2} steps",
+            String::from_utf8_lossy(guess),
+            early_exit_steps(secret, guess),
+            constant_time_steps(secret, guess)
+        );
+    }
+}
+@note
+The early-exit version takes longer the more leading bytes are right, so an attacker who can time many requests learns the secret one byte at a time. The constant-time version always does the same work. Real code uses a vetted function rather than this hand-written loop, but this is the property to look for.
+@mistakes
+- **Inventing a scheme** ("XOR with a key", "hash twice"). Use a standard construction from a vetted crate.
+- **Comparing tokens or HMAC tags with ==.** Use a constant-time comparison.
+- **Reusing a nonce** with AES-GCM or ChaCha20-Poly1305: it breaks both secrecy and integrity.
+- **Hashing passwords with SHA-256.** Use argon2 (or bcrypt or scrypt), which are slow on purpose.
+@keys
+- RustCrypto (one crate per algorithm) and ring (one curated crate) are the standard choices.
+- Hash for accidents, HMAC for authenticity, AEAD for secrecy plus integrity, argon2 for passwords.
+- Compare secrets in constant time.
+- sodiumoxide is archived; dryoc is a pure-Rust alternative.
+
+=== A14.2
+@idea
+**axum** is the course's main web framework, but job descriptions and existing codebases often name others. **actix-web** is one of the oldest and fastest Rust frameworks; it uses attribute macros (`#[get("/path")]`), an `App` builder and its own extractors, and runs on Tokio under its own actor-style system. **Rocket** is the most macro-driven: routes, guards and launch are declared with attributes, which makes small apps very short. **Loco** is a Rails-style framework built on axum: generators, migrations, background jobs and conventions out of the box.
+
+The concepts transfer completely. Each framework maps a method and path to an async handler, uses **extractors** to turn parts of the request (path, query, JSON body, shared state) into typed arguments, and turns the return value into a response. Middleware, state sharing and testing utilities differ in name, not in idea.
+
+Choose by context: axum when you want Tokio-native code and the tower middleware ecosystem, actix-web for a mature, high-performance option with a big user base, Rocket for quick, readable apps, Loco when a team wants Rails-style productivity.
+@how
+- actix-web: `#[get("/x")] async fn h() -> impl Responder`, `App::new().service(h)`, `web::Data` for state, `actix_web::test` for tests.
+- Rocket: `#[get("/x")] fn h() -> &'static str`, `#[launch] fn rocket() -> _ { rocket::build().mount("/", routes![h]) }`.
+- Loco: `cargo loco new`, generators for models and controllers, built on axum.
+- Compare frameworks by porting one route with its test.
+@example rust: Extractors, without a framework
+use std::collections::HashMap;
+
+/// What every framework does for you: turn a raw request into typed arguments.
+struct Request<'a> {
+    path: &'a str,
+    query: &'a str,
+}
+
+fn path_param<'a>(req: &Request<'a>, pattern: &str) -> Option<&'a str> {
+    let prefix = pattern.split('{').next()?;
+    req.path.strip_prefix(prefix)
+}
+
+fn query_params<'a>(req: &Request<'a>) -> HashMap<&'a str, &'a str> {
+    req.query.split('&').filter_map(|kv| kv.split_once('=')).collect()
+}
+
+fn get_task(id: u32, verbose: bool) -> String {
+    if verbose { format!("task {id} (full details)") } else { format!("task {id}") }
+}
+
+fn main() {
+    let req = Request { path: "/tasks/42", query: "verbose=true&page=1" };
+    let id: u32 = path_param(&req, "/tasks/{id}").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let verbose = query_params(&req).get("verbose") == Some(&"true");
+    println!("{}", get_task(id, verbose));
+}
+@note
+In axum this is `Path(id): Path<u32>, Query(q): Query<Params>`; in actix-web `web::Path<u32>` and `web::Query<Params>`; in Rocket a `<id>` segment and a query guard. Seeing the plain version makes every framework's extractor look familiar.
+@mistakes
+- **Choosing by benchmark alone.** All of these are fast enough for most services; ecosystem and team fit matter more.
+- **Blocking inside a handler** (heavy CPU work or blocking I/O) in any async framework; use spawn_blocking.
+- **Testing only through a running server.** Each framework has an in-process test client.
+@keys
+- actix-web, Rocket and Loco solve the same problems as axum in different styles.
+- Handlers, extractors and responses are the shared concepts.
+- Choose by ecosystem, team and project, then test in-process.
+
+=== A14.3
+@idea
+Good command-line tools feel consistent: helpful `--help`, clear errors, sensible exit codes, and output that works both for people and for scripts. **clap** is the standard argument parser. Its **derive API** builds the parser from a struct, with doc comments as help text; this idea came from **structopt**, which is now in maintenance mode and points to clap.
+
+Colour helps people and hurts scripts, so the convention is to colour only when standard output is a terminal (`std::io::IsTerminal`) and to offer `--color auto|always|never`. For moving the cursor, raw keyboard input or clearing the screen, **termion** is a small Unix-only crate and **crossterm** works on Windows too. **ratatui** builds full terminal user interfaces (panels, lists, charts) on top of crossterm.
+
+Test a CLI from the outside too: **assert_cmd** runs the compiled binary with arguments and checks its output and exit code, which catches mistakes unit tests can't see.
+@how
+- `#[derive(Parser)]` with `#[arg(short, long)]`, `ValueEnum` for fixed choices, `Args::parse()`.
+- Colour only when `stdout().is_terminal()`, overridable with a flag.
+- Exit codes: 0 success, 1 failure, 2 usage error (a common convention).
+- Terminal control: crossterm (cross-platform) or termion (Unix); TUIs: ratatui.
+- End-to-end tests: `assert_cmd::Command::cargo_bin("name")`.
+@example rust: Exit codes and colour decided once
+use std::io::IsTerminal;
+
+#[derive(Debug)]
+enum Outcome {
+    Found(usize),
+    NotFound,
+    Usage(&'static str),
+}
+
+fn exit_code(o: &Outcome) -> i32 {
+    match o {
+        Outcome::Found(_) => 0,
+        Outcome::NotFound => 1,
+        Outcome::Usage(_) => 2,
+    }
+}
+
+fn paint(text: &str, code: &str, color: bool) -> String {
+    if color { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() }
+}
+
+fn main() {
+    let color = std::io::stdout().is_terminal();
+    for o in [Outcome::Found(3), Outcome::NotFound, Outcome::Usage("missing QUERY")] {
+        let label = match &o {
+            Outcome::Found(n) => paint(&format!("{n} matches"), "32", color),
+            Outcome::NotFound => paint("no matches", "33", color),
+            Outcome::Usage(msg) => paint(msg, "31", color),
+        };
+        println!("exit {}: {label}", exit_code(&o));
+    }
+    println!("colour on: {color}");
+}
+@note
+When this runs with its output captured (as here), `is_terminal()` is false and no escape codes are printed, which is exactly what a log file or a test wants. grep uses the same exit-code convention: 0 found, 1 not found, 2 error.
+@mistakes
+- **Always printing colour codes.** They corrupt logs and break text comparisons in tests.
+- **Exiting with 0 on failure.** Scripts and CI rely on the exit code.
+- **Writing errors to stdout.** Use stderr so piped output stays clean.
+- **Starting new code with structopt.** Use clap's derive API.
+@keys
+- clap derive is the standard; structopt led to it.
+- Colour only for terminals, with a --color override.
+- crossterm for cross-platform terminal control; ratatui for TUIs.
+- Test the binary end to end with assert_cmd.
+
+=== A14.4
+@idea
+HTTP frameworks hide the network, but some tools need to work below or beside them. **UDP** (`std::net::UdpSocket`) sends independent datagrams: no connection, no guarantee of delivery or order, and very low overhead. It suits metrics (StatsD), discovery, games and DNS. **TCP** gives a reliable ordered byte stream, and HTTP/1.1 and HTTP/2 run on it.
+
+**QUIC** combines the two ideas: it runs on UDP but provides reliable, encrypted (TLS 1.3) connections with many independent streams, so one lost packet doesn't stall unrelated requests. HTTP/3 runs on QUIC, and **quinn** is the main Rust implementation, built on Tokio. **hyper** is the HTTP library inside axum and reqwest; you use it directly when building proxies or protocol-level tools.
+
+For testing, the same rules as always apply: bind port 0 for a free port, set read timeouts so a lost packet can't hang a test, and never assume UDP delivery.
+@how
+- UDP: `UdpSocket::bind("127.0.0.1:0")`, `send_to`, `recv_from`, `set_read_timeout`.
+- TCP: `TcpListener` / `TcpStream` (std) or their Tokio versions.
+- QUIC: quinn `Endpoint`, `connect`, `open_bi` for a bidirectional stream; certificates via rustls (rcgen for tests).
+- hyper directly for proxies; reqwest and axum for everyday clients and servers.
+@example rust: Datagrams keep their boundaries
+use std::net::UdpSocket;
+use std::time::Duration;
+
+fn main() -> std::io::Result<()> {
+    let a = UdpSocket::bind("127.0.0.1:0")?;
+    let b = UdpSocket::bind("127.0.0.1:0")?;
+    b.set_read_timeout(Some(Duration::from_secs(2)))?;
+    for msg in ["one", "two", "three"] {
+        a.send_to(msg.as_bytes(), b.local_addr()?)?;
+    }
+    let mut buf = [0u8; 64];
+    for _ in 0..3 {
+        let (n, _) = b.recv_from(&mut buf)?;
+        println!("datagram of {n} bytes: {}", String::from_utf8_lossy(&buf[..n]));
+    }
+    Ok(())
+}
+@note
+Each `recv_from` returns exactly one datagram, so message boundaries survive; with TCP the three writes could arrive as one read of "onetwothree", which is why TCP protocols need framing (a length prefix or a delimiter). On localhost these arrive in order, but across a real network UDP may drop or reorder them.
+@mistakes
+- **Assuming UDP delivery or order.** Add sequence numbers and retries, or use QUIC.
+- **No read timeout** on a UDP socket in tests: one lost packet hangs the suite.
+- **Treating TCP reads as messages.** A read can return part of a message or several messages.
+@keys
+- UDP: datagrams, no guarantees, low overhead.
+- QUIC (quinn): reliable encrypted streams over UDP; HTTP/3's transport.
+- hyper is the engine under axum and reqwest.
+- Port 0 and timeouts keep network tests reliable.
+
+=== A14.5
+@idea
+`async fn` only describes work; a **runtime** runs it. At its core a runtime **polls** a future, and when the future returns `Pending`, it waits until the future's **waker** is called (because a socket became readable or a timer fired) before polling again. Around that core, a production runtime adds a scheduler for thousands of tasks, timers, and an I/O reactor built on the operating system's event APIs.
+
+**Tokio** is the default choice and has the largest ecosystem. **smol** is a small runtime assembled from separate crates (async-executor, async-io, async-net), handy for libraries, tools and embedded Linux. **async-std** offered a std-like async API but was discontinued in 2025, and its authors recommend smol. Library authors often write runtime-agnostic code with the **futures** crate's traits and let the application choose.
+
+A **WebAssembly runtime** is a different kind of runtime: **Wasmer** and **Wasmtime** load compiled `.wasm` modules and run them in a sandbox inside your program, which makes them a safe plugin system.
+@how
+- One runtime per application; don't mix Tokio-specific and smol-specific I/O types.
+- smol: `smol::block_on(async { ... })`, `smol::spawn`.
+- Runtime-agnostic libraries: depend on `futures` traits, not a runtime.
+- Wasm plugins: compile to `wasm32-unknown-unknown`, load with Wasmtime or Wasmer, call typed exports.
+@example rust: A future that needs two polls
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
+
+/// Pending the first time, Ready the second, like I/O that isn't ready yet.
+struct NotYet {
+    polled: bool,
+}
+
+impl Future for NotYet {
+    type Output = &'static str;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<&'static str> {
+        if self.polled {
+            Poll::Ready("data arrived")
+        } else {
+            self.polled = true;
+            cx.waker().wake_by_ref(); // "poll me again"
+            Poll::Pending
+        }
+    }
+}
+
+fn main() {
+    let mut fut = std::pin::pin!(NotYet { polled: false });
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut round = 0;
+    loop {
+        round += 1;
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(v) => {
+                println!("poll {round}: ready with {v:?}");
+                break;
+            }
+            Poll::Pending => println!("poll {round}: pending"),
+        }
+    }
+}
+@note
+This is the protocol every runtime speaks: Pending plus a wake-up, then another poll. A real reactor calls the waker when the operating system reports the socket is ready, so no CPU is wasted spinning; this loop just polls again immediately.
+@mistakes
+- **Mixing runtimes**, such as Tokio sockets inside smol: they need their own reactor.
+- **Blocking in async code** (std::thread::sleep, heavy loops): it stalls every task on that thread.
+- **Starting new projects on async-std.** It's discontinued; choose Tokio or smol.
+@keys
+- A runtime polls futures and sleeps until wakers fire.
+- Tokio is the default; smol is the small alternative; async-std is discontinued.
+- Libraries can stay runtime-agnostic with the futures traits.
+- Wasmer and Wasmtime run WebAssembly plugins in a sandbox.
+
+=== A14.6
+@idea
+Rust's game ecosystem has options at every level. **Bevy** is a data-driven engine built on an **entity-component-system** (ECS): entities are IDs, components are plain data structs, and systems are functions that query for components and run every frame, often in parallel. **macroquad** and **ggez** are simpler 2D frameworks with a classic game loop, great for small games and jams. **Fyrox** is a full engine with a scene editor. Underneath many of them, **wgpu** provides one GPU API over Vulkan, Metal, DirectX 12 and WebGPU.
+
+From a testing point of view, the key design choice is the same as everywhere: keep **rules** (movement, collisions, scoring) in plain functions or systems that don't need a window or a GPU, so they can be unit-tested, and keep rendering thin.
+
+Bevy evolves quickly and renames APIs between releases, so tutorials and examples must match the version you depend on.
+@how
+- Bevy: `#[derive(Component)]`, systems take `Query<...>` and `Res<...>`, register with `add_systems(Update, ...)`.
+- macroquad: `#[macroquad::main("Title")] async fn main()` with a `loop { ...; next_frame().await }`.
+- Separate `update(state, input, dt)` from drawing; test update.
+- Use fixed time steps for deterministic simulation tests.
+@example rust: A fixed-step simulation you can test
+/// Physics with a fixed time step gives the same result on every machine.
+#[derive(Debug, Clone, Copy)]
+struct Ball {
+    y: f32,
+    vy: f32,
+}
+
+fn step(b: Ball, dt: f32) -> Ball {
+    let mut b = Ball { y: b.y + b.vy * dt, vy: b.vy - 9.8 * dt };
+    if b.y < 0.0 {
+        b.y = -b.y;
+        b.vy = -b.vy * 0.8; // lose 20% on each bounce
+    }
+    b
+}
+
+fn main() {
+    let mut ball = Ball { y: 10.0, vy: 0.0 };
+    let dt = 1.0 / 60.0;
+    let mut bounces = 0;
+    for _ in 0..(60 * 5) {
+        let before = ball.vy;
+        ball = step(ball, dt);
+        if before < 0.0 && ball.vy > 0.0 {
+            bounces += 1;
+        }
+    }
+    println!("after 5 simulated seconds: {bounces} bounces, height {:.2} m", ball.y);
+}
+@note
+Because the step is a pure function with a fixed `dt`, the same input always gives the same output, so a test can assert the exact number of bounces. Using the real frame time instead would make results vary with machine speed: a classic source of flaky game tests.
+@mistakes
+- **Logic tangled with rendering**, so nothing can be tested without a window.
+- **Variable time steps in physics**, giving different results on fast and slow machines.
+- **Copying Bevy examples from another version** without checking renamed APIs.
+@keys
+- Bevy: ECS with components as data and systems as logic; wgpu underneath.
+- macroquad and ggez for simple 2D games; Fyrox for an editor-based engine.
+- Keep rules pure and use fixed time steps so they're testable.
+
+=== A14.7
+@idea
+Embedded Rust runs on two very different kinds of hardware. On a **single-board computer** such as a Raspberry Pi, you have Linux and the standard library, so a crate like **rppal** simply gives you GPIO, I2C, SPI and PWM. On a **microcontroller** (an nRF52, an STM32, an RP2040) there is no operating system: the program starts with `#![no_std]`, keeping `core` (and optionally `alloc`), and its entry point never returns.
+
+What makes embedded Rust scale is **embedded-hal**: a set of traits such as `OutputPin`, `I2c` and `SpiBus`. Chip support crates (HALs) such as **nrf-hal** implement those traits for their hardware, and driver crates for sensors and displays are written against the traits, so one driver works on any chip. The same design makes drivers testable on your laptop against mocks (embedded-hal-mock).
+
+Tooling completes the picture: **probe-rs** flashes and debugs boards over a debug probe, defmt gives efficient logging, and simulators such as Wokwi let you experiment without hardware.
+@how
+- Linux boards: rppal (Raspberry Pi) with std.
+- Microcontrollers: `#![no_std]`, `#![no_main]`, a HAL crate, `cortex-m-rt` entry point, a panic handler.
+- Write drivers generic over embedded-hal traits; test with mocks.
+- Flash and debug: `probe-rs run`; try boards in Wokwi.
+@example rust: A driver generic over a pin trait
+trait OutputPin {
+    fn set(&mut self, high: bool);
+}
+
+/// A driver that only knows the trait: it runs on any chip that implements it.
+struct StatusLed<P: OutputPin> {
+    pin: P,
+}
+
+impl<P: OutputPin> StatusLed<P> {
+    fn show_error_code(&mut self, code: u8) {
+        for _ in 0..code {
+            self.pin.set(true);
+            self.pin.set(false);
+        }
+    }
+}
+
+/// A test double that records what the hardware would have seen.
+#[derive(Default)]
+struct RecordingPin {
+    edges: Vec<bool>,
+}
+
+impl OutputPin for RecordingPin {
+    fn set(&mut self, high: bool) {
+        self.edges.push(high);
+    }
+}
+
+fn main() {
+    let mut led = StatusLed { pin: RecordingPin::default() };
+    led.show_error_code(3);
+    let pulses = led.pin.edges.iter().filter(|&&h| h).count();
+    println!("pulses: {pulses}, edges recorded: {}", led.pin.edges.len());
+}
+@note
+On real hardware, the only change is the pin type: an nrf-hal pin or an adapter around rppal's OutputPin. Everything the driver does can be checked in CI on a normal machine, and only a small hardware-in-the-loop suite needs a board.
+@mistakes
+- **Writing drivers against one chip's types**, so they can't be reused or tested.
+- **Assuming std on a microcontroller.** No heap, threads or files unless you add them.
+- **Testing only on hardware.** Mocks catch most logic bugs in seconds.
+@keys
+- Raspberry Pi: Linux, std, rppal. Microcontrollers: no_std, a HAL, no OS.
+- embedded-hal traits make drivers portable and testable.
+- probe-rs to flash and debug; simulators to start without hardware.
+
+=== A14.8
+@idea
+Rust has several ways to build desktop apps, and they differ mostly in where the interface comes from. **Tauri** pairs a web front end (HTML, CSS, any JavaScript framework) with a Rust back end; it uses the operating system's web view, so apps are small, and the front end can only call the Rust **commands** you register. **gtk-rs** binds GTK for native Linux-first apps, and **relm4** adds an Elm-style structure (model, messages, update, view) on top. **gpui** is the GPU-accelerated framework built for the Zed editor. Pure-Rust toolkits include **egui** (immediate mode: describe the UI every frame) and **iced** (Elm-style).
+
+Whichever you choose, the architecture advice is the same as for PyO3 wrappers and hardware adapters: keep the GUI a **thin layer** over a library crate that holds the logic and its tests. Return `Result` from commands so the interface can show errors instead of crashing.
+@how
+- Tauri: `#[tauri::command]` functions, `generate_handler!`, `invoke("name", args)` in the front end.
+- relm4: a model struct, a message enum, `update` and a view macro.
+- egui: implement `eframe::App` and draw widgets in `update` each frame.
+- Logic in a library crate; the GUI calls it; tests target the library and the command layer.
+@example rust: An Elm-style update you can test without a window
+/// The core of relm4 and iced: state + message -> new state. No window needed to test it.
+#[derive(Debug, Default, PartialEq)]
+struct Model {
+    query: String,
+    results: Vec<String>,
+    error: Option<String>,
+}
+
+enum Msg {
+    QueryChanged(String),
+    Search,
+}
+
+fn update(m: &mut Model, msg: Msg, data: &[&str]) {
+    match msg {
+        Msg::QueryChanged(q) => m.query = q,
+        Msg::Search if m.query.trim().is_empty() => m.error = Some(String::from("type something to search")),
+        Msg::Search => {
+            m.error = None;
+            m.results = data.iter().filter(|d| d.contains(m.query.as_str())).map(|d| d.to_string()).collect();
+        }
+    }
+}
+
+fn main() {
+    let data = ["tea", "teapot", "jam"];
+    let mut m = Model::default();
+    update(&mut m, Msg::Search, &data);
+    println!("{:?}", m.error);
+    update(&mut m, Msg::QueryChanged("tea".into()), &data);
+    update(&mut m, Msg::Search, &data);
+    println!("{:?} {:?}", m.results, m.error);
+}
+@note
+The view would just display `m.results` and `m.error`; every behaviour worth testing lives in `update`. Tauri apps get the same benefit by keeping commands thin and putting logic in a library the commands call.
+@mistakes
+- **Logic inside widget callbacks**, untestable without clicking through a window.
+- **Commands that panic** on bad input instead of returning `Result`.
+- **Exposing broad file or shell access** to a Tauri front end; register only the commands it needs.
+@keys
+- Tauri: web front end, Rust commands, small binaries.
+- gtk-rs and relm4 for native GTK; gpui for GPU-drawn apps; egui and iced in pure Rust.
+- Thin GUI over a tested library; Elm-style updates are easy to test.

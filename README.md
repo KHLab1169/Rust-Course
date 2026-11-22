@@ -6,14 +6,16 @@ My self-study Rust course, as a standalone app that runs on my own computer.
   printed as the 3rd edition by No Starch Press, covering the Rust 2024 edition)
 - **Track 2** follows [roadmap.sh/rust](https://roadmap.sh/rust), 12 modules, plus **RS295 Career toolkit**: CI for Rust,
   Rust inside Python with PyO3 and maturin, the testing toolbox (proptest, insta, cargo-fuzz, coverage, cargo-mutants),
-  flaky tests, and interview drills
+  flaky tests, and interview drills; and **RS205 The wider ecosystem**: the roadmap.sh topics the other
+  modules only mention (cryptography, actix-web and Rocket, CLI and terminal crates, QUIC, other runtimes and
+  Wasmer, games with Bevy, embedded with embedded-hal and rppal, desktop apps with Tauri and gtk-rs)
 - **Track 3** is six portfolio projects (load tester, flaky-test detector, intrusion detector, axum API, key-value store, WebAssembly)
 
-134 lessons and 342 exercises with worked examples, hints, solutions and explanations, plus chapter quizzes, midterms, finals and grades.
+142 lessons and 354 exercises with worked examples, hints, solutions and explanations, plus chapter quizzes, midterms, finals and grades.
 
 ## Features
 
-- **Map**: a roadmap-style tree of every module and lesson, per track. Each box opens that lesson in the
+- **Map** (the first tab): a progress infographic and a roadmap-style tree of every module and lesson, per track. Each box opens that lesson in the
   curriculum and fills in as you complete lessons (next lesson highlighted, reviews due marked).
 - **Autograded practice**: every Track 1 lesson ends with a practice problem written as a specification
   (examples and edge cases), with hidden tests. In this app, **Run tests** compiles your answer with the Rust
