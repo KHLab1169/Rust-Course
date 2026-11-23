@@ -114,3 +114,7 @@ this app's `index.html`. `dltests_rs.js` is the Download tests code for Cargo pr
   exercise yourself.
 - The "Ask the TA" feedback panel needs Claude, so it only appears in the online version.
   Here each lesson shows a *Stuck?* panel with next steps and related lessons instead.
+
+**RS206 Software engineering practice** (module A15): choosing collections by cost, linked structures and ownership,
+databases with parameters and transactions, configuration and tracing, shipping with Docker and code review, and a
+system design primer.

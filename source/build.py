@@ -131,6 +131,7 @@ ALL_COURSES = [
     {"code": "RS203", "t": "Concurrency, Async and Metaprogramming", "y": 2, "mods": ["a7", "a8", "a9"]},
     {"code": "RS204", "t": "Quality Engineering and the Ecosystem", "y": 2, "mods": ["a10", "a11", "a12"]},
     {"code": "RS205", "t": "The Wider Ecosystem: Roadmap Extras", "y": 2, "mods": ["a14"]},
+    {"code": "RS206", "t": "Software Engineering Practice", "y": 2, "mods": ["a15"]},
     {"code": "RS295", "t": "Career Toolkit: Rust in QA, CI and Python", "y": 2, "mods": ["a13"]},
     {"code": "RS301", "t": "QA and Security Tools Studio", "y": 3, "mods": ["q1", "q2", "q3"], "studio": True},
     {"code": "RS302", "t": "Web and Systems Studio", "y": 3, "mods": ["w1", "w2", "w3"], "studio": True},
