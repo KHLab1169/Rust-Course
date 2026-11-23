@@ -47,19 +47,35 @@
 .pz-btn{display:inline-flex;align-items:center;gap:8px;background:var(--pz-grad);color:#fff!important;border:0;border-radius:12px;padding:10px 16px;font-weight:700;cursor:pointer;box-shadow:0 8px 18px -8px rgba(37,99,235,.7);transition:transform .15s}
 .pz-btn:hover{transform:translateY(-1px)}
 /* donut */
-.pz-donut-wrap{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
-.pz-donut{flex:none;position:relative;width:200px;height:200px}
-.pz-donut svg{width:100%;height:100%;transform:rotate(-90deg);filter:drop-shadow(0 8px 14px rgba(15,31,61,.12))}
-.pz-donut path{cursor:pointer;transition:opacity .15s}
-.pz-donut path:hover{opacity:.75}
-.pz-donut .mid{position:absolute;inset:0;display:grid;place-content:center;text-align:center;pointer-events:none}
-.pz-donut .mid b{font-size:2.2rem;font-weight:800;line-height:1;letter-spacing:-.04em}
-.pz-donut .mid span{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--pz-sub);margin-top:4px}
-.pz-keys{display:grid;gap:8px;min-width:0}
-.pz-key{display:flex;align-items:center;gap:10px}
-.pz-key i{display:none}
-.pz-key span{font-size:.9rem;font-weight:600;white-space:nowrap;display:inline-flex;align-items:center}
-.pz-key em{display:inline-block;width:12px;height:12px;border-radius:4px;margin-right:9px;font-style:normal}
+.pz-prog{display:grid;gap:16px}
+.pz-kpi{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.pz-kpi .big{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.pz-kpi .big .pz-delta{align-self:center}
+.pz-kpi .big b{font-size:2.6rem;font-weight:800;letter-spacing:-.05em;line-height:.9}
+.pz-kpi .big span{font-size:.82rem;font-weight:600;color:var(--pz-sub)}
+.pz-delta{display:inline-flex;align-items:center;gap:5px;font-size:.76rem;font-weight:700;padding:4px 9px;border-radius:999px;background:color-mix(in srgb,var(--pz-green) 14%,transparent);color:var(--pz-green)}
+.pz-delta.flat{background:var(--pz-pale);color:var(--pz-sub)}
+.pz-kpi .of{font-size:.82rem;font-weight:600;color:var(--pz-sub);text-align:right}
+.pz-kpi .of b{color:var(--pz-ink);font-size:1rem}
+.pz-chart{position:relative;margin:0 -4px}
+.pz-chart .plot{position:relative;height:132px}
+.pz-chart svg{display:block;width:100%;height:100%;overflow:visible}
+.pz-chart .grid{stroke:var(--pz-line);stroke-width:1;stroke-dasharray:3 4}
+.pz-chart .area{fill:url(#pzarea)}
+.pz-chart .line{fill:none;stroke:url(#pzline);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}
+.pz-chart .pt{position:absolute;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;border-radius:50%;background:var(--pz-card);box-shadow:inset 0 0 0 2px #4F5FE8}
+.pz-chart .pt.last{width:14px;height:14px;margin:-7px 0 0 -7px;background:#7C3AED;box-shadow:0 0 0 3px var(--pz-card),0 0 0 7px color-mix(in srgb,#7C3AED 22%,transparent)}
+.pz-chart .xl{display:flex;justify-content:space-between;font-size:.7rem;font-weight:600;color:var(--pz-sub);margin-top:6px;padding:0 4px}
+.pz-chart .empty{position:absolute;inset:0 0 auto;height:132px;display:grid;place-items:center;font-size:.82rem;font-weight:600;color:var(--pz-sub);text-align:center;padding:0 20px}
+.pz-meter{display:flex;gap:3px;height:14px}
+.pz-meter button{position:relative;flex:1 1 0;min-width:5px;border:0;padding:0;border-radius:5px;background:var(--pz-pale);cursor:pointer;overflow:hidden;box-shadow:inset 0 0 0 1px var(--pz-line)}
+.pz-meter button i{position:absolute;inset:0 auto 0 0;width:var(--p);background:var(--pz-grad2);border-radius:5px}
+.pz-meter button:hover{filter:brightness(.94);transform:scaleY(1.25)}
+.pz-meter button.cur{box-shadow:0 0 0 2px var(--pz-org)}
+.pz-chips{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:.78rem;font-weight:600;color:var(--pz-sub)}
+.pz-chips span{display:inline-flex;align-items:center;gap:6px}
+.pz-chips i{width:9px;height:9px;border-radius:50%}
+.pz-chips b{color:var(--pz-ink)}
 /* module badges */
 .pz-badges{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:12px}
 .pz-badge{background:var(--pz-pale);border:1px solid transparent;border-radius:16px;padding:14px 8px 12px;cursor:pointer;text-align:center;display:grid;justify-items:center;gap:8px;transition:transform .15s,border-color .15s,background .15s}
@@ -156,8 +172,11 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Raleway:wght@400;600;700;800&display=swap" data-map-font>
 
 
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" data-map-font>
+
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" data-theme-font>
+
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" data-map-font>
 </head><body>
 <title>Rust Course</title>
 <meta name="claude:viewport-fit-sides" content="cover">
@@ -1871,19 +1890,38 @@ function pzLeaf(i,next){
     (exs.length?"<span class=\"ex\" aria-hidden=\"true\">"+exs.map(function(e){return "<i"+(S.ex[e.id]?" class=\"on\"":"")+"></i>";}).join("")+"</span>":"")+
     (next?"<span class=\"tag\">Next</span>":"")+"</span></button>";
 }
-function pzDonut(mods){
-  var total=0;mods.forEach(function(m){total+=m.items.length;});
-  if(!total)return "";
-  var R=100,r=62,cx=105,cy=105,a=0,out="",gap=mods.length>12?0.006:0.012;
-  var pt=function(rad,ang){return (cx+rad*Math.cos(ang*2*Math.PI)).toFixed(2)+" "+(cy+rad*Math.sin(ang*2*Math.PI)).toFixed(2);};
-  mods.forEach(function(m,k){
-    var n=m.items.length,d=m.items.filter(function(i){return S.done[i.id];}).length,f=n/total,a0=a+gap/2,a1=a+f-gap/2;a+=f;
-    if(a1<=a0)return;
-    var col=d===n?"var(--pz-green)":d?"var(--pz-sky)":"var(--pz-line)";
-    var big=(a1-a0)>0.5?1:0;
-    out+="<path d=\"M"+pt(R,a0)+" A"+R+" "+R+" 0 "+big+" 1 "+pt(R,a1)+" L"+pt(r,a1)+" A"+r+" "+r+" 0 "+big+" 0 "+pt(r,a0)+"Z\" fill=\""+col+"\" data-act=\"mapjump\" data-v=\""+m.id+"\"><title>"+esc(m.n+" "+m.t+": "+d+" of "+n)+"</title></path>";
-  });
-  return "<svg viewBox=\"0 0 210 210\" role=\"img\" aria-label=\"Modules by completion\">"+out+"</svg>";
+function pzProgress(mods,st,pct,started,trackNext){
+  var ids=st.all.map(function(i){return i.id;}),dates=ids.map(function(id){return S.done[id];}).filter(Boolean);
+  var now=new Date(),day=function(n){var d=new Date(now);d.setDate(d.getDate()-n);return iso(d);};
+  var weeks=8,pts=[];
+  for(var w=weeks;w>=0;w--){var cut=day(w*7);pts.push(dates.filter(function(d){return d<=cut;}).length);}
+  var week=dates.filter(function(d){return d>day(7);}).length;
+  var W=320,H=120,pad=8,maxv=Math.max(4,Math.max.apply(null,pts)),n=pts.length;
+  var xy=pts.map(function(v,k){return [pad+k*(W-2*pad)/(n-1),H-pad-(v/maxv)*(H-2*pad-10)];});
+  var path="M"+xy[0][0].toFixed(1)+" "+xy[0][1].toFixed(1);
+  for(var k=1;k<n;k++){var p0=xy[k-2]||xy[k-1],p1=xy[k-1],p2=xy[k],p3=xy[k+1]||p2;
+    var c1x=p1[0]+(p2[0]-p0[0])/6,c1y=p1[1]+(p2[1]-p0[1])/6,c2x=p2[0]-(p3[0]-p1[0])/6,c2y=p2[1]-(p3[1]-p1[1])/6;
+    c1y=Math.min(H-pad,c1y);c2y=Math.min(H-pad,c2y);
+    path+=" C"+c1x.toFixed(1)+" "+c1y.toFixed(1)+" "+c2x.toFixed(1)+" "+c2y.toFixed(1)+" "+p2[0].toFixed(1)+" "+p2[1].toFixed(1);}
+  var area=path+" L"+xy[n-1][0].toFixed(1)+" "+(H-pad)+" L"+xy[0][0].toFixed(1)+" "+(H-pad)+" Z";
+  var grid=[0.33,0.66,1].map(function(f){var y=(H-pad-f*(H-2*pad-10)).toFixed(1);return "<line class=\"grid\" x1=\""+pad+"\" x2=\""+(W-pad)+"\" y1=\""+y+"\" y2=\""+y+"\"/>";}).join("");
+  var label=function(nd){var d=new Date(now);d.setDate(d.getDate()-nd);return d.toLocaleDateString(undefined,{month:"short",day:"numeric"});};
+  var svg="<svg viewBox=\"0 0 "+W+" "+H+"\" preserveAspectRatio=\"none\" role=\"img\" aria-label=\"Lessons completed over the last 8 weeks: "+pts.join(", ")+"\"><defs>"+
+    "<linearGradient id=\"pzarea\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" style=\"stop-color:#6366F1;stop-opacity:.35\"/><stop offset=\"1\" style=\"stop-color:#6366F1;stop-opacity:0\"/></linearGradient>"+
+    "<linearGradient id=\"pzline\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"0\"><stop offset=\"0\" style=\"stop-color:#2563EB\"/><stop offset=\"1\" style=\"stop-color:#7C3AED\"/></linearGradient></defs>"+
+    grid+"<path class=\"area\" d=\""+area+"\"/><path class=\"line\" d=\""+path+"\" vector-effect=\"non-scaling-stroke\"/>"+
+    "</svg>"+xy.map(function(p,k){return "<i class=\"pt"+(k===n-1?" last":"")+"\" style=\"left:"+(p[0]/W*100).toFixed(2)+"%;top:"+(p[1]/H*100).toFixed(2)+"%\" title=\""+(k===n-1?"Today":label((n-1-k)*7))+": "+pts[k]+" lessons\"></i>";}).join("");
+  var meter=mods.map(function(m){
+    var mn=m.items.length,d=m.items.filter(function(i){return S.done[i.id];}).length,cur=trackNext&&m.items.indexOf(trackNext)>=0;
+    return "<button type=\"button\" style=\"flex-grow:"+mn+";--p:"+(mn?Math.round(d/mn*100):0)+"%\""+(cur?" class=\"cur\"":"")+" data-act=\"mapjump\" data-v=\""+m.id+"\" title=\""+esc(m.n+" "+m.t+": "+d+" of "+mn+" lessons")+"\" aria-label=\""+esc(m.n+" "+m.t+": "+d+" of "+mn+" lessons")+"\"><i></i></button>";
+  }).join("");
+  return "<div class=\"pz-prog\"><div class=\"pz-kpi\"><div class=\"big\"><b>"+pct+"%</b><span>complete</span>"+
+    "<span class=\"pz-delta"+(week?"":" flat")+"\">"+(week?"↑ +"+week+" this week":"No lessons this week")+"</span></div>"+
+    "<div class=\"of\"><b>"+st.done+"</b> of "+st.all.length+" lessons</div></div>"+
+    "<div class=\"pz-chart\"><div class=\"plot\">"+svg+"</div>"+(dates.length?"":"<div class=\"empty\">Your progress curve starts with your first finished lesson.</div>")+
+    "<div class=\"xl\"><span>"+label(weeks*7)+"</span><span>"+label(weeks*7/2)+"</span><span>Today</span></div></div>"+
+    "<div class=\"pz-meter\" role=\"group\" aria-label=\"Modules\">"+meter+"</div>"+
+    "<div class=\"pz-chips\"><span><i style=\"background:var(--pz-green)\"></i><b>"+st.modsDone+"</b> complete</span><span><i style=\"background:var(--pz-sky)\"></i><b>"+started+"</b> in progress</span><span><i style=\"background:var(--pz-line)\"></i><b>"+(mods.length-st.modsDone-started)+"</b> not started</span><span style=\"margin-left:auto\">One bar per module</span></div></div>";
 }
 function viewMap(){
   var tr=S.mapTrack||S.track||"F",mods=M.filter(function(m){return m.track===tr;});
@@ -1906,10 +1944,7 @@ function viewMap(){
       "<div>"+(trackNext?"<h3>Up next</h3><p>"+esc(trackNext.t)+"</p><button type=\"button\" class=\"pz-btn\" data-act=\"open\" data-id=\""+esc(trackNext.id)+"\">Open the lesson →</button>":"<h3>Track complete</h3><p>Every lesson in this track is done. Pick another track above.</p>")+
       "<h3 style=\"margin-top:16px\">Reviews</h3><p>"+(st.due?st.due+" lesson"+(st.due>1?"s":"")+" due for review today: they're marked yellow below.":"Nothing due today. Finished lessons come back for review on a schedule.")+"</p></div>"+
     "</div></section>"+
-    "<section class=\"pz-sec\"><div class=\"pz-tab\"><b>Progress</b></div><div class=\"pz-donut-wrap\"><div class=\"pz-donut\">"+pzDonut(mods)+"<div class=\"mid\"><b>"+pct+"%</b><span>complete</span></div></div>"+
-      "<div class=\"pz-keys\"><div class=\"pz-key\"><i aria-hidden=\"true\">"+PZ_ICON.check+"</i><span><em style=\"background:var(--pz-green)\"></em>"+st.modsDone+(st.modsDone===1?" module":" modules")+" complete</span></div>"+
-      "<div class=\"pz-key\"><i aria-hidden=\"true\">"+PZ_ICON.half+"</i><span><em style=\"background:var(--pz-sky)\"></em>"+started+" in progress</span></div>"+
-      "<div class=\"pz-key\"><i aria-hidden=\"true\">"+PZ_ICON.ring+"</i><span><em style=\"background:var(--pz-line)\"></em>"+(mods.length-st.modsDone-started)+" not started</span></div></div></div></section></div>"+
+    "<section class=\"pz-sec\"><div class=\"pz-tab\"><b>Progress</b></div>"+pzProgress(mods,st,pct,started,trackNext)+"</section></div>"+
     "<section class=\"pz-sec\"><div class=\"pz-tab\"><b>Modules</b></div><div class=\"pz-badges\">"+mods.map(function(m,k){
       var n=m.items.length,d=m.items.filter(function(i){return S.done[i.id];}).length,p=n?Math.round(d/n*100):0;
       var cur=trackNext&&m.items.indexOf(trackNext)>=0;
