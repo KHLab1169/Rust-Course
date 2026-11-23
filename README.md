@@ -19,6 +19,12 @@ My self-study Rust course, as a standalone app that runs on my own computer.
 - **Map** (the first tab): a modern dashboard-poster of your progress (stats, a module donut,
   ringed module badges) and a roadmap timeline of every module and lesson, per track. Each box opens that lesson in the
   curriculum and fills in as you complete lessons (next lesson highlighted, reviews due marked).
+- **Weekly goal and activity heatmap** on the Map: set how many lessons a week you aim for, see this
+  week's days, and 26 weeks of activity with your streak.
+- **Flashcards** on the Overview: the quick checks of finished lessons come back on a spaced schedule
+  (1, 3, 7, 14, 30 and 60 days); a wrong answer starts the card again tomorrow.
+- **Mistakes notebook** on the Overview: exercises you haven't passed yet (with the failing test) and
+  quick checks you got wrong, each linking back to the lesson.
 - **Autograded practice**: every Track 1 lesson ends with a practice problem written as a specification
   (examples and edge cases), with hidden tests. In this app, **Run tests** compiles your answer with the Rust
   installed on your computer and runs them; failures show what was called, what was expected and what you got.
@@ -26,7 +32,8 @@ My self-study Rust course, as a standalone app that runs on my own computer.
 - **Style notes** (not graded) from Clippy and the compiler beside the test results.
 - **Points** per module: one per test passed, two per finished exercise without tests, one per quick check.
 - **Test in Playground** opens your code with the tests attached, and **Copy tests** gives you the test module
-  to paste under your code in your IDE (then `cargo test`).
+  to paste under your code in your IDE (then `cargo test`). **Download tests** saves the exercise as a ready
+  Cargo project (`Cargo.toml`, `src/lib.rs` with your code and the hidden tests, a README): unzip and run `cargo test`.
 - **Code editor**: Rust colours, line numbers, auto-indent after `{` and unindent on `}`, Tab / Shift+Tab,
   Ctrl+/ to comment with `//`, adjustable text size, drag the corner to resize, Copy button.
   Ctrl+Enter opens your code in the Rust Playground.
@@ -36,6 +43,8 @@ My self-study Rust course, as a standalone app that runs on my own computer.
 - **Checklists** for every exercise, with the usual Rust bar (no warnings, clippy clean, cargo test).
 - **Weekly report** on the Overview, **search** (Ctrl+K or /), **focus mode** in each lesson,
   and **Grades → Download my answers (.zip)** to keep all your code as `.rs` files.
+- **Accessible**: checked with axe-core on every view in light and dark mode, with reduced motion when your
+  system asks for it.
 
 ## Run it
 
@@ -91,6 +100,12 @@ attaches the quick checks, failing if a "predict" answer isn't really in the out
 
     python3 deep_build_rs.py                        # writes deep.json
     python3 checks_build.py checks deep.json        # adds the quick checks to it
+
+The page itself is the Python Course's engine with Rust content: `build.py` reads that engine
+(`course.html`, built with `map_add.py`, `theme_add.py`, `learn_add.py`, `pytest_add.py` and `a11y_add.py`,
+copies of which are here), swaps in the Rust grader, editor and colours, and `build_all.sh` then runs
+`speed_pub.py` (content as a JSON block, which parses faster) and `vendorize.py` (local fonts) to make
+this app's `index.html`. `dltests_rs.js` is the Download tests code for Cargo projects.
 
 ## What's different from the online version
 

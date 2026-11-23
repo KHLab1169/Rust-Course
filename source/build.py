@@ -197,6 +197,13 @@ def rep_re(pat, new, count=1):
 rep(".btn:hover{border-color:var(--blue)}", ".btn:hover{border-color:var(--blue)}\n.ed-act{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}\n.ed-act .sub{margin-left:auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center}\na.btn{display:inline-flex;align-items:center;text-decoration:none;color:var(--ink)}")
 # copper accent instead of the Python yellow
 rep("--yellow:#FFD43B; --yellow-ink:#2B2100;", "--yellow:#E8834F; --yellow-ink:#2A1206;", 3)
+# RUST-COLOURS: the course's own gradient (copper to rose) over the shared modern theme
+_i = src.rindex("</style>")
+_light = "--g1:#EA580C;--g2:#DB2777;--tint1:#FDBA74;--tint2:#F9A8D4;--blue:#C2410C;--blue-soft:#FFEDD5;--mark:#EA580C;--mark-ink:#FFFFFF"
+_dark = "--g1:#FB923C;--g2:#F472B6;--tint1:#9A3412;--tint2:#9D174D;--blue:#FB923C;--blue-soft:#3A2214;--mark:#FB923C;--mark-ink:#1A0E06"
+src = src[:_i] + (":root{" + _light + "}.pz{--pz-navy:#C2410C}"
+                  "@media (prefers-color-scheme:dark){:root:not([data-theme=\"light\"]){" + _dark + "}:root:not([data-theme=\"light\"]) .pz{--pz-navy:#FB923C}}"
+                  ":root[data-theme=\"dark\"]{" + _dark + "}:root[data-theme=\"dark\"] .pz{--pz-navy:#FB923C}") + src[_i:]
 # header
 rep("<title>Python Course</title>", "<title>Rust Course</title>")
 n_ex_all = sum(len(i["ex"]) for t in mods.values() for m in t for i in m["items"])
@@ -398,6 +405,12 @@ rep("try 'dictionary', 'tkinter' or 7.4", "try 'borrow', 'trait' or 4.2")
 rep('"pycc.review"', '"rscc.review"', 2)
 rep('"pycc.edfs"', '"rscc.edfs"', 2)
 assert "Pyodide" not in src.split("/* ================= code drafts")[1][:200]
+# DLTESTS: Rust downloads a Cargo project instead of a pytest file
+_a = src.index("function testBundle(eid,code){")
+_b = src.index("async function downloadTests(eid){")
+src = src[:_a] + open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "dltests_rs.js"), encoding="utf-8").read() + src[_b:]
+rep("function testsDownloadable(spec){return !!(spec&&spec.cases&&spec.cases.length);}", "function testsDownloadable(spec){return !!(spec&&(spec.tests||spec.play));}")
+rep("Unzip it and follow the note at the top of the test file.", "Unzip it and run cargo test in the folder.")
 open(out_path, "w", encoding="utf-8").write(src)
 n_items = sum(len(m["items"]) for t in mods.values() for m in t)
 n_ex = sum(len(i["ex"]) for t in mods.values() for m in t for i in m["items"])
