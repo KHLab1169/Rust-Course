@@ -13,6 +13,9 @@ function pyInPage(){
   var base=new URL("pyodide/",document.baseURI).href;
   return Promise.all([import(base+"pyodide.mjs"),graderSrc()]).then(function(r){
     return r[0].loadPyodide({indexURL:base,stdLibURL:base+"python_stdlib.zip.wasm"}).then(function(py){
+      return fetch(base+"tzdata.whl.wasm").then(function(z){return z.ok?z.arrayBuffer():null;}).then(function(buf){
+        if(buf)py.unpackArchive(buf,"zip",{extractDir:py.runPython("import site; site.getsitepackages()[0]")});
+      },function(){}).then(function(){
       py.runPython(r[1]);
       var fw={inPage:true,onmessage:null,terminate:function(){},postMessage:function(m){
         setTimeout(function(){
@@ -25,6 +28,7 @@ function pyInPage(){
         },0);
       }};
       return fw;
+      });
     });
   });
 }

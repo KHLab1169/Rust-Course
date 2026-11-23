@@ -63,6 +63,8 @@ for f in sorted(files):
             for g in GRADED.get(iid, []):
                 title = g["title"][len("Practice: "):] if iid.startswith("A") else g["title"]
                 items[-1]["ex"].append({"id": g["eid"], "t": title, "p": g["prompt"]})
+                if not iid.startswith("A"):
+                    items[-1]["min"] += 20   # the practice problems were added after the first time estimates
             items[-1]["ex"].sort(key=lambda x: x["id"])
             if it.get("lv"):
                 lv_item[iid] = it["lv"]
@@ -405,6 +407,7 @@ rep("try 'dictionary', 'tkinter' or 7.4", "try 'borrow', 'trait' or 4.2")
 rep('"pycc.review"', '"rscc.review"', 2)
 rep('"pycc.edfs"', '"rscc.edfs"', 2)
 assert "Pyodide" not in src.split("/* ================= code drafts")[1][:200]
+rep("var TRY_PY=true,TRY_SRC={};", "var TRY_PY=false,TRY_SRC={};")   # no in-page Python in the Rust course
 # DLTESTS: Rust downloads a Cargo project instead of a pytest file
 _a = src.index("function testBundle(eid,code){")
 _b = src.index("async function downloadTests(eid){")
