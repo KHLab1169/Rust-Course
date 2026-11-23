@@ -3088,6 +3088,395 @@
    "Thin GUI over a tested library; Elm-style updates are easy to test."
   ]
  },
+ "A15.1": {
+  "idea": [
+   "Every program is built from a handful of data structures, and choosing between them is choosing costs. **Big-O notation** describes how the work grows with the input: O(1) stays flat, O(log n) grows by one step each time the data doubles, O(n) doubles with it, and O(n²) quadruples. The most common performance bug in real code is a hidden O(n) inside a loop, such as `vec.contains(&x)` checked for every item, which quietly makes the whole loop O(n²).",
+   "Rust's standard collections each make a different trade. **Vec** is the default: contiguous memory, O(1) push and index, and the fastest iteration of anything. **VecDeque** adds O(1) at the front, so it is the queue. **HashMap** and **HashSet** give O(1) average lookups by key, in no order. **BTreeMap** and **BTreeSet** keep keys sorted with O(log n) operations, so ordered iteration and `range` queries are cheap. **BinaryHeap** always hands back the largest item in O(log n), which makes it the priority queue and the tool for \"top k\".",
+   "Algorithms come with the slice type: `sort` (stable) and `sort_unstable` are O(n log n), `binary_search` and `partition_point` are O(log n) on sorted data, `dedup` removes neighbouring duplicates and `select_nth_unstable` finds the k-th element in O(n) without a full sort. Writing merge, binary search and a bounded heap yourself once, as in this lesson's exercise, is how you learn their edge cases; in production code you call the standard versions, which are tuned and tested."
+  ],
+  "how": [
+   "Default to `Vec`; switch only for a reason you can name.",
+   "Membership tests in a loop: build a `HashSet` once instead of calling `contains` on a Vec.",
+   "Ordered keys or ranges: `BTreeMap`. Largest first: `BinaryHeap` (use `Reverse` for smallest first).",
+   "Sort once, then `binary_search` many times.",
+   "Top k of n: a heap of size k is O(n log k); `select_nth_unstable` is O(n)."
+  ],
+  "examples": [
+   {
+    "lang": "rust",
+    "title": "An accidental O(n²) and its O(n) fix",
+    "code": "use std::collections::HashSet;\nuse std::time::Instant;\n\nfn main() {\n    let ids: Vec<u32> = (0..20_000).chain(0..5_000).collect(); // 5,000 duplicates\n\n    let start = Instant::now();\n    let mut seen_vec: Vec<u32> = Vec::new();\n    let mut dupes_slow = 0;\n    for &id in &ids {\n        if seen_vec.contains(&id) {\n            dupes_slow += 1; // contains scans the whole Vec: O(n) inside a loop\n        } else {\n            seen_vec.push(id);\n        }\n    }\n    let slow = start.elapsed();\n\n    let start = Instant::now();\n    let mut seen_set = HashSet::new();\n    let dupes_fast = ids.iter().filter(|&&id| !seen_set.insert(id)).count(); // insert is O(1)\n    let fast = start.elapsed();\n\n    println!(\"duplicates: {dupes_slow} {dupes_fast}\");\n    println!(\"HashSet version much faster: {}\", slow > fast * 20);\n}",
+    "note": "Both versions find the same 5,000 duplicates, but `Vec::contains` checks every item each time, so the first loop does roughly n²/2 comparisons while the HashSet version does n hash lookups. `HashSet::insert` returns false when the value was already there, which makes the duplicate count a one-liner.",
+    "output": "duplicates: 5000 5000\nHashSet version much faster: true",
+    "check": {
+     "kind": "concept",
+     "q": "Both loops find 5,000 duplicates. Why is the Vec version so much slower?",
+     "options": [
+      "`Vec::contains` scans the items one by one, so each check is O(n) and the loop is O(n²); `HashSet::insert` is O(1) on average.",
+      "HashSet uses less memory.",
+      "The Vec version allocates a new Vec each time.",
+      "HashSet runs on several threads."
+     ],
+     "answer": 0,
+     "explain": "A membership test on a Vec walks the Vec. Inside a loop over n items that becomes about n²/2 comparisons, while hashing jumps straight to the right bucket."
+    }
+   },
+   {
+    "lang": "rust",
+    "title": "BTreeMap ranges and a bounded heap for top-k",
+    "code": "use std::cmp::Reverse;\nuse std::collections::{BTreeMap, BinaryHeap};\n\nfn main() {\n    // Response times keyed by timestamp: BTreeMap keeps them in time order.\n    let log = BTreeMap::from([(1000, 120), (1005, 940), (1010, 85), (1020, 1210), (1031, 230), (1040, 310)]);\n    let window: Vec<_> = log.range(1005..1031).map(|(t, ms)| (*t, *ms)).collect();\n    println!(\"between 1005 and 1030: {window:?}\");\n\n    // The 3 slowest requests without sorting everything: keep a min-heap of size 3.\n    let mut heap = BinaryHeap::new();\n    for &ms in log.values() {\n        heap.push(Reverse(ms));\n        if heap.len() > 3 {\n            heap.pop(); // drops the smallest of the four\n        }\n    }\n    let mut slowest: Vec<u32> = heap.into_iter().map(|Reverse(ms)| ms).collect();\n    slowest.sort_unstable_by(|a, b| b.cmp(a));\n    println!(\"three slowest: {slowest:?}\");\n\n    let sorted: Vec<u32> = log.values().copied().collect::<std::collections::BTreeSet<_>>().into_iter().collect();\n    println!(\"first at least 300 ms is at index {}\", sorted.partition_point(|&ms| ms < 300));\n}",
+    "note": "`range(1005..1031)` walks only the matching keys because a BTreeMap is ordered. Wrapping values in `Reverse` turns the max-heap into a min-heap, so popping whenever it holds more than k removes the smallest and leaves the k largest. `partition_point` is binary search for the first item where a condition becomes false.",
+    "output": "between 1005 and 1030: [(1005, 940), (1010, 85), (1020, 1210)]\nthree slowest: [1210, 940, 310]\nfirst at least 300 ms is at index 3",
+    "check": {
+     "kind": "pick",
+     "q": "Which three response times does the bounded heap keep?",
+     "options": [
+      "`three slowest: [85, 120, 230]`",
+      "`three slowest: [1210, 940, 230]`",
+      "`three slowest: [1210, 940, 310]`"
+     ],
+     "answer": 2,
+     "explain": "Each push of a fourth value pops the smallest (the heap holds Reverse values), so only the three largest survive: 1210, 940 and 310."
+    }
+   }
+  ],
+  "mistakes": [
+   "**`contains` on a Vec inside a loop.** Build a HashSet once.",
+   "**Reaching for LinkedList or BTreeMap by habit.** Vec is faster for most workloads.",
+   "**Sorting everything to get the top few.** Use a bounded heap or `select_nth_unstable`.",
+   "**`binary_search` on unsorted data.** It returns a wrong answer, not an error."
+  ],
+  "keys": [
+   "Big-O predicts growth: O(1), O(log n), O(n), O(n log n), O(n²).",
+   "Vec by default; VecDeque, HashMap, BTreeMap and BinaryHeap each for a named reason.",
+   "Sorted data unlocks binary search and ranges.",
+   "A heap of size k finds the top k in one pass."
+  ]
+ },
+ "A15.2": {
+  "idea": [
+   "Linked structures, lists and trees whose nodes point to other nodes, are the classic place where Rust feels different. In C a node holds a raw pointer that may be null; in Rust a node **owns** its children through `Option<Box<Node>>`. `Box` puts the child on the heap and gives the type a fixed size (a struct cannot contain itself directly), and `Option` stands for \"there may be no child\", with `None` playing the role of null, checked by the compiler.",
+   "Because every node has exactly one owner, moving nodes around means moving ownership. The key tool is `Option::take()`: it moves the value out of a field and leaves `None` behind, which is how you detach a node through a `&mut` reference without leaving a dangling pointer. `as_ref()` and `as_mut()` give you `Option<&T>` and `Option<&mut T>` for looking without taking. With those, a stack, a reversed list or a binary search tree needs no `unsafe` at all.",
+   "Structures where nodes are shared or point backwards (doubly linked lists, graphs) do not fit single ownership. The safe options are `Rc<RefCell<Node>>` with `Weak` for back edges, or, usually better, an **arena**: keep all nodes in a `Vec` and refer to them by index, as petgraph and many compilers do. Finally, remember that `Vec` and `VecDeque` beat linked lists for almost every real workload, because contiguous memory suits the CPU cache; linked structures earn their place when nodes must not move or when you split and join long sequences."
+  ],
+  "how": [
+   "A child is `Option<Box<Node<T>>>`: None for no child, Box for an owned heap node.",
+   "`self.head.take()` moves the node out and leaves None; then relink.",
+   "`as_ref()` / `as_mut()` to look at or change a node without taking it.",
+   "Shared or backward links: an arena (`Vec<Node>` plus indices) or `Rc<RefCell<..>>` with `Weak`.",
+   "Long lists of boxes: write a loop-based `Drop` to avoid deep recursion."
+  ],
+  "examples": [
+   {
+    "lang": "rust",
+    "title": "A queue made of two stacks, and why take() matters",
+    "code": "struct Node {\n    value: u32,\n    next: Option<Box<Node>>,\n}\n\nfn push(head: &mut Option<Box<Node>>, value: u32) {\n    let next = head.take(); // move the old list out, leaving None\n    *head = Some(Box::new(Node { value, next }));\n}\n\nfn pop(head: &mut Option<Box<Node>>) -> Option<u32> {\n    let node = head.take()?;\n    *head = node.next;\n    Some(node.value)\n}\n\nfn dequeue(inbox: &mut Option<Box<Node>>, outbox: &mut Option<Box<Node>>) -> Option<u32> {\n    if outbox.is_none() {\n        while let Some(v) = pop(inbox) {\n            push(outbox, v); // reversing restores arrival order\n        }\n    }\n    pop(outbox)\n}\n\nfn main() {\n    let (mut inbox, mut outbox) = (None, None);\n    for job in [1, 2, 3] {\n        push(&mut inbox, job);\n    }\n    let first = dequeue(&mut inbox, &mut outbox);\n    push(&mut inbox, 4);\n    let mut rest = Vec::new();\n    while let Some(v) = dequeue(&mut inbox, &mut outbox) {\n        rest.push(v);\n    }\n    println!(\"first served: {first:?}, then: {rest:?}\");\n}",
+    "note": "Without `take()`, `let next = *head;` would try to move out of a borrowed place and fail to compile: Rust will not leave the field empty behind your back. Two stacks make a queue with O(1) amortised cost because each item is moved between them at most once, a classic interview exercise that falls out naturally here.",
+    "output": "first served: Some(1), then: [2, 3, 4]",
+    "check": {
+     "kind": "predict",
+     "q": "Jobs 1, 2 and 3 arrive, one is served, then job 4 arrives. What is printed?",
+     "options": [
+      "`first served: Some(3), then: [2, 1, 4]`",
+      "`first served: Some(1), then: [4, 2, 3]`",
+      "`first served: Some(1), then: [2, 3, 4]`"
+     ],
+     "answer": 2,
+     "explain": "Moving the inbox stack onto the outbox reverses it, so items leave in arrival order. Job 4 waits in the inbox until the outbox is empty."
+    }
+   },
+   {
+    "lang": "rust",
+    "title": "An arena graph: nodes in a Vec, links as indices",
+    "code": "struct Graph {\n    names: Vec<&'static str>,\n    edges: Vec<Vec<usize>>, // edges[i] = indices of the nodes i points to\n}\n\nimpl Graph {\n    fn add(&mut self, name: &'static str) -> usize {\n        self.names.push(name);\n        self.edges.push(Vec::new());\n        self.names.len() - 1\n    }\n\n    fn reachable(&self, start: usize) -> Vec<&'static str> {\n        let mut seen = vec![false; self.names.len()];\n        let mut stack = vec![start];\n        let mut order = Vec::new();\n        while let Some(n) = stack.pop() {\n            if std::mem::replace(&mut seen[n], true) {\n                continue;\n            }\n            order.push(self.names[n]);\n            stack.extend(self.edges[n].iter().rev());\n        }\n        order\n    }\n}\n\nfn main() {\n    let mut g = Graph { names: Vec::new(), edges: Vec::new() };\n    let (api, db, cache, queue, mail) = (g.add(\"api\"), g.add(\"db\"), g.add(\"cache\"), g.add(\"queue\"), g.add(\"mail\"));\n    g.edges[api].extend([cache, db, queue]);\n    g.edges[cache].push(db);\n    g.edges[queue].push(mail);\n    g.edges[mail].push(api); // a cycle, which single ownership could not express\n    println!(\"api depends on: {:?}\", g.reachable(api));\n    println!(\"cache depends on: {:?}\", g.reachable(cache));\n}",
+    "note": "The cycle from mail back to api would be impossible with Box (two owners) and awkward with Rc (it leaks unless one side is Weak). Storing nodes in a Vec and links as indices sidesteps ownership entirely, keeps the nodes next to each other in memory, and makes the depth-first search a few lines.",
+    "output": "api depends on: [\"api\", \"cache\", \"db\", \"queue\", \"mail\"]\ncache depends on: [\"cache\", \"db\"]",
+    "check": {
+     "kind": "concept",
+     "q": "Why store the graph as indices into a Vec instead of Box pointers between nodes?",
+     "options": [
+      "Box gives each node one owner, and the cycle (mail points back to api) would need two; indices have no ownership at all.",
+      "Indices are always faster than pointers.",
+      "Vec sorts the nodes automatically.",
+      "Box cannot hold strings."
+     ],
+     "answer": 0,
+     "explain": "Single ownership cannot express cycles or shared nodes. An arena owns every node and the links are plain numbers, which also keeps nodes together in memory."
+    }
+   }
+  ],
+  "mistakes": [
+   "**Trying to move a field out through `&mut`.** Use `take()` or `std::mem::replace`.",
+   "**`Rc<RefCell<..>>` cycles without Weak.** The nodes are never freed.",
+   "**Using a linked list where a Vec or VecDeque would do.** It is usually slower.",
+   "**Recursive Drop on a very long list.** It can overflow the stack."
+  ],
+  "keys": [
+   "`Option<Box<Node>>` is the safe nullable owning pointer.",
+   "`take()` moves a value out and leaves None.",
+   "Graphs and back links: arenas with indices, or Rc plus Weak.",
+   "Contiguous collections usually win on real hardware."
+  ]
+ },
+ "A15.3": {
+  "idea": [
+   "Most services keep their data in a relational database, and Rust talks to it through a few well-known crates. **rusqlite** is a synchronous SQLite driver; **sqlx** is async and supports PostgreSQL, MySQL and SQLite, and its `query!` macros can check your SQL against the real schema at compile time; **Diesel** and **SeaORM** build queries from Rust types. Whichever you choose, the SQL ideas are the same: **JOIN** to combine tables (LEFT JOIN to keep rows without a match), **GROUP BY** with `COUNT` and `SUM` to summarise, **indexes** on the columns you filter and join on, and **constraints** (`NOT NULL`, `CHECK`, foreign keys) so the database rejects bad data itself.",
+   "Two rules matter most. First, values always travel as **bound parameters** (`?1`, `$1`), never inside the SQL text, which is what makes SQL injection impossible. Table and column names cannot be parameters, so if they come from users they must be checked against an allow-list. Second, related writes go in a **transaction** so they happen all together or not at all. Rust makes this pleasant: a `Transaction` rolls back when it is dropped without `commit()`, so an early return with `?` can never leave half the work behind.",
+   "Rows map naturally to structs: rusqlite's `query_map` takes a closure that reads columns into your type, sqlx's `query_as!` and `#[derive(FromRow)]` do it for you. The schema itself evolves through **migrations**, numbered SQL files applied in order (`sqlx migrate run`, refinery), so every environment has the same tables. A connection **pool** (built into sqlx, r2d2 or deadpool for others) shares a few connections between many requests."
+  ],
+  "how": [
+   "Parameters for every value: `conn.execute(\"... WHERE id = ?1\", params![id])`.",
+   "Identifiers from outside: check against an allow-list; never format them into SQL unchecked.",
+   "`let tx = conn.transaction()?; ...; tx.commit()?;` — dropped without commit means rollback.",
+   "Map rows to structs with `query_map` (rusqlite) or `query_as` / `FromRow` (sqlx).",
+   "Schema changes as migrations; a pool for concurrent access."
+  ],
+  "examples": [
+   {
+    "lang": "rust",
+    "title": "Parameters keep data out of the SQL text",
+    "code": "fn unsafe_query(name: &str) -> String {\n    format!(\"SELECT * FROM staff WHERE name = '{name}'\")\n}\n\nfn safe_query(name: &str) -> (String, Vec<String>) {\n    (\"SELECT * FROM staff WHERE name = ?1\".to_string(), vec![name.to_string()])\n}\n\nfn main() {\n    for name in [\"Ada\", \"x' OR '1'='1\", \"x'; DROP TABLE staff;--\"] {\n        println!(\"input {name:?}\");\n        println!(\"  formatted:    {}\", unsafe_query(name));\n        let (sql, params) = safe_query(name);\n        println!(\"  parameterised: {sql}   params={params:?}\");\n    }\n}",
+    "note": "With formatting, the second input turns the WHERE clause into a condition that is always true and the third ends the statement and starts a new one. With a parameter, the SQL text never changes and the input is only ever compared as a string. Database drivers send the two parts separately, so there is nothing to escape and nothing to get wrong.",
+    "output": "input \"Ada\"\n  formatted:    SELECT * FROM staff WHERE name = 'Ada'\n  parameterised: SELECT * FROM staff WHERE name = ?1   params=[\"Ada\"]\ninput \"x' OR '1'='1\"\n  formatted:    SELECT * FROM staff WHERE name = 'x' OR '1'='1'\n  parameterised: SELECT * FROM staff WHERE name = ?1   params=[\"x' OR '1'='1\"]\ninput \"x'; DROP TABLE staff;--\"\n  formatted:    SELECT * FROM staff WHERE name = 'x'; DROP TABLE staff;--'\n  parameterised: SELECT * FROM staff WHERE name = ?1   params=[\"x'; DROP TABLE staff;--\"]",
+    "check": {
+     "kind": "pick",
+     "q": "Which query would return every row in the table?",
+     "options": [
+      "`  formatted:    SELECT * FROM staff WHERE name = 'Ada'`",
+      "`  formatted:    SELECT * FROM staff WHERE name = 'x' OR '1'='1'`",
+      "`  parameterised: SELECT * FROM staff WHERE name = ?1   params=[\"x' OR '1'='1\"]`"
+     ],
+     "answer": 1,
+     "explain": "Formatting let the input close the quote and add OR '1'='1', which is always true. With a parameter, the same text is only compared as a name, and no staff member is called that."
+    }
+   },
+   {
+    "lang": "rust",
+    "title": "A transaction that rolls back on drop",
+    "code": "#[derive(Debug, Clone)]\nstruct Accounts {\n    balances: Vec<i64>,\n}\n\nstruct Transaction<'a> {\n    live: &'a mut Accounts,\n    draft: Accounts,\n    committed: bool,\n}\n\nimpl<'a> Transaction<'a> {\n    fn begin(live: &'a mut Accounts) -> Self {\n        let draft = live.clone();\n        Transaction { live, draft, committed: false }\n    }\n    fn commit(mut self) {\n        *self.live = self.draft.clone();\n        self.committed = true;\n    }\n}\n\nimpl Drop for Transaction<'_> {\n    fn drop(&mut self) {\n        if !self.committed {\n            println!(\"  (rolled back)\");\n        }\n    }\n}\n\nfn transfer(accounts: &mut Accounts, from: usize, to: usize, cents: i64) -> Result<(), String> {\n    let mut tx = Transaction::begin(accounts);\n    tx.draft.balances[from] -= cents;\n    if tx.draft.balances[from] < 0 {\n        return Err(format!(\"account {from} would go negative\")); // tx dropped here\n    }\n    tx.draft.balances[to] += cents;\n    tx.commit();\n    Ok(())\n}\n\nfn main() {\n    let mut accounts = Accounts { balances: vec![1000, 50] };\n    println!(\"{:?}\", transfer(&mut accounts, 0, 1, 300));\n    println!(\"balances: {:?}\", accounts.balances);\n    println!(\"{:?}\", transfer(&mut accounts, 1, 0, 900));\n    println!(\"balances: {:?}\", accounts.balances);\n}",
+    "note": "This toy has the same shape as rusqlite's and sqlx's `Transaction`: changes go to a draft, `commit` consumes the transaction and makes them real, and `Drop` handles every other way out, including the early `return Err`. Because the rollback lives in `Drop`, no code path can forget it.",
+    "output": "Ok(())\nbalances: [700, 350]\n  (rolled back)\nErr(\"account 1 would go negative\")\nbalances: [700, 350]",
+    "check": {
+     "kind": "predict",
+     "q": "The second transfer would make account 1 negative. What balances are printed after it?",
+     "options": [
+      "`balances: [700, -550]`",
+      "`balances: [700, 350]`",
+      "`balances: [1600, -550]`"
+     ],
+     "answer": 1,
+     "explain": "The early return drops the transaction without commit, so Drop discards the draft and the live balances stay as they were after the first transfer."
+    }
+   }
+  ],
+  "mistakes": [
+   "**`format!` to put values into SQL.** That is SQL injection; bind parameters.",
+   "**Several related writes without a transaction.** A failure in the middle leaves the data half-changed.",
+   "**A new connection per request.** Use a pool.",
+   "**Changing the schema by hand on a server.** Use migrations so every environment matches."
+  ],
+  "keys": [
+   "Values are parameters; identifiers need an allow-list.",
+   "Transactions are all-or-nothing; Rust's roll back on drop.",
+   "JOIN, GROUP BY, indexes and constraints work the same in every SQL database.",
+   "Migrations keep schemas in step; pools share connections."
+  ]
+ },
+ "A15.4": {
+  "idea": [
+   "A service has to be configured and observed. **Configuration** (database address, port, log level, feature switches) comes from environment variables, so the same binary runs everywhere and secrets stay out of the repository. Read it once at start-up into a **typed struct** (a `u16` port, a `bool` flag), validate everything, and refuse to start with a clear list of problems. The envy, figment and config crates do this with serde; taking a map instead of calling `std::env::var` directly keeps the function testable.",
+   "**Logging** is how you see what a running program did. The **log** crate is a facade with macros (`error!`, `warn!`, `info!`, `debug!`, `trace!`) that libraries call; the application picks a backend such as env_logger. **tracing** is the modern choice for services: the same macros plus **fields** (`info!(user_id, hours, \"shift saved\")`) and **spans** that group every event of one request, written as text or JSON by tracing-subscriber. `RUST_LOG=info,my_app=debug` sets levels per module without recompiling.",
+   "Good logs answer the questions you will have at 3 a.m.: what happened, to which record, and why. Log identifiers and counts rather than whole payloads, never log secrets or personal data, use WARN for things someone should look at and ERROR for failures, and keep DEBUG for detail you switch on when needed. Beyond logs, **metrics** (counters and timings, via the metrics crate or OpenTelemetry) show trends, and a health endpoint tells the platform whether the service works."
+  ],
+  "how": [
+   "Parse settings into a struct at start-up; collect every problem; exit non-zero with the list.",
+   "Libraries use `log` or `tracing` macros; the binary installs the subscriber once.",
+   "`tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init()`, then `RUST_LOG=debug`.",
+   "Add fields: `info!(order_id, total, \"order placed\")`; `#[instrument]` makes a span per call.",
+   "No secrets or personal data in logs; ids and counts instead."
+  ],
+  "examples": [
+   {
+    "lang": "rust",
+    "title": "Settings parsed once, with every problem listed",
+    "code": "use std::collections::HashMap;\n\n#[derive(Debug)]\nstruct Settings {\n    port: u16,\n    log_level: String,\n    max_upload_mb: u32,\n}\n\nfn parse(env: &HashMap<&str, &str>) -> Result<Settings, Vec<String>> {\n    let mut problems = Vec::new();\n    let port = match env.get(\"PORT\").unwrap_or(&\"8000\").parse::<u16>() {\n        Ok(0) | Err(_) => {\n            problems.push(format!(\"PORT must be 1-65535, got {:?}\", env.get(\"PORT\").unwrap_or(&\"\")));\n            0\n        }\n        Ok(p) => p,\n    };\n    let log_level = env.get(\"LOG_LEVEL\").unwrap_or(&\"info\").to_lowercase();\n    if ![\"error\", \"warn\", \"info\", \"debug\", \"trace\"].contains(&log_level.as_str()) {\n        problems.push(format!(\"LOG_LEVEL must be error, warn, info, debug or trace, got {log_level:?}\"));\n    }\n    let max_upload_mb = env.get(\"MAX_UPLOAD_MB\").unwrap_or(&\"10\").parse().unwrap_or_else(|_| {\n        problems.push(\"MAX_UPLOAD_MB must be a whole number\".to_string());\n        0\n    });\n    if problems.is_empty() { Ok(Settings { port, log_level, max_upload_mb }) } else { Err(problems) }\n}\n\nfn main() {\n    println!(\"{:?}\", parse(&HashMap::from([(\"PORT\", \"9090\"), (\"LOG_LEVEL\", \"DEBUG\")])));\n    match parse(&HashMap::from([(\"PORT\", \"http\"), (\"LOG_LEVEL\", \"loud\"), (\"MAX_UPLOAD_MB\", \"lots\")])) {\n        Ok(s) => println!(\"{s:?}\"),\n        Err(problems) => {\n            println!(\"refusing to start:\");\n            for p in problems {\n                println!(\"  - {p}\");\n            }\n        }\n    }\n}",
+    "note": "The first call fills in defaults and normalises the level; the second reports all three problems in one go, so an operator fixes them in one deploy instead of three. In a real binary `main` would build the map from `std::env::vars()` and call `std::process::exit(1)` after printing.",
+    "output": "Ok(Settings { port: 9090, log_level: \"debug\", max_upload_mb: 10 })\nrefusing to start:\n  - PORT must be 1-65535, got \"http\"\n  - LOG_LEVEL must be error, warn, info, debug or trace, got \"loud\"\n  - MAX_UPLOAD_MB must be a whole number",
+    "check": {
+     "kind": "concept",
+     "q": "Why does parse collect problems in a Vec instead of returning at the first one?",
+     "options": [
+      "Because ? cannot be used with HashMap.",
+      "To make the function faster.",
+      "Because Rust requires a Vec for errors.",
+      "So the operator sees every bad setting at once and fixes them all in one deploy."
+     ],
+     "answer": 3,
+     "explain": "Stopping at the first error means one failed start per mistake. Listing them all turns three restarts into one."
+    }
+   },
+   {
+    "lang": "rust",
+    "title": "A span ties together every line of one request",
+    "code": "use std::cell::RefCell;\n\nthread_local! {\n    static SPAN: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };\n}\n\nfn in_span<T>(fields: &str, f: impl FnOnce() -> T) -> T {\n    SPAN.with(|s| s.borrow_mut().push(fields.to_string()));\n    let out = f();\n    SPAN.with(|s| s.borrow_mut().pop());\n    out\n}\n\nfn event(level: &str, message: &str) {\n    let context = SPAN.with(|s| s.borrow().join(\" \"));\n    println!(\"{level:<5} [{context}] {message}\");\n}\n\nfn load_user(id: u32) -> Option<&'static str> {\n    in_span(&format!(\"user_id={id}\"), || {\n        event(\"DEBUG\", \"querying database\");\n        if id == 7 { Some(\"ada\") } else { None }\n    })\n}\n\nfn handle(request_id: &str, user: u32) {\n    in_span(&format!(\"request_id={request_id}\"), || {\n        event(\"INFO\", \"request started\");\n        match load_user(user) {\n            Some(name) => event(\"INFO\", &format!(\"loaded {name}\")),\n            None => event(\"WARN\", \"user not found\"),\n        }\n    });\n}\n\nfn main() {\n    handle(\"r-101\", 7);\n    handle(\"r-102\", 9);\n}",
+    "note": "Every line carries the request it belongs to, and the inner lines also carry the user, without passing either value into `event` by hand. That is what tracing's spans and `#[instrument]` give you: when two requests interleave in a busy service, you can still pull out all the lines for r-102 and see exactly where it went wrong.",
+    "output": "INFO  [request_id=r-101] request started\nDEBUG [request_id=r-101 user_id=7] querying database\nINFO  [request_id=r-101] loaded ada\nINFO  [request_id=r-102] request started\nDEBUG [request_id=r-102 user_id=9] querying database\nWARN  [request_id=r-102] user not found",
+    "check": {
+     "kind": "pick",
+     "q": "Which line shows the context of both spans at once?",
+     "options": [
+      "`INFO  [request_id=r-101] request started`",
+      "`DEBUG [request_id=r-102 user_id=9] querying database`",
+      "`WARN  [request_id=r-102] user not found`"
+     ],
+     "answer": 1,
+     "explain": "The DEBUG event happens inside load_user's span, which is inside the request's span, so both sets of fields are attached. Events after load_user returns only carry the request."
+    }
+   }
+  ],
+  "mistakes": [
+   "**Reading environment variables all over the code.** Parse once into a typed struct.",
+   "**Failing on the first bad setting.** Report every problem together.",
+   "**`println!` instead of a logger.** No levels, no fields, no way to turn it down.",
+   "**Logging secrets, tokens or whole request bodies.** Log ids and counts."
+  ],
+  "keys": [
+   "Config from the environment, validated at start-up into types.",
+   "log is the facade; tracing adds fields and spans.",
+   "RUST_LOG sets levels without recompiling.",
+   "Logs answer what, to which record, and why."
+  ]
+ },
+ "A15.5": {
+  "idea": [
+   "Shipping a Rust service usually means a **container image**. A **multi-stage Dockerfile** builds in an image that has the full toolchain and copies only the finished binary into a small runtime image (debian-slim, distroless, or `scratch` for a static musl build), so what you ship is tens of megabytes with very little inside to attack. Cache the slow dependency build by copying `Cargo.toml` and `Cargo.lock` first (cargo-chef automates this), run as a non-root user, and pass configuration in at run time.",
+   "**CI** checks every change before it merges: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, and often `cargo deny` or `cargo audit` for dependency problems. A **release** is a tagged version: tools like release-plz or cargo-release bump the version from conventional commit messages, write the changelog and publish crates or images. **CD** then rolls the new image out gradually behind health checks and rolls back if they fail.",
+   "All of this runs through **pull requests**. Keep branches short-lived and changes small, write commit subjects in the imperative (\"fix: reject empty shift names\") with a body that says why, and describe in the PR what changed and how you tested it. Reviewers check correctness and tests first, then naming and structure, and label how serious each comment is; authors reply to every comment and keep the conversation about the code. Branch protection (required review, green CI) turns the habits into rules."
+  ],
+  "how": [
+   "Multi-stage Dockerfile: build with `rust:<version>`, run from a slim or scratch image, as a non-root user.",
+   "Copy `Cargo.toml`/`Cargo.lock` and build dependencies before copying `src/` (or use cargo-chef).",
+   "CI: fmt, clippy with `-D warnings`, tests, and a dependency audit, on every pull request.",
+   "Versions follow SemVer; conventional commits let tools pick the next version and write the changelog.",
+   "Small pull requests; review comments labelled blocking, suggestion, question or nit."
+  ],
+  "examples": [
+   {
+    "lang": "rust",
+    "title": "Picking the next version from commit messages",
+    "code": "fn bump(version: (u32, u32, u32), commits: &[&str]) -> (u32, u32, u32) {\n    let (major, minor, patch) = version;\n    let breaking = commits.iter().any(|c| {\n        c.split(':').next().is_some_and(|t| t.ends_with('!')) || c.contains(\"BREAKING CHANGE\")\n    });\n    let feature = commits.iter().any(|c| c.starts_with(\"feat\"));\n    let fix = commits.iter().any(|c| c.starts_with(\"fix\") || c.starts_with(\"perf\"));\n    if breaking && major > 0 {\n        (major + 1, 0, 0)\n    } else if breaking || feature {\n        (major, minor + 1, 0) // before 1.0, breaking changes bump the minor version\n    } else if fix {\n        (major, minor, patch + 1)\n    } else {\n        version\n    }\n}\n\nfn main() {\n    let releases: [(&str, &[&str]); 4] = [\n        (\"docs only\", &[\"docs: explain setup\", \"chore: bump deps\"]),\n        (\"a fix\", &[\"fix(parser): reject empty names\", \"test: cover empty names\"]),\n        (\"a feature\", &[\"feat(api): add shift swap\", \"fix: typo in error\"]),\n        (\"breaking\", &[\"feat(api)!: remove v1 endpoints\"]),\n    ];\n    for (label, commits) in releases {\n        let (a, b, c) = bump((1, 4, 2), commits);\n        let (x, y, z) = bump((0, 9, 3), commits);\n        println!(\"{label:<10} 1.4.2 -> {a}.{b}.{c}   0.9.3 -> {x}.{y}.{z}\");\n    }\n}",
+    "note": "This is the rule release-plz and semantic-release apply: fixes bump the patch, features the minor, and breaking changes the major. Cargo treats 0.x versions specially (0.9 to 0.10 is already a breaking change), which is why the breaking change bumps the minor version before 1.0. Consistent commit messages are what make the automation possible.",
+    "output": "docs only  1.4.2 -> 1.4.2   0.9.3 -> 0.9.3\na fix      1.4.2 -> 1.4.3   0.9.3 -> 0.9.4\na feature  1.4.2 -> 1.5.0   0.9.3 -> 0.10.0\nbreaking   1.4.2 -> 2.0.0   0.9.3 -> 0.10.0",
+    "check": {
+     "kind": "predict",
+     "q": "Which version does a breaking change produce from 0.9.3?",
+     "options": [
+      "`breaking   1.4.2 -> 2.0.0   0.9.3 -> 0.10.0`",
+      "`breaking   1.4.2 -> 2.0.0   0.9.3 -> 1.0.0`",
+      "`breaking   1.4.2 -> 1.5.0   0.9.3 -> 0.9.4`"
+     ],
+     "answer": 0,
+     "explain": "Before 1.0, Cargo treats a minor bump (0.9 to 0.10) as incompatible, so tools bump the minor version for breaking changes. After 1.0, the major version goes up."
+    }
+   },
+   {
+    "lang": "rust",
+    "title": "A tiny CI gate: run each check, report all failures",
+    "code": "struct Check {\n    name: &'static str,\n    passed: bool,\n    detail: &'static str,\n}\n\nfn gate(checks: &[Check]) -> Result<(), String> {\n    let failed: Vec<String> = checks.iter().filter(|c| !c.passed).map(|c| format!(\"{} ({})\", c.name, c.detail)).collect();\n    for c in checks {\n        println!(\"{} {}\", if c.passed { \"ok  \" } else { \"FAIL\" }, c.name);\n    }\n    if failed.is_empty() { Ok(()) } else { Err(format!(\"{} check(s) failed: {}\", failed.len(), failed.join(\", \"))) }\n}\n\nfn main() {\n    let pull_request = [\n        Check { name: \"cargo fmt --check\", passed: true, detail: \"\" },\n        Check { name: \"cargo clippy -- -D warnings\", passed: false, detail: \"needless_return in src/api.rs:41\" },\n        Check { name: \"cargo test\", passed: true, detail: \"\" },\n        Check { name: \"cargo deny check\", passed: false, detail: \"license GPL-3.0 not allowed for crate foo\" },\n    ];\n    match gate(&pull_request) {\n        Ok(()) => println!(\"mergeable\"),\n        Err(e) => println!(\"blocked: {e}\"),\n    }\n}",
+    "note": "CI runs every check and reports all failures, not just the first, so the author fixes everything in one round. With branch protection, \"blocked\" literally means the merge button is disabled until the checks are green, which is how teams keep main always releasable.",
+    "output": "ok   cargo fmt --check\nFAIL cargo clippy -- -D warnings\nok   cargo test\nFAIL cargo deny check\nblocked: 2 check(s) failed: cargo clippy -- -D warnings (needless_return in src/api.rs:41), cargo deny check (license GPL-3.0 not allowed for crate foo)",
+    "check": {
+     "kind": "concept",
+     "q": "Why does the gate report both failures instead of stopping at clippy?",
+     "options": [
+      "Because cargo deny must run after clippy.",
+      "So the author can fix everything in one round instead of pushing once per failure.",
+      "Because fmt passed.",
+      "To make CI run faster."
+     ],
+     "answer": 1,
+     "explain": "Each CI round trip costs minutes of waiting. Running every independent check and listing all failures respects the author's time."
+    }
+   }
+  ],
+  "mistakes": [
+   "**Shipping the build image.** It is over a gigabyte and full of tools; copy only the binary.",
+   "**Copying `src/` before building dependencies.** Every code change recompiles everything.",
+   "**Huge pull requests.** They get skimmed, and bugs get through.",
+   "**Ignoring clippy warnings in CI.** Use `-D warnings` so they block the merge."
+  ],
+  "keys": [
+   "Multi-stage builds ship only the binary.",
+   "CI runs fmt, clippy, tests and audits on every pull request.",
+   "Conventional commits drive SemVer bumps and changelogs.",
+   "Small PRs and labelled review comments keep quality high."
+  ]
+ },
+ "A15.6": {
+  "idea": [
+   "**System design** is reasoning about the pieces of a service and how they behave under load. A typical web system has a **load balancer** spreading requests over several **stateless application servers**, a **database** holding the truth, a **cache** for frequent reads, and a **queue** with **workers** for slow or unreliable jobs such as email. Stateless servers scale by adding more of them; the database is the hard part, scaled first with indexes, then read replicas, and only later by splitting data across machines.",
+   "Start every design with **rough numbers**. A day has about 86,400 seconds, so a million requests a day is about 12 a second on average; multiply by a peak factor (often 3 to 10) and compare with what one server handles in a load test. Estimate storage from row size times rows per day. These numbers decide everything else, and they are often smaller than people expect: one well-indexed database and a few Rust servers handle a lot.",
+   "Each component trades something. A **cache** trades freshness for speed, so decide how stale data may be (a TTL) and how entries are invalidated when data changes. A **queue** trades immediacy for reliability: requests return quickly and failed jobs are retried, so jobs must be **idempotent**, safe to run twice. **Rate limiting** protects the system from bursts, and **timeouts with retries and backoff** keep one slow dependency from taking everything down. In an interview, ask clarifying questions, estimate, draw the boxes, find the bottleneck, name the trade-off and say what you would measure."
+  ],
+  "how": [
+   "Clarify requirements, then estimate peak requests per second, data size and latency targets.",
+   "Draw client, load balancer, stateless servers, database, cache, queue and workers.",
+   "Cache-aside: read cache, fall back to the database, delete the entry on write; set a TTL.",
+   "Queue slow work; make jobs idempotent; retry with backoff; cap retries.",
+   "Rate-limit at the edge; set timeouts on every outbound call."
+  ],
+  "examples": [
+   {
+    "lang": "rust",
+    "title": "Back-of-the-envelope numbers for a service",
+    "code": "fn main() {\n    let users: f64 = 500_000.0;\n    let requests_per_user_per_day = 30.0;\n    let peak_factor = 5.0;\n    let average = users * requests_per_user_per_day / 86_400.0;\n    let peak = average * peak_factor;\n    println!(\"average {average:.0} req/s, peak about {peak:.0} req/s\");\n\n    let one_server = 800.0; // measured with a load test\n    let servers = (peak / one_server).ceil() as u32 + 1; // plus one spare\n    println!(\"app servers needed: {servers}\");\n\n    let (db_ms, cache_ms) = (30.0, 0.5);\n    for hit_rate in [0.0, 0.5, 0.9, 0.99] {\n        let avg = hit_rate * cache_ms + (1.0 - hit_rate) * (cache_ms + db_ms);\n        println!(\"hit rate {:>3.0}%: average read {avg:>5.1} ms, database sees {:>3.0}% of reads\", hit_rate * 100.0, (1.0 - hit_rate) * 100.0);\n    }\n\n    let bytes_per_row = 400.0;\n    let rows_per_day = users * 2.0;\n    println!(\"storage: about {:.0} GB a year\", bytes_per_row * rows_per_day * 365.0 / 1e9);\n}",
+    "note": "Fifteen million requests a day sounds big but is under 200 a second on average, and a Rust server measured at 800 per second covers the peak with two machines and a spare. The cache table shows why the last few percent of hit rate matter: going from 90% to 99% cuts database traffic tenfold again.",
+    "output": "average 174 req/s, peak about 868 req/s\napp servers needed: 3\nhit rate   0%: average read  30.5 ms, database sees 100% of reads\nhit rate  50%: average read  15.5 ms, database sees  50% of reads\nhit rate  90%: average read   3.5 ms, database sees  10% of reads\nhit rate  99%: average read   0.8 ms, database sees   1% of reads\nstorage: about 146 GB a year",
+    "check": {
+     "kind": "concept",
+     "q": "Going from a 90% to a 99% cache hit rate does what to database reads?",
+     "options": [
+      "Cuts them tenfold again, from 10% to 1% of all reads.",
+      "Doubles them.",
+      "Nothing much: 90% is already nearly perfect.",
+      "Removes the need for a database."
+     ],
+     "answer": 0,
+     "explain": "Only misses reach the database, so the share of reads it sees is 1 minus the hit rate. Small improvements near 100% make large differences."
+    }
+   },
+   {
+    "lang": "rust",
+    "title": "A token-bucket rate limiter",
+    "code": "struct TokenBucket {\n    capacity: f64,\n    tokens: f64,\n    refill_per_sec: f64,\n    last: f64,\n}\n\nimpl TokenBucket {\n    fn new(capacity: f64, refill_per_sec: f64) -> Self {\n        TokenBucket { capacity, tokens: capacity, refill_per_sec, last: 0.0 }\n    }\n\n    fn allow(&mut self, now: f64) -> bool {\n        self.tokens = (self.tokens + (now - self.last) * self.refill_per_sec).min(self.capacity);\n        self.last = now;\n        if self.tokens >= 1.0 {\n            self.tokens -= 1.0;\n            true\n        } else {\n            false\n        }\n    }\n}\n\nfn main() {\n    let mut bucket = TokenBucket::new(5.0, 2.0); // bursts of 5, then 2 per second\n    let burst: Vec<bool> = (0..8).map(|_| bucket.allow(0.0)).collect();\n    println!(\"8 requests at t=0: {} allowed\", burst.iter().filter(|&&ok| ok).count());\n    let later: Vec<bool> = [0.5, 1.0, 1.2, 3.0, 3.0, 3.0, 3.0, 3.0].iter().map(|&t| bucket.allow(t)).collect();\n    println!(\"later requests:    {later:?}\");\n}",
+    "note": "The bucket holds up to five tokens and refills two per second: a burst of eight at once lets five through, then requests are allowed as tokens trickle back. By t=3.0 it has refilled to four tokens, so four of the five requests pass and the fifth is refused. This is the algorithm behind most API rate limits; tower and governor provide it as middleware for axum and other Rust services.",
+    "output": "8 requests at t=0: 5 allowed\nlater requests:    [true, true, false, true, true, true, true, false]",
+    "check": {
+     "kind": "pick",
+     "q": "Eight requests arrive at t=0 at a bucket with capacity 5. How many are allowed?",
+     "options": [
+      "`8 requests at t=0: 5 allowed`",
+      "`8 requests at t=0: 2 allowed`",
+      "`8 requests at t=0: 8 allowed`"
+     ],
+     "answer": 0,
+     "explain": "The bucket starts full with five tokens and no time has passed to refill it, so the first five get a token and the rest are refused."
+    }
+   }
+  ],
+  "mistakes": [
+   "**Designing before estimating.** The numbers decide which components you need.",
+   "**A cache without an invalidation rule.** Users see stale data with no obvious cause.",
+   "**Non-idempotent jobs on an at-least-once queue.** A retry charges twice.",
+   "**Calls to other services without timeouts.** One slow dependency stalls everything."
+  ],
+  "keys": [
+   "Stateless servers scale out; the database is the bottleneck to plan for.",
+   "Estimate requests per second, data size and latency first.",
+   "Caches trade freshness for speed; queues trade immediacy for reliability.",
+   "Rate limits, timeouts and idempotent retries keep a system standing."
+  ]
+ },
  "1.1": {
   "idea": [
    "Rust is installed and managed with **rustup**, the official toolchain installer. One command installs three things: `rustc`, the compiler that turns `.rs` source files into native programs; `cargo`, the build tool and package manager you will use every day; and the standard library with its documentation. rustup also keeps several **toolchains** side by side (stable, beta, nightly, or a pinned version for one project) and updates them with `rustup update`.",

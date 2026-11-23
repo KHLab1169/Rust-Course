@@ -1,0 +1,88 @@
+=== A15.1/2
+Q: Both loops find 5,000 duplicates. Why is the Vec version so much slower?
++ `Vec::contains` scans the items one by one, so each check is O(n) and the loop is O(n²); `HashSet::insert` is O(1) on average.
+- HashSet uses less memory.
+- The Vec version allocates a new Vec each time.
+- HashSet runs on several threads.
+WHY: A membership test on a Vec walks the Vec. Inside a loop over n items that becomes about n²/2 comparisons, while hashing jumps straight to the right bucket.
+
+=== A15.1/3 pick
+Q: Which three response times does the bounded heap keep?
++ `three slowest: [1210, 940, 310]`
+- `three slowest: [1210, 940, 230]`
+- `three slowest: [85, 120, 230]`
+WHY: Each push of a fourth value pops the smallest (the heap holds Reverse values), so only the three largest survive: 1210, 940 and 310.
+
+=== A15.2/2 predict
+Q: Jobs 1, 2 and 3 arrive, one is served, then job 4 arrives. What is printed?
++ `first served: Some(1), then: [2, 3, 4]`
+- `first served: Some(3), then: [2, 1, 4]`
+- `first served: Some(1), then: [4, 2, 3]`
+WHY: Moving the inbox stack onto the outbox reverses it, so items leave in arrival order. Job 4 waits in the inbox until the outbox is empty.
+
+=== A15.2/3
+Q: Why store the graph as indices into a Vec instead of Box pointers between nodes?
++ Box gives each node one owner, and the cycle (mail points back to api) would need two; indices have no ownership at all.
+- Indices are always faster than pointers.
+- Box cannot hold strings.
+- Vec sorts the nodes automatically.
+WHY: Single ownership cannot express cycles or shared nodes. An arena owns every node and the links are plain numbers, which also keeps nodes together in memory.
+
+=== A15.3/2 pick
+Q: Which query would return every row in the table?
++ `  formatted:    SELECT * FROM staff WHERE name = 'x' OR '1'='1'`
+- `  parameterised: SELECT * FROM staff WHERE name = ?1   params=["x' OR '1'='1"]`
+- `  formatted:    SELECT * FROM staff WHERE name = 'Ada'`
+WHY: Formatting let the input close the quote and add OR '1'='1', which is always true. With a parameter, the same text is only compared as a name, and no staff member is called that.
+
+=== A15.3/3 predict
+Q: The second transfer would make account 1 negative. What balances are printed after it?
++ `balances: [700, 350]`
+- `balances: [1600, -550]`
+- `balances: [700, -550]`
+WHY: The early return drops the transaction without commit, so Drop discards the draft and the live balances stay as they were after the first transfer.
+
+=== A15.4/2
+Q: Why does parse collect problems in a Vec instead of returning at the first one?
++ So the operator sees every bad setting at once and fixes them all in one deploy.
+- Because ? cannot be used with HashMap.
+- To make the function faster.
+- Because Rust requires a Vec for errors.
+WHY: Stopping at the first error means one failed start per mistake. Listing them all turns three restarts into one.
+
+=== A15.4/3 pick
+Q: Which line shows the context of both spans at once?
++ `DEBUG [request_id=r-102 user_id=9] querying database`
+- `WARN  [request_id=r-102] user not found`
+- `INFO  [request_id=r-101] request started`
+WHY: The DEBUG event happens inside load_user's span, which is inside the request's span, so both sets of fields are attached. Events after load_user returns only carry the request.
+
+=== A15.5/2 predict
+Q: Which version does a breaking change produce from 0.9.3?
++ `breaking   1.4.2 -> 2.0.0   0.9.3 -> 0.10.0`
+- `breaking   1.4.2 -> 2.0.0   0.9.3 -> 1.0.0`
+- `breaking   1.4.2 -> 1.5.0   0.9.3 -> 0.9.4`
+WHY: Before 1.0, Cargo treats a minor bump (0.9 to 0.10) as incompatible, so tools bump the minor version for breaking changes. After 1.0, the major version goes up.
+
+=== A15.5/3
+Q: Why does the gate report both failures instead of stopping at clippy?
++ So the author can fix everything in one round instead of pushing once per failure.
+- Because cargo deny must run after clippy.
+- To make CI run faster.
+- Because fmt passed.
+WHY: Each CI round trip costs minutes of waiting. Running every independent check and listing all failures respects the author's time.
+
+=== A15.6/2
+Q: Going from a 90% to a 99% cache hit rate does what to database reads?
++ Cuts them tenfold again, from 10% to 1% of all reads.
+- Nothing much: 90% is already nearly perfect.
+- Doubles them.
+- Removes the need for a database.
+WHY: Only misses reach the database, so the share of reads it sees is 1 minus the hit rate. Small improvements near 100% make large differences.
+
+=== A15.6/3 pick
+Q: Eight requests arrive at t=0 at a bucket with capacity 5. How many are allowed?
++ `8 requests at t=0: 5 allowed`
+- `8 requests at t=0: 8 allowed`
+- `8 requests at t=0: 2 allowed`
+WHY: The bucket starts full with five tokens and no time has passed to refill it, so the first five get a token and the rest are refused.
