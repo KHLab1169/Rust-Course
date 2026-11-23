@@ -13,6 +13,10 @@ CSS = r"""/* TRYIT:BEGIN */
 .tryit[open]{padding-bottom:12px}
 .try-ed{display:block;width:100%;box-sizing:border-box;font-family:var(--font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:.84rem;line-height:1.5;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm,9px);background:var(--code-bg,var(--surface));color:var(--ink);resize:vertical;tab-size:4;white-space:pre;overflow:auto}
 .try-ed:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+.try-in{margin-top:8px;display:grid;gap:4px}
+.try-in label{font-size:.78rem;font-weight:600;color:var(--muted)}
+.try-stdin{display:block;width:100%;box-sizing:border-box;font-family:var(--font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:.84rem;line-height:1.5;padding:6px 10px;border:1px solid var(--line);border-radius:var(--r-sm,9px);background:var(--code-bg,var(--surface));color:var(--ink);resize:vertical}
+.try-stdin:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
 .try-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
 .try-out{margin:10px 0 0;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm,9px);background:var(--surface);font-size:.84rem;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 .try-out.err{border-color:color-mix(in srgb,var(--bad,#DC2626) 45%,var(--line))}
