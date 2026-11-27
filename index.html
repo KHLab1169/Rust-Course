@@ -942,11 +942,21 @@ th:first-child{border-top-left-radius:var(--r-sm)}th:last-child{border-top-right
 .tryit[open]{padding-bottom:12px}
 .try-ed{display:block;width:100%;box-sizing:border-box;font-family:var(--font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:.84rem;line-height:1.5;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm,9px);background:var(--code-bg,var(--surface));color:var(--ink);resize:vertical;tab-size:4;white-space:pre;overflow:auto}
 .try-ed:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+.try-in{margin-top:8px;display:grid;gap:4px}
+.try-in label{font-size:.78rem;font-weight:600;color:var(--muted)}
+.try-stdin{display:block;width:100%;box-sizing:border-box;font-family:var(--font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:.84rem;line-height:1.5;padding:6px 10px;border:1px solid var(--line);border-radius:var(--r-sm,9px);background:var(--code-bg,var(--surface));color:var(--ink);resize:vertical}
+.try-stdin:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
 .try-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
 .try-out{margin:10px 0 0;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm,9px);background:var(--surface);font-size:.84rem;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 .try-out.err{border-color:color-mix(in srgb,var(--bad,#DC2626) 45%,var(--line))}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 /* TRYIT:END */
+/* FOCUS:BEGIN */
+html.focusing details.item.focused{background:var(--surface);border:1px solid var(--line)!important;border-radius:var(--r-lg,18px);
+  box-shadow:var(--shadow);padding:6px clamp(16px,4vw,44px) 32px;margin:8px 0 24px}
+html.focusing details.item.focused>summary{margin:0 -10px}
+html.focusing details.item.focused .ibody{padding-left:0;padding-right:0}
+/* FOCUS:END */
 :root{--g1:#EA580C;--g2:#DB2777;--tint1:#FDBA74;--tint2:#F9A8D4;--blue:#C2410C;--blue-soft:#FFEDD5;--mark:#EA580C;--mark-ink:#FFFFFF}.pz{--pz-navy:#C2410C}@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--g1:#FB923C;--g2:#F472B6;--tint1:#9A3412;--tint2:#9D174D;--blue:#FB923C;--blue-soft:#3A2214;--mark:#FB923C;--mark-ink:#1A0E06}:root:not([data-theme="light"]) .pz{--pz-navy:#FB923C}}:root[data-theme="dark"]{--g1:#FB923C;--g2:#F472B6;--tint1:#9A3412;--tint2:#9D174D;--blue:#FB923C;--blue-soft:#3A2214;--mark:#FB923C;--mark-ink:#1A0E06}:root[data-theme="dark"] .pz{--pz-navy:#FB923C}</style>
 
 <div class="wrap">
@@ -2982,6 +2992,8 @@ function tryBlock(key,x){
   return "<details class=\"tryit\"><summary>Try it: run this example, then change it</summary>"+
     "<label class=\"sr-only\" for=\"try-"+esc(key)+"\">Example code to edit</label>"+
     "<textarea class=\"try-ed\" id=\"try-"+esc(key)+"\" data-try=\""+esc(key)+"\" rows=\""+rows+"\" spellcheck=\"false\" autocapitalize=\"off\" autocomplete=\"off\">"+esc(x.code)+"</textarea>"+
+    "<div class=\"try-in\""+(/\binput\(/.test(x.code.replace(/fileinput\.input\(/g,""))?"":" hidden")+"><label for=\"tryin-"+esc(key)+"\">Input: one line for each answer the program asks for</label>"+
+    "<textarea class=\"try-stdin\" id=\"tryin-"+esc(key)+"\" rows=\"2\" spellcheck=\"false\">"+esc((x.stdin||"").replace(/\n$/,""))+"</textarea></div>"+
     "<div class=\"try-row\"><button type=\"button\" class=\"btn small primary\" data-act=\"tryrun\" data-key=\""+esc(key)+"\">Run</button>"+
     "<button type=\"button\" class=\"btn small\" data-act=\"tryreset\" data-key=\""+esc(key)+"\">Reset</button>"+
     "<span class=\"note\">Runs in the page (Python 3.14). Nothing here is graded or saved.</span></div>"+
@@ -2990,15 +3002,21 @@ function tryBlock(key,x){
 document.addEventListener("click",function(e){
   var b=e.target.closest&&e.target.closest("[data-act=\"tryrun\"],[data-act=\"tryreset\"]");if(!b)return;
   var key=b.dataset.key,box=b.closest(".tryit"),ta=box.querySelector(".try-ed"),out=box.querySelector(".try-out");
-  if(b.dataset.act==="tryreset"){ta.value=TRY_SRC[key]||"";out.hidden=true;out.textContent="";return;}
+  var inBox=box.querySelector(".try-in"),stdinEl=box.querySelector(".try-stdin");
+  if(b.dataset.act==="tryreset"){ta.value=TRY_SRC[key]||"";stdinEl.value=stdinEl.defaultValue;out.hidden=true;out.textContent="";return;}
+  var asks=/\binput\(/.test(ta.value.replace(/fileinput\.input\(/g,""));
+  if(asks&&inBox.hidden){inBox.hidden=false;}
+  var stdin=stdinEl.value?stdinEl.value.replace(/\n?$/,"\n"):"";
   out.hidden=false;out.className="try-out";
   out.textContent=PY.w?"Running...":"Loading Python (first time only, about 14 MB)...";
   b.disabled=true;
-  pyCall({type:"run",code:ta.value,stdin:""},15000).then(function(res){
+  pyCall({type:"run",code:ta.value,stdin:stdin},15000).then(function(res){
     b.disabled=false;
     if(res.timeout){out.textContent="Stopped after 15 seconds. Check for a loop that never ends.";out.classList.add("err");return;}
     if(res.error){out.textContent=res.error;out.classList.add("err");return;}
-    var r=JSON.parse(res.result),text=(r.out||"")+(r.err?(r.out&&!/\n$/.test(r.out)?"\n":"")+r.err:"");
+    var r=JSON.parse(res.result),err=r.err||"";
+    if(/EOFError/.test(err))err+="\n\nThe program asked for more answers than the Input box has. Add one line for each input() call, then press Run again.";
+    var text=(r.out||"")+(err?(r.out&&!/\n$/.test(r.out)?"\n":"")+err:"");
     out.textContent=text||"(no output)";
     if(r.err)out.classList.add("err");
   },function(){b.disabled=false;out.textContent="Python could not start in this browser. Copy the code and run it on your computer.";out.classList.add("err");});
